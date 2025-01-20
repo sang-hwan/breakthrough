@@ -1,189 +1,198 @@
-# backtest.py
-
 import pandas as pd
 import numpy as np
 
 def backtest_breakout_strategy(
     df: pd.DataFrame,
-    initial_capital: float = 10000.0,  # 초기 투자금 (USDT 등)
-    risk_per_trade: float = 1.0,       # 한 번 진입 시 전체 자금 중 몇 %를 사용할지 (0~100)
-    fee_rate: float = 0.0004           # 매매 수수료 비율(예: 0.04%)
+    initial_capital: float = 10000.0,  # 투자 시작 시점의 가상 자본(예: 10,000 USDT)
+    risk_per_trade: float = 1.0,       # 한 번 매수할 때 전체 자본 중 몇 %를 쓰는지 (0.0 ~ 1.0)
+    fee_rate: float = 0.0004           # 매수/매도시 부과되는 수수료 비율 (예: 0.0004 => 0.04%)
 ):
     """
-    단순 Breakout+ATR손절+TP 전략에 대한 백테스트 함수.
-    ------------------------------------------------------------
-    Parameters
-    ----------
-    df : pd.DataFrame
-        - 필요한 컬럼:
-          ['close', 'high', 'low', 'long_entry', 'stop_loss_price', 'take_profit_price']
-    initial_capital : float
-        백테스트 시작 시점의 가상 자본
-    risk_per_trade : float
-        거래 1회당 자본의 몇 %를 리스크로 사용할지 (0.01 => 1%, 1.0 => 100%)
-    fee_rate : float
-        매수/매도시 부과할 수수료 비율 (예: 0.0004 => 0.04%)
+    이 함수는 단순 '돌파 매매 전략 + ATR 기반 손절가 + 고정 익절가'를 이용해
+    과거 데이터로 전략을 시뮬레이션(백테스트)하는 예시입니다.
 
-    Returns
-    -------
-    df : pd.DataFrame
-        원본 DF에 'position', 'pnl', 'cum_pnl' 등이 추가된 결과
-    trade_history : list of dict
-        각 거래(진입~청산)의 상세 내역
-    summary : dict
-        최종 결과 요약(총 손익, 승률 등)
+    (1) 백테스트에 필요한 주요 컬럼:
+        - 'close'  : 각 시점의 종가(가격)
+        - 'high'   : 각 시점의 고가(해당 봉/캔들에서의 최고가)
+        - 'low'    : 각 시점의 저가(해당 봉/캔들에서의 최저가)
+        - 'long_entry'       : 매수 신호(True/False)
+        - 'stop_loss_price'  : 계산된 손절가(Stop Loss Price)
+        - 'take_profit_price': 계산된 익절가(Take Profit Price)
+
+    (2) 파라미터 설명:
+        - initial_capital : 백테스트 시작 시점에 갖고 있는 가상의 자본 (ex: 10,000 USD)
+        - risk_per_trade  : 매수 시점마다 전체 자본 중 어느 정도를 매수에 쓸지 결정 (0~1)
+                            예) 1.0 => 100% 자본 사용, 0.5 => 50% 자본 사용
+        - fee_rate        : 매매 수수료 비율. 예) 0.0004 => 0.04%
+
+    (3) 함수가 반환하는 세 가지 결과:
+        1) df : 원본 데이터프레임에다 'position', 'pnl', 'cum_pnl' 등을 추가한 결과
+        2) trade_history : 매매 내역(진입 시점, 청산 시점, 손익 등)을 담은 리스트
+        3) summary       : 최종 요약(총 손익, 최종자본, 승률 등) 정보가 담긴 딕셔너리
     """
 
-    # --- 결과 저장용 컬럼들 초기화 ---
-    df = df.copy()
-    df['position'] = 0   # 1: 롱 포지션 진입 중, 0: 청산 상태
-    df['pnl'] = 0.0      # 각 봉 마감시 확정된 손익
-    df['cum_pnl'] = 0.0  # 누적 손익
+    # -----------------------------------------------------------
+    # (A) 백테스트에 필요한 새로운 컬럼을 초기화
+    # -----------------------------------------------------------
+    df = df.copy()  # 원본 df를 건드리지 않기 위해 복사본을 만듦
+    df['position'] = 0   # 포지션 상태(1: 매수 상태, 0: 청산 상태)를 기록
+    df['pnl'] = 0.0      # 각 시점(봉/캔들)에서 실현된 손익(이익 또는 손실)
+    df['cum_pnl'] = 0.0  # 누적 손익(이전까지의 손익을 계속 합산)
 
-    # --- 상태 변수들 ---
-    in_position = False
-    entry_price = 0.0
-    sl_price = 0.0
-    tp_price = 0.0
+    # -----------------------------------------------------------
+    # (B) 백테스트에 필요한 상태 변수들 정의
+    # -----------------------------------------------------------
+    in_position = False     # 현재 포지션을 가지고 있는지 여부 (True/False)
+    entry_price = 0.0       # 매수 진입 가격
+    sl_price = 0.0          # 손절가
+    tp_price = 0.0          # 익절가
 
-    # 1회 거래당 몇 개 코인을 살지 계산 (예: 100% 자본으로 'close' 매수가정)
-    #  - 다만 시뮬레이션에서는 “고정 개수” 혹은 “고정 USD 분” 등 방식을 자유롭게 선택 가능
-    #  - 예: risk_per_trade=1.0 => 전체 자본으로 진입
-    #    => position_size = (initial_capital * risk_per_trade) / 현재가격
-    #  - 실전 백테스트는 거래 반복마다 잔고가 변하므로, 그때그때 position_size 재계산이 일반적입니다.
+    # 초기 자본 설정
     capital = initial_capital
+
+    # 예) risk_per_trade=1.0 이고 자본이 10,000 USDT이면
+    #     한 번에 10,000 USDT로 매수 진입한다고 가정
     trade_risk_capital = capital * risk_per_trade
 
-    # 실제 체결 이력 저장 (진입 시점, 청산 시점, 가격, 손익 등)
+    # 실제 매매 내역을 저장하기 위한 리스트 (매 수/청산별로 딕셔너리를 기록)
     trade_history = []
 
-    # --- 백테스트 메인 루프 ---
+    # -----------------------------------------------------------
+    # (C) 메인 루프: 각 시점(각 봉/캔들)에 대해 매수/청산 로직을 처리
+    # -----------------------------------------------------------
     for i in range(len(df)):
+        # df.iloc[i]: 현재 봉(캔들)의 정보 (가격, 시그널, 손절/익절가 등)
         row = df.iloc[i]
 
-        # 현재 봉의 정보
+        # 고유 식별 정보 (예: 2025-01-01 00:00:00 등) - 시계열 인덱스
+        current_time = row.name
+        # 현재 시점의 종가, 고가, 저가를 가져옴
         current_close = row['close']
         current_high = row['high']
         current_low = row['low']
-        current_time = row.name  # timestamp (인덱스)
 
-        # 1) 포지션이 없는 상태라면 (in_position=False)
+        # -------------------------------------------------------
+        # (1) 만약 현재 포지션이 없다면(in_position=False) => 매수 신호를 확인
+        # -------------------------------------------------------
         if in_position is False:
-            # 매수 신호가 True인가?
-            if row.get('long_entry', False) is True:
-                # --- 진입 실행 ---
+            # df의 'long_entry'가 True이면 매수 신호 발생
+            if row.get('long_entry', False) == True:
+                # --- 진입(매수) 실행 ---
                 in_position = True
-                entry_price = current_close
-                sl_price = row['stop_loss_price']
-                tp_price = row['take_profit_price']
+                entry_price = current_close       # 매수 진입가격을 현재 종가로 가정
+                sl_price = row['stop_loss_price'] # 이 시점에서 계산된 손절가
+                tp_price = row['take_profit_price'] # 이 시점에서 계산된 익절가
 
-                # 매수 수량 계산 (여기서는 단순 '진입 시점의 자본 risk_per_trade%로 매수' 가정)
-                position_size = (trade_risk_capital / entry_price)
+                # (가정) 한 번 매수할 때 전체 자본*risk_per_trade 만큼 매수한다고 함
+                #       => 매수 가능한 '코인 개수'를 계산
+                position_size = trade_risk_capital / entry_price
 
-                # 매수 수수료 (대략 시장가 가정)
+                # 매수 시, 수수료도 차감(시장가 매수 시 가정)
                 buy_fee = entry_price * position_size * fee_rate
-                # 체결 시점 자본에서 수수료 차감
-                capital -= buy_fee
+                capital -= buy_fee  # 수수료만큼 자본 감소
 
-                # Trade history에 기록(진입 중)
+                # 매수(진입) 정보를 trade_history에 추가
                 trade_history.append({
-                    'entry_time': current_time,
-                    'entry_price': entry_price,
-                    'position_size': position_size,
-                    'exit_time': None,
+                    'entry_time': current_time,   # 진입한 시점
+                    'entry_price': entry_price,   # 진입 가격
+                    'position_size': position_size,  # 코인 몇 개 샀나
+                    'exit_time': None,            # 아직 청산 전이므로 None
                     'exit_price': None,
-                    'pnl': None
+                    'pnl': None                   # 손익도 아직 None
                 })
-        else:
-            # 2) 이미 포지션을 들고 있는 상태
-            # 손절 or 익절 조건 확인
-            position_size = trade_history[-1]['position_size']  # 마지막 진입 기록의 수량
-            
-            exit_price = None
-            exit_reason = None
 
-            # (a) 손절 조건: 현재 봉의 저가(low)가 손절가 이하인 경우
+        # -------------------------------------------------------
+        # (2) 이미 포지션을 들고 있는 경우(in_position=True)
+        #     => 손절/익절 조건을 확인하여 청산 여부 결정
+        # -------------------------------------------------------
+        else:
+            # 마지막으로 기록된(방금 매수했던) position_size를 불러옴
+            position_size = trade_history[-1]['position_size']
+
+            exit_price = None    # 청산가격(손절 or 익절)이 발생했을 때 기록
+            exit_reason = None   # 청산 사유 (StopLoss / TakeProfit)
+
+            # (a) 손절 조건: 현재 저가가 손절가 이하인 경우 => 손절가에서 청산
             if current_low <= sl_price:
                 exit_price = sl_price
                 exit_reason = 'StopLoss'
-            # (b) 익절 조건: 현재 봉의 고가(high)가 익절가 이상인 경우
+
+            # (b) 익절 조건: 현재 고가가 익절가 이상인 경우 => 익절가에서 청산
             elif current_high >= tp_price:
                 exit_price = tp_price
                 exit_reason = 'TakeProfit'
 
-            # (c) exit_price가 결정됐다면 (StopLoss or TakeProfit)
+            # (c) 위 두 조건 중 하나라도 충족하면, 포지션 청산
             if exit_price is not None:
-                # 포지션 청산
+                # 포지션 해제
                 in_position = False
 
-                # 매도 수수료
+                # 매도 시 수수료 계산
                 sell_fee = exit_price * position_size * fee_rate
 
-                # PnL 계산
+                # 실제 손익 계산: (청산가격 - 매수가격) * 코인 수량 - 매도 수수료
                 trade_pnl = (exit_price - entry_price) * position_size
-                # 수수료 반영
                 trade_pnl -= sell_fee
 
-                # 자본 업데이트
+                # 실현된 손익을 자본(capital)에 반영
                 capital += trade_pnl
 
-                # 확정 손익을 df['pnl']에 반영
+                # 이번 봉(행)에서 확정된 손익을 df['pnl']에 기록
                 df.at[df.index[i], 'pnl'] = trade_pnl
 
-                # trade_history 업데이트
+                # 매매 이력 업데이트 (나가던 trade_history 마지막 기록에 청산 정보 기입)
                 trade_history[-1]['exit_time'] = current_time
                 trade_history[-1]['exit_price'] = exit_price
                 trade_history[-1]['pnl'] = trade_pnl
                 trade_history[-1]['exit_reason'] = exit_reason
 
-        # position 여부(1 or 0)를 기록
+        # -------------------------------------------------------
+        # (3) 현재 시점(position, 누적손익) 기록
+        # -------------------------------------------------------
+        # in_position에 따라 1(포지션 보유) / 0(포지션 없음)으로 기록
         df.at[df.index[i], 'position'] = 1 if in_position else 0
 
-        # 누적 손익 갱신 (이전까지의 cum_pnl + 이번 봉 pnl)
+        # (4) 누적 손익(cum_pnl) 계산
         if i == 0:
+            # 첫 봉이라면, 현재 pnl값 그대로 사용
             df.at[df.index[i], 'cum_pnl'] = df.at[df.index[i], 'pnl']
         else:
+            # 이전 봉의 cum_pnl에 현재 pnl을 더해 업데이트
             df.at[df.index[i], 'cum_pnl'] = df.at[df.index[i-1], 'cum_pnl'] + df.at[df.index[i], 'pnl']
 
-    # --- 모든 봉 순회 후, trade_history와 요약 정보 정리 ---
+    # -----------------------------------------------------------
+    # (D) 모든 데이터(봉)를 순회한 후, 요약 결과 계산
+    # -----------------------------------------------------------
+    # 1) 전체 순회가 끝나면 df['pnl']의 합이 총 손익이 됨
     total_net_profit = df['pnl'].sum()
+
+    # 2) total_trades: 실제로 체결된 거래(진입 후 청산) 횟수
+    #    trade_history에는 진입 기록이 모두 들어있지만, exit_price가 None이 아니어야
+    #    실제로 청산된 거래이므로 pnl이 존재하는 거래만 세어줌
     total_trades = sum(1 for t in trade_history if t['pnl'] is not None)
+
+    # 3) 승리(수익실현)한 트레이드 개수
     wins = sum(1 for t in trade_history if t['pnl'] is not None and t['pnl'] > 0)
     losses = total_trades - wins
+
+    # 4) 승률(Win Rate)
     win_rate = (wins / total_trades * 100) if total_trades > 0 else 0
 
+    # 5) 요약 정보 딕셔너리
     summary = {
-        'Initial Capital': initial_capital,
-        'Final Capital': capital,
-        'Total Net Profit': total_net_profit,
-        'Total Trades': total_trades,
-        'Win Rate (%)': win_rate,
-        'Wins': wins,
-        'Losses': losses,
+        'Initial Capital': initial_capital,  # 초기 자본
+        'Final Capital': capital,            # 최종 자본 (실현손익 반영)
+        'Total Net Profit': total_net_profit,# 총 손익 (df['pnl'].sum())
+        'Total Trades': total_trades,        # 총 거래 횟수(진입 & 청산이 완료된 것)
+        'Win Rate (%)': win_rate,            # 승률
+        'Wins': wins,                        # 수익 낸 거래 수
+        'Losses': losses,                    # 손실 낸 거래 수
     }
 
+    # -----------------------------------------------------------
+    # (E) 결과 반환
+    # -----------------------------------------------------------
+    # 1) df: 각 시점의 포지션/손익 정보가 추가된 데이터
+    # 2) trade_history: 개별 거래마다의 상세 내역
+    # 3) summary: 최종 결과 요약
     return df, trade_history, summary
-
-
-if __name__ == "__main__":
-    # -----------------------------------------------------------
-    # 간단 테스트 (실제로는 signal_generator + trade_logic 적용한 df를 넣으면 됨)
-    # -----------------------------------------------------------
-    # 가상의 예시 DataFrame 생성
-    # (실제로는 fetch_binance_ohlcv(), calculate_breakout_signals() 등을 거쳐 df를 만들었다고 가정)
-    data = {
-        'close': [100, 102, 103, 105, 104, 106, 107, 103, 101, 110],
-        'high':  [101, 103, 105, 106, 105, 107, 108, 106, 102, 115],
-        'low':   [99,  99,  101, 103, 103, 104, 105, 102, 99,  100],
-        'long_entry': [False, True, False, False, False, False, False, False, True, False],  # 2번째, 9번째 봉에 진입 시도
-        'stop_loss_price':   [np.nan, 98, 98, 98, 98, 98, 98, 98,  99,  99],
-        'take_profit_price': [np.nan, 110,110,110,110,110,110,110, 120, 120],
-    }
-    test_df = pd.DataFrame(data)
-    test_df.index = pd.date_range(start='2025-01-01', periods=len(test_df), freq='4h')  # 예시 Timestamp
-
-    # 백테스트 실행
-    bt_df, trades, result = backtest_breakout_strategy(test_df)
-    print(bt_df)
-    print("\nTrade History:", trades)
-    print("\nSummary:", result)
