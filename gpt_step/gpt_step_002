@@ -1,56 +1,404 @@
-코인 시장에 **systrader79**와 **김대현 저자**의 저서 *“돌파매매 전략”* 을 적용해서 자동매매 프로그램을 만들고 있어.
+[상황]
+코인 시장에 **systrader79**와 **김대현 저자**의 저서 *“돌파매매 전략”* 을 적용해서 자동매매 하는 프로그램을 만들고 있어.
+연 10~20% 수익을 목표로 약 200~500만원의 시드머니를 투자할 생각이야.
 
----
-# fetch_binance_data.py
+[참고사항1]
+# data_collection/fetch_binance_data.py
 
-import ccxt  # 다양한 암호화폐 거래소와의 연동을 위한 라이브러리
-import pandas as pd  # 데이터 분석용 라이브러리
+import ccxt
+import pandas as pd
+import time
+from datetime import datetime
 
-def fetch_binance_ohlcv(symbol: str, timeframe='4h', limit=500) -> pd.DataFrame:
+
+def fetch_binance_historical_ohlcv(
+    symbol: str,
+    timeframe: str = '4h',
+    start_date: str = '2021-01-01 00:00:00',
+    limit_per_request: int = 1000,
+    pause_sec: float = 1.0
+) -> pd.DataFrame:
     """
-    Binance에서 OHLCV(시가, 고가, 저가, 종가, 거래량) 데이터를 수집하고,
-    이를 pandas DataFrame으로 반환합니다.
-    
-    :param symbol: 암호화폐 심볼(예: 'BTC/USDT')
-    :param timeframe: 바이낸스가 지원하는 데이터 간격(예: '1m', '5m', '15m', '1h', '4h', '1d' 등)
-    :param limit: 한 번에 가져올 캔들의 개수 (바이낸스 기준, 대개 1000개까지 가능)
-    :return: 인덱스가 timestamp(날짜/시간)이고,
-             컬럼으로 open, high, low, close, volume이 있는 pandas DataFrame
+    1) 바이낸스에서 과거 데이터를 대량으로 수집하는 함수입니다.
+    - start_date(시작 시점)부터 현재 시점까지,
+      'limit_per_request'만큼씩 데이터를 끊어서 반복적으로 불러옵니다.
+    - 각 반복 호출 사이에는 'pause_sec'만큼 잠깐 쉬어,
+      API 호출 제한에 걸리지 않도록 합니다.
+
+    Parameters
+    ----------
+    symbol : str
+        예) 'BTC/USDT'. (거래쌍: 어떤 코인/토큰을 어떤 기준화폐로 거래하는지 표시)
+    timeframe : str
+        예) '1m', '5m', '15m', '1h', '4h', '1d' 등 (봉 하나가 몇 분, 시간, 일 단위인지)
+    start_date : str
+        데이터 수집을 시작할 시점 (UTC 기준 문자열)
+        예) '2021-01-01 00:00:00'
+    limit_per_request : int
+        한 번 API를 호출할 때 가져올 최대 캔들 수(기본값 1000, 바이낸스에서 보통 1000까지 허용)
+    pause_sec : float
+        연속된 API 호출 사이에 쉬는 시간(초). (기본값 1초)
+
+    Returns
+    -------
+    pd.DataFrame
+        * 인덱스: timestamp (datetime 형태)
+        * 컬럼: open, high, low, close, volume
     """
-    
-    # 1) ccxt를 이용해 binance 거래소 객체 생성
+
+    # 바이낸스 거래소에 연결할 수 있는 'ccxt' 객체를 생성합니다.
     exchange = ccxt.binance()
-    
-    # 2) binance 거래소에서 OHLCV 데이터를 가져옵니다.
-    #    fetch_ohlcv의 반환형: [[timestamp, open, high, low, close, volume], ...] 형태
-    ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
-    
-    # 3) 가져온 OHLCV 리스트를 pandas DataFrame으로 변환합니다.
-    #    columns 인자로 컬럼 이름을 지정해서 보기 좋게 만듭니다.
-    df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-    
-    # 4) timestamp가 밀리초(ms) 단위로 되어 있으므로, 이를 datetime(YYYY-MM-DD hh:mm:ss) 형태로 변환합니다.
+
+    # 1) start_date(문자열)를 바이낸스 API에서 요구하는 timestamp(밀리초)로 변환
+    since_ms = exchange.parse8601(start_date)
+
+    # 데이터를 담을 빈 리스트 생성
+    all_ohlcv = []
+
+    # 무한 반복문: 더 이상 받아올 데이터가 없을 때까지 계속 API를 호출
+    while True:
+        # 2) fetch_ohlcv: 바이낸스 서버에서 OHLCV(시세데이터) 가져오기
+        #    - since=since_ms 부터
+        #    - 최대 limit_per_request개
+        ohlcv = exchange.fetch_ohlcv(
+            symbol=symbol,
+            timeframe=timeframe,
+            since=since_ms,
+            limit=limit_per_request
+        )
+
+        # 불러온 데이터가 없다면, (더 이상 가져올 것이 없으므로) 반복 중단
+        if not ohlcv:
+            break
+
+        # 3) 새로 불러온 데이터를 all_ohlcv 리스트에 추가(누적)
+        all_ohlcv += ohlcv
+
+        # 4) 새로 불러온 데이터 중 마지막 캔들의 타임스탬프를 구함
+        #    ohlcv는 [[ts, open, high, low, close, volume], [...], ...] 형태로 되어있음
+        last_ts = ohlcv[-1][0]  # ms 단위 정수값
+        # 다음 호출에서는 마지막 캔들의 시각 + 1ms 부터 요청 (겹치지 않게 하기 위함)
+        since_ms = last_ts + 1
+
+        # 5) 잠깐 휴식 -> API 서버 호출 제한(rate limit)에 걸리지 않도록 배려
+        time.sleep(pause_sec)
+
+        # 6) 만약 이번 호출에서 limit_per_request(기본 1000)보다 적게 가져왔다면,
+        #    더 이상 과거 데이터가 없다고 판단하고 반복 중단
+        if len(ohlcv) < limit_per_request:
+            break
+
+    # 7) 누적한 리스트(all_ohlcv)를 판다스 DataFrame으로 변환
+    df = pd.DataFrame(all_ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+
+    # timestamp(숫자:ms)을 판다스에서 인식 가능한 datetime 형식으로 변환
     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-    
-    # 5) timestamp 컬럼을 데이터프레임의 인덱스로 설정합니다.
+
+    # DataFrame 인덱스를 timestamp 컬럼으로 설정
     df.set_index('timestamp', inplace=True)
-    
-    # 6) open, high, low, close, volume 컬럼을 float 형태로 변환하여, 숫자로 연산 가능하게 만듭니다.
+
+    # 시가/고가/저가/종가/거래량을 모두 float(실수)형으로 변환
     numeric_cols = ['open', 'high', 'low', 'close', 'volume']
     df[numeric_cols] = df[numeric_cols].astype(float)
-    
-    # 7) 혹시 중복된 인덱스(같은 timestamp 데이터)가 있다면 제거해줍니다.
-    if df.index.duplicated().sum() > 0:
-        df = df[~df.index.duplicated()]
-    
-    # 8) 데이터 중 NaN(결측치)이 있다면 해당 행을 제거하여, 분석에 문제가 없도록 합니다.
-    if df.isna().any().any():
-        df.dropna(inplace=True)
-    
-    # 9) 최종적으로 정리된 DataFrame을 반환합니다.
+
+    # 인덱스(날짜)가 중복된 행이 있다면 제거
+    df = df[~df.index.duplicated()]
+
+    # 결측치(NaN) 행이 있다면 제거
+    df.dropna(inplace=True)
+
+    # 최종적으로 가공이 완료된 DataFrame 반환
+    return df
+
+
+def fetch_binance_latest_ohlcv(symbol: str, timeframe: str = '4h', limit: int = 500) -> pd.DataFrame:
+    """
+    2) 바이낸스에서 '최신' 데이터만 빠르게 수집하는 메서드입니다.
+    - 가장 최근(limit개)의 OHLCV 정보를 가져와서
+      실시간 모니터링 혹은 단기 분석에 활용할 때 사용합니다.
+
+    Parameters
+    ----------
+    symbol : str
+        예) 'BTC/USDT'
+    timeframe : str
+        예) '1m', '5m', '15m', '1h', '4h', '1d' 등
+    limit : int
+        불러올 캔들의 개수 (기본값 500)
+
+    Returns
+    -------
+    pd.DataFrame
+        * 인덱스: timestamp (datetime 형태)
+        * 컬럼: open, high, low, close, volume
+    """
+
+    # 바이낸스 거래소에 연결할 수 있는 'ccxt' 객체 생성
+    exchange = ccxt.binance()
+
+    # 이번에는 'since' 없이, 마지막 limit개의 데이터만 바로 불러옴
+    ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+
+    # 가져온 2차원 리스트를 DataFrame으로 변환
+    df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+
+    # timestamp를 datetime 형식으로 변환
+    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+
+    # DataFrame 인덱스를 timestamp로 설정
+    df.set_index('timestamp', inplace=True)
+
+    # 숫자형 컬럼을 float으로 변환
+    numeric_cols = ['open', 'high', 'low', 'close', 'volume']
+    df[numeric_cols] = df[numeric_cols].astype(float)
+
+    # 인덱스 중복 제거
+    df = df[~df.index.duplicated()]
+
+    # 결측치 제거
+    df.dropna(inplace=True)
+
+    # 최신 데이터가 들어있는 DataFrame 반환
     return df
 ---
-# signal_generator.py
+# config/db_config.py
+
+DATABASE = {
+    'user': 'postgres',
+    'password': '1234',
+    'host': 'localhost',
+    'port': 5432,
+    'dbname': 'my_trading_db'
+}
+---
+# data_collection/save_to_postgres.py
+
+from sqlalchemy import create_engine
+import psycopg2        # PostgreSQL에 연결하기 위한 파이썬 라이브러리
+import pandas as pd
+from typing import Optional
+from config.db_config import DATABASE  # 데이터베이스 접속 정보를 담고 있는 설정 파일
+
+
+def save_ohlcv_to_postgres(df: pd.DataFrame, table_name: str = 'ohlcv_data') -> None:
+    """
+    OHLCV DataFrame을 PostgreSQL에 저장하는 예시 함수입니다.
+    
+    Parameters
+    ----------
+    df : pd.DataFrame
+        timestamp(인덱스), open, high, low, close, volume 컬럼을 갖는 DataFrame.
+    table_name : str
+        데이터를 저장할 테이블 이름 (기본 'ohlcv_data').
+    """
+    
+    # 1) DB 연결
+    #    - 'psycopg2.connect'에 접속 정보를 넣어 PostgreSQL에 연결.
+    conn = psycopg2.connect(
+        user=DATABASE['user'],
+        password=DATABASE['password'],
+        host=DATABASE['host'],
+        port=DATABASE['port'],
+        dbname=DATABASE['dbname']
+    )
+    #    - 연결된 상태에서 SQL 쿼리를 실행하기 위해 cursor(커서)를 얻어옴
+    cur = conn.cursor()
+
+    # 2) 테이블 생성(없으면 새로 만들기)
+    create_table_query = f"""
+    CREATE TABLE IF NOT EXISTS {table_name} (
+        timestamp TIMESTAMP NOT NULL,
+        open DOUBLE PRECISION,
+        high DOUBLE PRECISION,
+        low DOUBLE PRECISION,
+        close DOUBLE PRECISION,
+        volume DOUBLE PRECISION,
+        PRIMARY KEY (timestamp)
+    );
+    """
+    #    - 테이블을 만드는 SQL 쿼리 실행
+    cur.execute(create_table_query)
+    #    - 쿼리 적용(커밋)
+    conn.commit()
+
+    # 3) DataFrame 레코드를 한 줄씩 INSERT
+    #    - 대량 삽입 시 COPY 문법 등 더 빠른 방법도 사용 가능.
+    for index, row in df.iterrows():
+        #   - timestamp, open, high, low, close, volume 순으로 값 매핑
+        insert_query = f"""
+        INSERT INTO {table_name} (timestamp, open, high, low, close, volume)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        ON CONFLICT (timestamp)
+        DO NOTHING;
+        """
+        #   - index는 DataFrame의 인덱스(즉, timestamp)
+        #   - to_pydatetime()로 Python의 datetime 객체로 변환
+        #   - float(row['open']) 등으로 실수 형태 변환
+        cur.execute(insert_query, (
+            index.to_pydatetime(),
+            float(row['open']),
+            float(row['high']),
+            float(row['low']),
+            float(row['close']),
+            float(row['volume'])
+        ))
+    #    - INSERT 이후 최종 커밋
+    conn.commit()
+    
+    #    - 커서와 연결 종료
+    cur.close()
+    conn.close()
+
+
+def load_ohlcv_from_postgres(table_name: str = 'ohlcv_data', limit: Optional[int] = None) -> pd.DataFrame:
+    """
+    Postgres에서 OHLCV 데이터를 읽어오는 함수입니다.
+    
+    Parameters
+    ----------
+    table_name : str
+        데이터를 가져올 테이블 이름 (기본 'ohlcv_data').
+    limit : Optional[int]
+        가져올 레코드 개수를 제한하고 싶을 때 사용 (기본 None: 제한 없음).
+        
+    Returns
+    -------
+    pd.DataFrame
+        timestamp(인덱스), open, high, low, close, volume 컬럼을 갖는 DataFrame.
+    """
+    
+    # 1) SQLAlchemy 엔진 생성
+    user     = DATABASE['user']
+    password = DATABASE['password']
+    host     = DATABASE['host']
+    port     = DATABASE['port']
+    dbname   = DATABASE['dbname']
+    
+    # postgresql://user:password@host:port/dbname
+    engine = create_engine(f"postgresql://{user}:{password}@{host}:{port}/{dbname}")
+    
+    # 2) 필요한 SQL 쿼리 생성
+    #    - timestamp 기준으로 정렬하여 전부 가져옴
+    query = f"SELECT * FROM {table_name} ORDER BY timestamp"
+    #    - limit 파라미터가 있으면, 해당 개수만큼만 가져옴
+    if limit:
+        query += f" LIMIT {limit}"
+
+    # 3) pandas의 read_sql을 통해 SQL 결과를 바로 DataFrame으로 변환
+    #    - parse_dates 옵션으로 timestamp 컬럼을 datetime으로 파싱
+    df = pd.read_sql(query, engine, parse_dates=['timestamp'])
+    
+    # 4) timestamp 컬럼을 인덱스로 설정
+    df.set_index('timestamp', inplace=True)
+
+    # 가공한 DataFrame 반환
+    return df
+---
+# data_collection/ohlcv_data_pipeline.py
+
+import time
+from datetime import datetime
+from typing import List, Optional
+
+# 아래는 별도 파일(fetch_binance_data.py, save_to_postgres.py)에 정의된 함수를 불러옵니다.
+from data_collection.fetch_binance_data import (
+    fetch_binance_historical_ohlcv,
+    fetch_binance_latest_ohlcv
+)
+from data_collection.save_to_postgres import save_ohlcv_to_postgres
+
+def collect_data_for_backtest(
+    symbols: List[str],
+    timeframes: List[str],
+    use_historical: bool = True,
+    start_date: Optional[str] = '2018-01-01 00:00:00',
+    limit_per_request: int = 1000,
+    latest_limit: int = 500,
+    pause_sec: float = 1.0
+) -> None:
+    """
+    Binance에서 OHLCV 데이터를 수집 후, PostgreSQL에 저장하는 함수.
+    
+    생계형 투자를 위해 다음을 고려했습니다:
+    1) 주요 타임프레임: 1h, 4h, 1d (신뢰도 높은 신호를 얻기 위함)
+    2) 부가적으로 15m를 추가 가능 (세밀한 돌파 시점 확인), 
+       그러나 지나치게 짧은 분봉은 과매매로 이어질 수 있으므로 주의
+    3) start_date를 5년 전(2018년) 정도로 설정하여 충분히 긴 기간(상승장/하락장 모두 포함) 확보
+    
+    Parameters
+    ----------
+    symbols : List[str]
+        수집할 암호화폐 심볼 목록 (예: ["BTC/USDT", "ETH/USDT"])
+    timeframes : List[str]
+        원하는 타임프레임 목록 (예: ["1h", "4h", "1d", "15m"] 등)
+    use_historical : bool
+        True 면 start_date부터 현재까지 역사적 데이터를 반복 호출로 수집 (기본값: True).
+        False 면 최근 latest_limit개의 데이터만 가져옵니다.
+    start_date : str, optional
+        대량(역사적) 데이터 수집 시작 시점(UTC), 기본값: '2018-01-01 00:00:00' (약 5년치).
+        use_historical=False일 경우 사용되지 않음.
+    limit_per_request : int
+        (역사적 수집 시) fetch_ohlcv 1회당 가져올 최대 캔들 수 (기본 1000).
+    latest_limit : int
+        (최신 데이터 수집 시) 가져올 캔들의 개수 (기본 500).
+    pause_sec : float
+        심볼/타임프레임별 호출 후 대기 시간(초). API 과부하 방지.
+    """
+    
+    # (1) 심볼(예: "BTC/USDT", "ETH/USDT") 목록을 하나씩 순회
+    for symbol in symbols:
+        # (2) 각 심볼에 대해 원하는 타임프레임(예: "1h", "4h", "1d" 등)마다 순회
+        for tf in timeframes:
+            print(f"\n[*] Fetching {symbol} - {tf} data...")
+
+            # -------------------------------
+            # 1) 바이낸스에서 OHLCV 데이터 수집
+            # -------------------------------
+            if use_historical:
+                # 장기간(역사적) 데이터를 한 번에 전부 수집하는 경우
+                if not start_date:
+                    # 만약 start_date가 지정되지 않았는데 'use_historical=True'라면 오류 처리
+                    raise ValueError("start_date must be provided for historical data.")
+                
+                # fetch_binance_historical_ohlcv 함수를 이용해
+                # start_date부터 현재까지 데이터를 모두 불러옴
+                df = fetch_binance_historical_ohlcv(
+                    symbol=symbol,
+                    timeframe=tf,
+                    start_date=start_date,
+                    limit_per_request=limit_per_request,
+                    pause_sec=pause_sec
+                )
+            else:
+                # 최근 latest_limit개의 데이터만 가져오고 싶을 때
+                df = fetch_binance_latest_ohlcv(
+                    symbol=symbol,
+                    timeframe=tf,
+                    limit=latest_limit
+                )
+
+            # -------------------------------
+            # 2) 테이블 이름 정의
+            # -------------------------------
+            # 예: 심볼 "BTC/USDT" -> "btcusdt", 타임프레임 "4h" -> "4h"
+            # 최종 테이블명 "ohlcv_btcusdt_4h"
+            table_name = f"ohlcv_{symbol.replace('/', '').lower()}_{tf}"
+            print(f"    -> Total Rows Fetched: {len(df)}")
+            
+            # -------------------------------
+            # 3) DB에 저장
+            # -------------------------------
+            # 위에서 불러온 DataFrame(df)을 지정된 테이블(table_name)에 저장
+            save_ohlcv_to_postgres(df, table_name=table_name)
+            print(f"    -> Saved to table: {table_name}")
+
+            # -------------------------------
+            # 4) 다음 심볼/타임프레임으로 넘어가기 전 대기
+            # -------------------------------
+            # API 호출을 잇달아 하면 서버 부하 및 제한이 걸릴 수 있으므로 잠시 휴식
+            time.sleep(pause_sec)
+---
+# strategies/signal_generator.py
 
 import pandas as pd
 
@@ -105,75 +453,12 @@ def calculate_breakout_signals(
     )
     
     return df
-
-
-def calculate_vcp_pattern(
-    df: pd.DataFrame,
-    window_list: list = [20, 10, 5]
-) -> pd.DataFrame:
-    """
-    VCP(Volatility Contraction Pattern) 패턴을 단순 계산하는 함수입니다.
-    ------------------------------------------------------------------------
-    매개변수(Parameter)
-    - df: 시가, 고가, 저가, 종가, 거래량 등의 정보를 담고 있는 DataFrame
-    - window_list: 변동 폭(고가-저가)의 이동평균을 계산할 기간을 담은 리스트 (예: [20, 10, 5])
-    ------------------------------------------------------------------------
-    반환(Return)
-    - 원본 DataFrame(df)에 VCP 관련 컬럼이 추가된 DataFrame.
-      (예: range_ma_20, range_ma_10, range_ma_5, vcp_signal 등)
-    """
-
-    # 1) 각 window마다 (고가 - 저가)의 이동평균을 구함
-    #    예: window=20 -> 최근 20봉의 (high - low)의 평균 (변동 폭 평균)
-    for w in window_list:
-        df[f'range_ma_{w}'] = (df['high'] - df['low']).rolling(w).mean()
-    
-    # 2) (단순한 예시)
-    #    - ex) window_list = [20, 10, 5]
-    #    - 세 구간의 변동 폭 평균이 큰 순서대로(20봉 > 10봉 > 5봉) '연속 감소'한다면 VCP로 판정
-    w1, w2, w3 = window_list
-    df['vcp_signal'] = (
-        (df[f'range_ma_{w1}'] > df[f'range_ma_{w2}']) &
-        (df[f'range_ma_{w2}'] > df[f'range_ma_{w3}'])
-    )
-    
-    return df
 ---
-# trade_logic.py
+# strategies/stop_loss_take_profit.py
 
 import pandas as pd
 import numpy as np
 import ta  # 'ta' 라이브러리는 여러 기술적 지표(ATR, RSI, MACD 등)를 제공
-
-def apply_entry_signal(
-    df: pd.DataFrame,
-    entry_colname: str = 'long_entry'
-) -> pd.DataFrame:
-    """
-    이전 단계에서 생성된 시그널(breakout_signal, volume_condition, confirmed_breakout)을 종합하여,
-    최종 매수 여부(long_entry)를 확정하는 로직을 구현한 함수입니다.
-    
-    매개변수
-    ----------
-    df : pd.DataFrame
-        시가, 고가, 저가, 종가, 거래량, 및 돌파 관련 시그널 등이 포함된 DataFrame
-    entry_colname : str
-        매수 여부를 저장할 컬럼명 (기본값: 'long_entry')
-    
-    반환값
-    ----------
-    pd.DataFrame
-        원본 DataFrame에 'long_entry' 컬럼이 추가된 상태
-    """
-    # 예시 로직:
-    # 전고점 돌파, 거래량 조건, 확정 돌파가 모두 True이면 매수 신호를 True로 설정
-    df[entry_colname] = (
-        (df['breakout_signal'] == True) &    # 돌파 여부
-        (df['volume_condition'] == True) &   # 거래량 조건
-        (df['confirmed_breakout'] == True)   # 확정 돌파
-    )
-    return df
-
 
 def apply_stop_loss_atr(
     df: pd.DataFrame,
@@ -263,55 +548,319 @@ def apply_take_profit_ratio(
     # 익절가 = 진입가 * (1 + 목표 수익률)
     df[tp_colname] = df[entry_price_col] * (1 + profit_ratio)
     return df
-
-
-def generate_trade_signals(
-    df: pd.DataFrame,
-    atr_window: int = 14,
-    atr_multiplier: float = 2.0,
-    profit_ratio: float = 0.05,
-) -> pd.DataFrame:
-    """
-    종합 매매 로직을 한 번에 수행하는 함수입니다.
-    1) apply_entry_signal : 매수 신호(long_entry) 확정
-    2) apply_stop_loss_atr: ATR 기반 손절가(stop_loss_price) 계산
-    3) apply_take_profit_ratio: 고정 이익률 기반 익절가(take_profit_price) 계산
-    
-    매개변수
-    ----------
-    df : pd.DataFrame
-        돌파, 거래량, 확정 돌파 등이 포함된 DataFrame
-    atr_window : int
-        ATR 계산 시 사용할 봉 개수 (기본값: 14)
-    atr_multiplier : float
-        ATR에 곱해줄 배수 (기본값: 2.0)
-    profit_ratio : float
-        익절 목표 수익률 (기본값: 0.05 => 5% 수익 시 익절)
-    
-    반환값
-    ----------
-    pd.DataFrame
-        원본 DataFrame에 매수 신호, 손절가, 익절가 등이 추가된 상태
-    """
-    # 1) 매수 신호 확정
-    df = apply_entry_signal(df, entry_colname='long_entry')
-    
-    # 2) ATR 손절가 계산
-    df = apply_stop_loss_atr(
-        df,
-        atr_window=atr_window,
-        atr_multiplier=atr_multiplier,
-        sl_colname='stop_loss_price',
-        entry_price_col='entry_price'
-    )
-    
-    # 3) 고정 이익률 기반 익절가 계산
-    df = apply_take_profit_ratio(
-        df,
-        profit_ratio=profit_ratio,
-        tp_colname='take_profit_price',
-        entry_price_col='entry_price'
-    )
-    
-    return df
 ---
+# strategies/risk_management.py
+
+import math
+
+def calculate_position_size(
+    account_balance: float,
+    risk_per_trade: float,
+    entry_price: float,
+    stop_loss_price: float,
+    fee_rate: float = 0.001
+) -> float:
+    """
+    --------------------------------------------------------------------------------
+    1) 돌파매매 전략에서 강조하는 '1회 손실 최소화' 개념을 반영한 포지션 크기 계산 함수
+    --------------------------------------------------------------------------------
+    - '돌파매매 전략' 책(저자 systrader79 & 김대현)에서 가장 중요한 리스크 관리 개념:
+        "한 번의 트레이드에서 계좌의 (n)% 이상 잃지 말자."
+      예) 계좌 10,000 USDT, n=1% -> 이번 매매로 최대로 잃을 수 있는 돈은 100 USDT
+    - 손절 가격(stop_loss_price)이 정해진 상태에서,
+      (진입가(entry_price) ~ 손절가(stop_loss_price))까지의 가격 차이를 이용해
+      1코인(또는 1계약)당 '최대 예상 손실액'을 구한 뒤,
+      '계좌에서 허용하는 총 손실 한도'와 비교하여 구매 가능한 최대 코인 수를 구합니다.
+
+    파라미터 설명
+    -------------
+    1) account_balance : float
+       - 계좌에 있는 총 금액 (예: 10,000 USDT)
+    2) risk_per_trade : float
+       - 한 번의 매매로 잃어도 괜찮다고 생각하는 비율(계좌 대비)
+       - 예) 0.01 = 1%, 0.02 = 2%
+    3) entry_price : float
+       - 내가 매수(진입)하려는 가격 (돌파 지점 등)
+    4) stop_loss_price : float
+       - 손절가격 (이 가격까지 떨어지면 손실을 확정하고 청산)
+    5) fee_rate : float
+       - 매수 시 발생하는 수수료 비율 (기본 0.1% = 0.001)
+       - 실제 매도 시 수수료, 슬리피지 등은 별도 고려 필요
+
+    반환값
+    -------
+    float
+        - '한 번의 매매에서 계좌 (n)% 손실 한도'를 초과하지 않는 범위 내에서
+          매수(혹은 매수 계약 진입)할 수 있는 코인(또는 계약) 수
+
+    작동 흐름 (간단히)
+    ------------------
+    1) price_diff = |entry_price - stop_loss_price|
+       => 1코인당 가격 하락 시 발생할 수 있는 손실액(최악의 경우)
+    2) max_risk_amount = account_balance * risk_per_trade
+       => 이번 트레이드로 감수할 수 있는 손실 총액 (ex. 10,000 * 0.01 = 100 USDT)
+    3) fee_amount = entry_price * fee_rate
+       => 매수 시 수수료 (ex. 100 USDT * 0.001 = 0.1 USDT)
+    4) per_unit_loss = price_diff + fee_amount
+       => 코인 1개당 발생 가능한 최대 손실액
+    5) position_size = max_risk_amount / per_unit_loss
+       => 허용손실 / (1코인당 손실) = 매수 가능 최대 코인 수
+
+    주의사항
+    --------
+    - (entry_price - stop_loss_price)가 0이면, 계산에 문제가 생길 수 있으므로 체크 필요.
+    - 실제 매매에서는 매도 수수료, 슬리피지(체결시 가격차), 펀딩피(선물) 등을 함께 고려하면 더 정확합니다.
+    - 레버리지를 사용하는 경우 마진(증거금)과 청산가격(유지증거금) 계산 등 추가 로직이 필요합니다.
+    """
+    # 1. 코인 1개당 (진입~손절) 구간에서 발생 가능한 최대 손실금액 계산
+    price_diff = abs(entry_price - stop_loss_price)
+
+    # 2. 계좌에서 이번 매매에 감당할 수 있는 손실 한도(계좌잔고 × 리스크 비율)
+    max_risk_amount = account_balance * risk_per_trade
+
+    # 3. 매수 시 발생할 수수료 (매도 시 수수료는 별도)
+    fee_amount = entry_price * fee_rate
+
+    # 4. 코인 1개당 실제 손실: (진입-손절) + 매수 수수료
+    per_unit_loss = price_diff + fee_amount
+
+    # 5. 최대 손실 한도를 넘지 않는 선에서 매수할 수 있는 코인 수(또는 계약 수)
+    if per_unit_loss > 0:
+        position_size = max_risk_amount / per_unit_loss
+    else:
+        position_size = 0.0
+
+    return position_size
+
+
+def split_position_sizes(
+    total_position_size: float,
+    split_count: int = 3,
+    scale_mode: str = 'equal'
+) -> list:
+    """
+    ------------------------------------------------------------------------------------------------
+    2) 돌파매매 전략에서 자주 활용되는 '피라미딩(분할매매)' 기법을 예시로 구현한 함수
+    ------------------------------------------------------------------------------------------------
+    - "돌파 성공 후 추세가 이어질 때, 매수 물량을 추가"하는 기법을 '피라미딩'이라고 합니다.
+      예) 돌파 매매 후 상승 추세가 유효하면 2차 매수를 더 넣어 수익을 극대화.
+    - 여기서는 '전체 매수할 물량'이 정해져 있다고 할 때, 이를 몇 번에 나누어 살지,
+      그리고 그 분할 비율을 어떻게 조정할지(균등/피라미드 업/피라미드 다운)를 간단히 보여줍니다.
+
+    파라미터 설명
+    -------------
+    1) total_position_size : float
+       - 최종적으로 매수하고자 하는 전체 코인 수(또는 계약 수)
+         (예: calculate_position_size()로부터 받은 결과)
+    2) split_count : int, optional
+       - 몇 번에 나누어 매수할지 (기본값 3번)
+    3) scale_mode : str, optional
+       - 'equal'       : 균등 분할 (예: 총 9개, 3번 -> 각 3개씩)
+       - 'pyramid_up'   : 뒤로 갈수록 더 많은 비중으로 매수 (1 : 2 : 3)
+                          => 추세가 확실해질수록 매수량을 늘려 수익 극대화
+       - 'pyramid_down' : 반대로 앞에서 많이 매수하고, 뒤로 갈수록 줄임 (3 : 2 : 1)
+                          => 돌파 직후 초기포지션을 크게 잡는 전략과 유사
+
+    반환값
+    -------
+    list
+        각 분할 단계(예: 3단계)에 할당될 매수 물량(코인 수) 목록
+
+    예시
+    ----
+    >>> split_position_sizes(9, split_count=3, scale_mode='equal')
+    [3.0, 3.0, 3.0]
+
+    >>> split_position_sizes(9, split_count=3, scale_mode='pyramid_up')
+    [1.5, 3.0, 4.5]   # 합계=9
+
+    관련 개념 (돌파매매 전략과의 연결)
+    --------------------------------
+    - 책에서는 '돌파 지점'을 여러 구간으로 나눠, 돌파 후 일정 % 더 오르면 2차 매수,
+      또 일정 % 더 오르면 3차 매수… 이런 식으로 '피라미딩'을 제안합니다.
+    - 본 함수는 '몇 번에 나누고', '어떤 비율로 나눌지'만 계산하는 예시입니다.
+      실제로 "언제 2차 매수를 실행하느냐?"(가격 조건 등)는 별도 로직 필요.
+    """
+    # 1) 매수 횟수(split_count)는 1 이상이어야 한다.
+    if split_count < 1:
+        raise ValueError("split_count는 최소 1 이상의 정수여야 합니다.")
+
+    # 2) 지원하는 모드(세 가지) 확인
+    if scale_mode not in ['equal', 'pyramid_up', 'pyramid_down']:
+        raise ValueError("scale_mode는 'equal', 'pyramid_up', 'pyramid_down' 중 하나를 사용하세요.")
+
+    # 3) 분할매매 계산 로직
+    if scale_mode == 'equal':
+        # (A) 균등 분할
+        # 예: 총 9개를 3회 -> 각 3개씩
+        split_size = total_position_size / split_count
+        return [split_size] * split_count
+
+    elif scale_mode == 'pyramid_up':
+        # (B) 피라미드 업
+        # 예: split_count=3 이면 비율은 (1 : 2 : 3) = 합계 6
+        # => 첫 번째 분할은 총량의 1/6, 두 번째 분할은 2/6, 세 번째 분할은 3/6
+        ratio_sum = split_count * (split_count + 1) / 2  # n(n+1)/2 공식
+        sizes = []
+        for i in range(1, split_count + 1):
+            portion = (i / ratio_sum) * total_position_size
+            sizes.append(portion)
+        return sizes
+
+    elif scale_mode == 'pyramid_down':
+        # (C) 피라미드 다운
+        # 예: split_count=3 이면 비율은 (3 : 2 : 1) = 합계 6
+        # => 첫 번째 분할은 총량의 3/6, 두 번째 2/6, 세 번째 1/6
+        ratio_sum = split_count * (split_count + 1) / 2
+        sizes = []
+        # range(3, 0, -1) -> 3, 2, 1
+        for i in range(split_count, 0, -1):
+            portion = (i / ratio_sum) * total_position_size
+            sizes.append(portion)
+        return sizes
+
+[참고사항2]
+아래는 **복잡한 백테스트 로직**을 **단계별**로 구축해나갈 때 유용한 **가이드라인**입니다.  
+(실무 경험상, 이런 과정을 밟으면 “큰 그림이 어지럽지 않게” 조금씩 확장해나갈 수 있습니다.)
+
+---
+
+## 1. 가장 ‘단순한’ 버전부터 시작
+
+1. **단순 로직(예: 단일 타임프레임, 단일 심볼, 고정 파라미터)** 으로 먼저 백테스트 시스템을 ‘완성’해보세요.  
+   - 예) “BTC/USDT, 4시간봉”에서 “전고점 돌파 & 거래량 필터” + “ATR 손절 & 5% 익절” 정도의 **아주 단순한** 전략.  
+   - 여기서도 “시그널 계산 → 포지션 진입 → (손절/익절) → 청산”이 최소한으로 동작하면 됩니다.  
+
+2. **백테스트 엔진(루프) 골격** 잡기  
+   - 캔들(OHLCV)을 한 봉씩 순회하며,  
+     - (a) 포지션 보유 중이면 손절·익절 체크,  
+     - (b) 보유 중이 아니면 시그널 체크, → 진입  
+     - (c) 거래 내역(진입·청산 로그) 및 잔고 변동 기록  
+   - 한 번 이 기본 틀만 돌아가도, `최종 수익률`, `승률`, `손익비` 등 지표를 계산할 수 있게 됩니다.  
+
+3. **단순 버전도 ‘완성’**이 중요  
+   - 흔히 “이것도 넣어야지, 저것도 넣어야지” 하다가 정작 “동작하는 코드”를 못 만드는 경우가 많습니다.  
+   - 일단 **단일 타임프레임 + 단일 심볼 + 고정 파라미터**로,  
+     - **(a) 백테스트 결과가 정상적으로 나오는지**,  
+     - **(b) 매수·매도 시점이 엑셀·차트로 검증했을 때 맞는지**  
+   - 를 먼저 확인하면, 자신감도 생기고 전반적인 구조도 파악이 쉬워집니다.
+
+---
+
+## 2. 다중 타임프레임(MTF)로 확장
+
+1. **데이터 수집 측면**  
+   - 이미 4시간봉(예)만 있던 것을, “1일봉, 1시간봉” 등 원하는 타임프레임을 추가로 DB에 쌓거나, CSV로 준비.  
+
+2. **시그널 계산 측면**  
+   - “하이타임프레임(예: 1일봉) 추세 확인 → 로우타임프레임(예: 4시간봉) 돌파 시그널만 매매” 같은 로직이 많습니다.  
+   - 구현 방식은 크게 두 가지:
+     - (A) **단일 DataFrame**에 여러 타임프레임 데이터를 병합(merge)하여, “일봉 지표 컬럼”, “4시간봉 지표 컬럼”을 같이 가지고 있음.  
+     - (B) **각 타임프레임별로 별도 DataFrame**을 유지하고, 백테스트 중에 시간 축을 맞춰가며(동기화) 참조.  
+
+3. **백테스트 루프에서의 처리**  
+   - “이번 4시간봉 시점에, 일봉에서의 (MA, MACD 등) 최근 값은 무엇인가?”를 찾아 반영.  
+   - 데이터 인덱스/타임스탬프를 맞춰서 다룰 수 있어야 하므로, **리샘플링**이나 **정렬**이 필요할 수 있습니다.  
+
+4. **차근차근**  
+   - 처음부터 여러 타임프레임 다 쓰려면 복잡도가 확 올라가니,  
+   - **(1일봉 시그널) + (4시간봉 매매 타이밍)** 같은 2개 TF 조합부터 시도해보면 좋습니다.
+
+---
+
+## 3. 동적 파라미터 조정(Adaptive Parameter)
+
+1. **정적 파라미터** 예  
+   - (예) 돌파기간 `window=20`, ATR배수 `atr_multiplier=2.0`, 거래량 배수 `vol_factor=1.5` …  
+   - 백테스트 시, 하나씩 바꿔가며 실험(브루트포스) → 최적값 찾기(파라메트릭 스윕).  
+   - 이 단계까지만 해도 충분히 할 일이 많습니다.
+
+2. **동적(Adaptive) 파라미터**  
+   - 시간 경과나 시장 상황에 따라 파라미터를 실시간으로 변경하는 기법. (예: 변동성이 높아지면 window를 줄이고, 낮아지면 늘린다 등)  
+   - 구현 방식:  
+     - 백테스트 루프 속에서, 일정 주기(예: 매 N 봉)마다 시장 상태를 판단 → 파라미터 재설정.  
+     - 또는, 일봉 지표나 VIX(파생상품) 등으로 변동성 지표를 측정해, “ATR 높으면 돌파기간 단축” 같은 규칙을 세움.
+
+3. **단계적 접근**  
+   - 먼저 “정적 파라미터 전략”을 충분히 시험해보고, 그 이후 “어떤 기준으로 파라미터를 동적으로 바꿀지” 규칙을 구체화.  
+   - 동적 파라미터는 구현 복잡도 + 과적합 가능성도 올라가기 때문에, 주의 깊게 진행해야 합니다.
+
+---
+
+## 4. 과적합 방지
+
+1. **과적합(Overfitting)**이란?  
+   - 백테스트 결과는 ‘과거 데이터’에서 최적화되었지만, 실제 미래 시장에서는 성과가 기대에 미치지 못하는 현상.  
+   - 파라미터를 너무 많이 혹은 너무 세밀하게 튜닝하면 발생 확률이 커짐.
+
+2. **대표적 방법**  
+   1) **Out-of-Sample(검증 구간) 분리**  
+      - 과거 5년치 데이터 중 3년은 훈련(파라미터 최적화), 나머지 2년은 검증(테스트) 구간으로 나누어, 최적 파라미터를 검증 구간에 적용해보는 방식.  
+   2) **Walk-Forward Analysis(워크포워드)**  
+      - 일정 기간(예: 1년) 간 데이터를 학습해 파라미터를 정하고, 그 파라미터로 다음 3개월(실전)에 적용 → 성과 기록. → 다음 구간으로 넘어가 반복.  
+   3) **Cross Validation**  
+      - 여러 시계열 구간을 겹치지 않게 나누어 각각 성능을 평가.  
+   4) **복잡도 줄이기**  
+      - 파라미터 개수를 너무 많이 두지 않고(단순화), “기초적 로직” 위주로 전략을 설계.
+
+3. **테스트 자동화**  
+   - 백테스트 스크립트를 짜놓고, 파라미터 여러 후보(예: window=10,20,30 / atr_multiplier=1.5,2.0,2.5 …)에 대해 일괄 실행시키면서,  
+   - Out-of-Sample 구간 성능이 가장 좋은 쪽을 찾거나, 여러 지표(승률, MDD, Profit Factor 등)를 비교해서 최종 선택.
+
+---
+
+## 5. 페이퍼 트레이딩(실전 모의)
+
+1. **백테스트 → 실전 적용 전**  
+   - 한두 달 정도 “실시간 모의매매(페이퍼 트레이딩)”를 운영해보면,  
+   - 백테스트와 실제 시장 흐름의 차이(슬리피지, 재정거래, API 지연 등)를 체감할 수 있음.
+
+2. **실시간 데이터 처리**  
+   - 백테스트는 과거 데이터 일괄처리지만, 페이퍼 트레이딩은 **실시간으로 들어오는 시세**를 받으며, 매 봉이 끝날 때마다 전략을 수행.  
+   - 구조적으로는 “백테스트의 루프”가 “실시간 스케줄러(혹은 이벤트)”로 바뀐 형태.  
+
+3. **주문 체결 시뮬레이션**  
+   - 페이퍼 트레이딩에서, 거래소 API를 통해 ‘가상 주문’만 넣고, 체결 여부를 mock(모의) 처리.  
+   - 이 과정을 통해, **“전략이 실제 시장의 체결 지연, 가격 변동을 어느 정도 감안 가능한지”** 점검 가능.
+
+---
+
+## 6. 정리 (추천 순서)
+
+1. **가장 단순 버전**의 백테스트 엔진부터 만든다.  
+   - 단일 타임프레임, 단일 심볼, 고정 파라미터  
+   - 시그널 + 포지션 관리 + 매매 기록 + 성과 지표 계산
+
+2. **실제 잘 동작하는지**(논리검증) → 차트로 시각화하여 “여기서 매수, 여기서 매도”가 맞는지 확인.  
+   - 이렇게 작은 단위라도 실질적으로 ‘완성’된 상태를 먼저 얻어야 합니다.
+
+3. **다중 타임프레임** → 하나씩 확장  
+   - 데이터 병합/인덱스 동기화  
+   - 백테스트 루프에서 “(고차원) 일봉 지표”와 “(저차원) 4시간봉 시그널” 함께 활용
+
+4. **파라미터 튜닝 / 동적 파라미터**  
+   - 처음엔 정적 튜닝부터 → 나중에 동적 로직으로 발전  
+   - 워크포워드/Out-of-Sample을 통해 과적합 방지
+
+5. **페이퍼 트레이딩**  
+   - 실시간 시장 데이터를 받아 모의체결  
+   - 슬리피지, 수수료 등을 좀 더 현실적으로 반영해보고, 결과를 확인
+
+6. (최종) **실거래**  
+   - 소액으로 시도 → 점차 확대
+
+---
+
+## 결론
+
+- **단계별로 확장**하면 충분히 할 수 있습니다.  
+- 처음부터 모든 기능(다중 타임프레임, 동적 파라미터, 과적합 방지 등)을 한 번에 구현하려고 하면 **복잡도가 기하급수적으로 상승**해서 혼란에 빠지게 됩니다.  
+- **“단순한 버전”**을 일단 **빈틈없이 동작**시키고 → **하나씩** 확장하는 방식이,  
+  - 학습 효율도 높고,  
+  - 디버깅/유지보수도 용이하며,  
+  - 결국엔 더 빨리 완성할 수 있는 지름길입니다.  
+
+이런 순서대로 진행해보시면, 중간 중간에 “내가 어떤 부분을 해야 하지?”라는 막막함이 훨씬 줄어드실 거예요.  
+
+[지시사항]
+"상황"과 "참고사항1"을 참조해서 "참고사항2"의 "## 1. 가장 ‘단순한’ 버전부터 시작"에 대한 파일들을 작성해줘.

@@ -1,38 +1,8 @@
-# trade_logic.py
+# strategies/stop_loss_take_profit.py
 
 import pandas as pd
 import numpy as np
 import ta  # 'ta' 라이브러리는 여러 기술적 지표(ATR, RSI, MACD 등)를 제공
-
-def apply_entry_signal(
-    df: pd.DataFrame,
-    entry_colname: str = 'long_entry'
-) -> pd.DataFrame:
-    """
-    이전 단계에서 생성된 시그널(breakout_signal, volume_condition, confirmed_breakout)을 종합하여,
-    최종 매수 여부(long_entry)를 확정하는 로직을 구현한 함수입니다.
-    
-    매개변수
-    ----------
-    df : pd.DataFrame
-        시가, 고가, 저가, 종가, 거래량, 및 돌파 관련 시그널 등이 포함된 DataFrame
-    entry_colname : str
-        매수 여부를 저장할 컬럼명 (기본값: 'long_entry')
-    
-    반환값
-    ----------
-    pd.DataFrame
-        원본 DataFrame에 'long_entry' 컬럼이 추가된 상태
-    """
-    # 예시 로직:
-    # 전고점 돌파, 거래량 조건, 확정 돌파가 모두 True이면 매수 신호를 True로 설정
-    df[entry_colname] = (
-        (df['breakout_signal'] == True) &    # 돌파 여부
-        (df['volume_condition'] == True) &   # 거래량 조건
-        (df['confirmed_breakout'] == True)   # 확정 돌파
-    )
-    return df
-
 
 def apply_stop_loss_atr(
     df: pd.DataFrame,
@@ -121,55 +91,4 @@ def apply_take_profit_ratio(
     """
     # 익절가 = 진입가 * (1 + 목표 수익률)
     df[tp_colname] = df[entry_price_col] * (1 + profit_ratio)
-    return df
-
-
-def generate_trade_signals(
-    df: pd.DataFrame,
-    atr_window: int = 14,
-    atr_multiplier: float = 2.0,
-    profit_ratio: float = 0.05,
-) -> pd.DataFrame:
-    """
-    종합 매매 로직을 한 번에 수행하는 함수입니다.
-    1) apply_entry_signal : 매수 신호(long_entry) 확정
-    2) apply_stop_loss_atr: ATR 기반 손절가(stop_loss_price) 계산
-    3) apply_take_profit_ratio: 고정 이익률 기반 익절가(take_profit_price) 계산
-    
-    매개변수
-    ----------
-    df : pd.DataFrame
-        돌파, 거래량, 확정 돌파 등이 포함된 DataFrame
-    atr_window : int
-        ATR 계산 시 사용할 봉 개수 (기본값: 14)
-    atr_multiplier : float
-        ATR에 곱해줄 배수 (기본값: 2.0)
-    profit_ratio : float
-        익절 목표 수익률 (기본값: 0.05 => 5% 수익 시 익절)
-    
-    반환값
-    ----------
-    pd.DataFrame
-        원본 DataFrame에 매수 신호, 손절가, 익절가 등이 추가된 상태
-    """
-    # 1) 매수 신호 확정
-    df = apply_entry_signal(df, entry_colname='long_entry')
-    
-    # 2) ATR 손절가 계산
-    df = apply_stop_loss_atr(
-        df,
-        atr_window=atr_window,
-        atr_multiplier=atr_multiplier,
-        sl_colname='stop_loss_price',
-        entry_price_col='entry_price'
-    )
-    
-    # 3) 고정 이익률 기반 익절가 계산
-    df = apply_take_profit_ratio(
-        df,
-        profit_ratio=profit_ratio,
-        tp_colname='take_profit_price',
-        entry_price_col='entry_price'
-    )
-    
     return df

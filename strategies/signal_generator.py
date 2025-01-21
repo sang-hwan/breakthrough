@@ -1,4 +1,4 @@
-# signal_generator.py
+# strategies/signal_generator.py
 
 import pandas as pd
 
@@ -44,45 +44,13 @@ def calculate_breakout_signals(
     df['volume_condition'] = df['volume'] > (vol_factor * df[f'vol_ma_{window}'])
     
     # 4) '확정 돌파(confirmed_breakout)' 계산
-    #    - 예: confirm_bars=2 => 돌파 신호(breakout_signal)가 연속 2봉 이상 True 이어야 확정으로 판정
+    #    - confirm_bars: 연속적인 봉의 개수로, 돌파 신호(breakout_signal)가 해당 봉 수만큼 True일 때 확정 돌파로 간주
+    #    - rolling(confirm_bars): 지정된 봉 수(confirm_bars)에 대한 rolling 합계를 계산하여 True의 연속성을 확인
+    #    - sum() == confirm_bars: 지정된 연속 봉 동안 모든 값이 True일 경우 확정 돌파(True)로 설정
     df['confirmed_breakout'] = (
-        df['breakout_signal']
-        .rolling(confirm_bars)               # 최근 confirm_bars 봉 범위로 rolling
-        .apply(lambda x: all(x), raw=True)   # 해당 범위 내의 값이 모두 True인지 확인
-        .fillna(False)                       # 첫 부분(rolling 불충분 구간)은 NaN이므로 False 처리
+        df['breakout_signal'].rolling(confirm_bars).sum() == confirm_bars
     )
-    
-    return df
-
-
-def calculate_vcp_pattern(
-    df: pd.DataFrame,
-    window_list: list = [20, 10, 5]
-) -> pd.DataFrame:
-    """
-    VCP(Volatility Contraction Pattern) 패턴을 단순 계산하는 함수입니다.
-    ------------------------------------------------------------------------
-    매개변수(Parameter)
-    - df: 시가, 고가, 저가, 종가, 거래량 등의 정보를 담고 있는 DataFrame
-    - window_list: 변동 폭(고가-저가)의 이동평균을 계산할 기간을 담은 리스트 (예: [20, 10, 5])
-    ------------------------------------------------------------------------
-    반환(Return)
-    - 원본 DataFrame(df)에 VCP 관련 컬럼이 추가된 DataFrame.
-      (예: range_ma_20, range_ma_10, range_ma_5, vcp_signal 등)
-    """
-
-    # 1) 각 window마다 (고가 - 저가)의 이동평균을 구함
-    #    예: window=20 -> 최근 20봉의 (high - low)의 평균 (변동 폭 평균)
-    for w in window_list:
-        df[f'range_ma_{w}'] = (df['high'] - df['low']).rolling(w).mean()
-    
-    # 2) (단순한 예시)
-    #    - ex) window_list = [20, 10, 5]
-    #    - 세 구간의 변동 폭 평균이 큰 순서대로(20봉 > 10봉 > 5봉) '연속 감소'한다면 VCP로 판정
-    w1, w2, w3 = window_list
-    df['vcp_signal'] = (
-        (df[f'range_ma_{w1}'] > df[f'range_ma_{w2}']) &
-        (df[f'range_ma_{w2}'] > df[f'range_ma_{w3}'])
-    )
+    # 초기 데이터 부족으로 인해 NaN 값이 포함된 구간을 False로 채움
+    df['confirmed_breakout'] = df['confirmed_breakout'].fillna(False)
     
     return df

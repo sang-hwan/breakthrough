@@ -3,3 +3,5 @@ venv/
 __pycache__/
 
 # 파일
+__init__.py
+*.zip
