@@ -1,3 +1,19 @@
+[역할 부여]
+너는 SW 전문가이자, 동시에 투자 전문가야.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 [상황]
 코인 시장에 **systrader79**와 **김대현 저자**의 저서 *“돌파매매 전략”* 을 적용해서 자동매매 하는 프로그램을 만들고 있어.
 연 10~20% 수익을 목표로 약 200~500만원의 시드머니를 투자할 생각이야.
@@ -13,9 +29,6 @@
 
 
 [참고사항1]
-아래 코드에 대해 비전문가도 이해할 수 있게 달아줘.
-그리고 보기 좋게 주석 정리해줘.
----
 # data_collection/fetch_binance_data.py
 # 이 파일은 바이낸스(Binance) 거래소에서 시세 데이터를 수집하는 데 사용됩니다.
 
@@ -177,7 +190,7 @@ DATABASE = {
     'dbname': 'my_trading_db'   # 연결할 데이터베이스의 이름
 }
 ---
-# data_collection/save_to_postgres.py
+# data_collection/postgres_ohlcv_handler.py
 
 from sqlalchemy import create_engine # SQL 작업을 쉽고 직관적으로 처리하는 라이브러리
 import psycopg2 # PostgreSQL 데이터베이스와 직접 통신할 때 사용.
@@ -298,7 +311,7 @@ from data_collection.fetch_binance_data import (
     fetch_binance_historical_ohlcv,  # 바이낸스에서 역사적 OHLCV 데이터 수집 함수
     fetch_binance_latest_ohlcv       # 바이낸스에서 최신 OHLCV 데이터 수집 함수
 )
-from data_collection.save_to_postgres import save_ohlcv_to_postgres  # 데이터 저장 함수
+from data_collection.postgres_ohlcv_handler import save_ohlcv_to_postgres  # 데이터 저장 함수
 
 def collect_data_for_backtest(
     symbols: List[str],
@@ -361,7 +374,7 @@ def collect_data_for_backtest(
             # 다음 요청 전 잠시 대기 (API 부하 방지)
             time.sleep(pause_sec)
 ---
-# strategies/signal_generator.py
+# strategies/breakout_signal.py
 
 import pandas as pd # Pandas 라이브러리: 데이터 분석 및 처리 도구
 
@@ -434,6 +447,113 @@ def calculate_breakout_signals(
     # NaN(초기 값 없음) 처리: False로 채움
     df['confirmed_breakout'] = df['confirmed_breakout'].fillna(False)
 
+    return df
+---
+# strategies/technical_indicators.py
+
+import pandas as pd
+
+# `ta` 라이브러리를 사용하여 기술적 지표를 계산합니다.
+from ta.trend import SMAIndicator, MACD # 추세 지표(SMA, MACD 등)
+from ta.momentum import RSIIndicator # 모멘텀 지표(RSI 등)
+from ta.volatility import BollingerBands # 변동성 지표(볼린저 밴드 등)
+
+# 단순 이동평균(SMA) 계산 함수
+def apply_sma(
+    df: pd.DataFrame,  # 시세 데이터 (DataFrame 형식)
+    price_col: str = 'close',  # 사용할 가격 데이터 컬럼 (기본값: '종가')
+    window: int = 20,  # 이동평균 기간 (기본값: 20일)
+    fillna: bool = False,  # 결측치(NaN) 처리 여부
+    colname: str = 'sma'  # 계산 결과를 저장할 컬럼 이름
+) -> pd.DataFrame:
+    """
+    단순 이동평균(SMA)을 계산하고 DataFrame에 결과를 추가합니다.
+    """
+    # ta 라이브러리의 SMAIndicator 클래스 생성
+    indicator = SMAIndicator(
+        close=df[price_col],
+        window=window,
+        fillna=fillna
+    )
+    # 계산된 SMA 값을 새로운 컬럼으로 추가
+    df[colname] = indicator.sma_indicator()
+    return df
+
+# MACD (이동평균 수렴/확산) 계산 함수
+def apply_macd(
+    df: pd.DataFrame,
+    price_col: str = 'close',  # 사용할 가격 데이터 컬럼
+    window_slow: int = 26,  # 느린 이동평균 기간
+    window_fast: int = 12,  # 빠른 이동평균 기간
+    window_sign: int = 9,  # 시그널선 이동평균 기간
+    fillna: bool = False,  # 결측치 처리 여부
+    prefix: str = 'macd_'  # 결과 컬럼 접두사
+) -> pd.DataFrame:
+    """
+    MACD 지표를 계산하고 MACD, 시그널선, 히스토그램을 추가합니다.
+    """
+    # MACD 지표 생성
+    macd_indicator = MACD(
+        close=df[price_col],
+        window_slow=window_slow,
+        window_fast=window_fast,
+        window_sign=window_sign,
+        fillna=fillna
+    )
+    # 계산 결과를 DataFrame에 추가
+    df[f'{prefix}macd'] = macd_indicator.macd()
+    df[f'{prefix}signal'] = macd_indicator.macd_signal()
+    df[f'{prefix}diff'] = macd_indicator.macd_diff()
+    return df
+
+# RSI (Relative Strength Index) 계산 함수
+def apply_rsi(
+    df: pd.DataFrame,
+    price_col: str = 'close',  # 사용할 가격 데이터 컬럼
+    window: int = 14,  # RSI 계산 기간
+    fillna: bool = False,  # 결측치 처리 여부
+    colname: str = 'rsi'  # 결과를 저장할 컬럼 이름
+) -> pd.DataFrame:
+    """
+    RSI 지표를 계산하고 DataFrame에 추가합니다.
+    """
+    # RSIIndicator 클래스 생성
+    rsi_indicator = RSIIndicator(
+        close=df[price_col],
+        window=window,
+        fillna=fillna
+    )
+    # 계산된 RSI 값을 DataFrame에 추가
+    df[colname] = rsi_indicator.rsi()
+    return df
+
+# 볼린저 밴드 계산 함수
+def apply_bollinger(
+    df: pd.DataFrame,
+    price_col: str = 'close',  # 사용할 가격 데이터 컬럼
+    window: int = 20,  # 이동평균 및 표준편차 계산 기간
+    window_dev: float = 2.0,  # 표준편차 곱
+    fillna: bool = False,  # 결측치 처리 여부
+    prefix: str = 'bb_'  # 결과 컬럼 접두사
+) -> pd.DataFrame:
+    """
+    볼린저 밴드를 계산하고 관련 데이터를 DataFrame에 추가합니다.
+    """
+    # BollingerBands 클래스 생성
+    bb = BollingerBands(
+        close=df[price_col],
+        window=window,
+        window_dev=window_dev,
+        fillna=fillna
+    )
+    # 각 계산 결과를 DataFrame에 추가
+    df[f'{prefix}mavg'] = bb.bollinger_mavg()  # 중간선
+    df[f'{prefix}hband'] = bb.bollinger_hband()  # 상단선
+    df[f'{prefix}lband'] = bb.bollinger_lband()  # 하단선
+    df[f'{prefix}pband'] = bb.bollinger_pband()  # 퍼센트 밴드
+    df[f'{prefix}wband'] = bb.bollinger_wband()  # 폭 밴드
+    df[f'{prefix}hband_ind'] = bb.bollinger_hband_indicator()  # 상단선 접촉 여부
+    df[f'{prefix}lband_ind'] = bb.bollinger_lband_indicator()  # 하단선 접촉 여부
     return df
 ---
 # strategies/stop_loss_take_profit.py
@@ -635,8 +755,8 @@ import matplotlib.pyplot as plt # 시각화를 위한 matplotlib
 import pandas as pd
 
 # 데이터베이스 및 시그널 계산 함수
-from data_collection.save_to_postgres import load_ohlcv_from_postgres
-from strategies.signal_generator import calculate_breakout_signals
+from data_collection.postgres_ohlcv_handler import load_ohlcv_from_postgres
+from strategies.breakout_signal import calculate_breakout_signals
 
 def verify_breakout_signals(
     symbol: str,
@@ -743,8 +863,8 @@ def verify_breakout_signals(
         plt.ylabel("Price")
         plt.legend()
         plt.show()
-   ---
-   # backtesting/performance_metrics.py
+---
+# backtesting/performance_metrics.py
 
 # 데이터 분석과 수치 연산을 위한 라이브러리
 import pandas as pd
@@ -913,312 +1033,429 @@ def print_performance_report(trades_df: pd.DataFrame, initial_balance: float) ->
 ---
 # backtesting/backtest_simple.py
 
-# 데이터 분석 및 수치 계산을 위한 라이브러리
 import pandas as pd
 import numpy as np
 
-# 필요한 함수와 모듈 불러오기
-from data_collection.save_to_postgres import load_ohlcv_from_postgres
-from strategies.signal_generator import calculate_breakout_signals
+# 데이터베이스에서 시세 데이터를 불러오는 함수
+from data_collection.postgres_ohlcv_handler import load_ohlcv_from_postgres
+
+# 단기 돌파 전략을 위한 신호 계산 함수
+from strategies.breakout_signal import calculate_breakout_signals
+
+# 장기 보조 지표 계산을 위한 함수 (SMA, MACD, RSI, Bollinger Bands)
+from strategies.technical_indicators import (
+    apply_sma,  # 단순 이동평균
+    apply_macd,  # 이동평균 수렴·확산
+    apply_rsi,  # 상대 강도 지수
+    apply_bollinger  # 볼린저 밴드
+)
+
+# 손절/익절 전략과 리스크 관리를 위한 함수
 from strategies.stop_loss_take_profit import apply_stop_loss_atr, apply_take_profit_ratio
 from strategies.risk_management import calculate_position_size
+
+# 백테스트 결과를 출력하는 함수
 from backtesting.performance_metrics import print_performance_report
 
+
 def run_simple_backtest(
-    symbol="BTC/USDT",
-    timeframe="4h",
-    window=20,
-    volume_factor=1.5,
-    confirm_bars=2,
-    breakout_buffer=0.0,
-    atr_window=14,
-    atr_multiplier=2.0,
-    profit_ratio=0.05,
-    account_size=10_000.0,
-    risk_per_trade=0.01,
-    fee_rate=0.001
+    symbol="BTC/USDT",  # 거래할 종목 (예: 비트코인/테더)
+    short_timeframe="4h",  # 단기 봉 주기 (4시간)
+    long_timeframe="1d",  # 장기 봉 주기 (1일)
+    window=20,  # 돌파 전략에 사용할 기간
+    volume_factor=1.5,  # 돌파 신호의 거래량 필터 기준
+    confirm_bars=2,  # 돌파 신호 확인을 위한 추가 봉 수
+    breakout_buffer=0.0,  # 돌파 신호 버퍼 (추가 여유 범위)
+    atr_window=14,  # ATR(평균 진폭) 계산 기간
+    atr_multiplier=2.0,  # 손절 기준 ATR 배수
+    profit_ratio=0.05,  # 고정 익절 비율
+    account_size=10_000.0,  # 초기 계좌 잔액
+    risk_per_trade=0.01,  # 1회 매매 시 총 자산 대비 위험 비율
+    fee_rate=0.001  # 거래 수수료 비율
 ):
     """
-    간단한 백테스트를 실행하는 함수입니다.
+    다중 타임프레임 백테스트 실행 함수.
 
-    주요 기능:
-    ----------
-    1. 과거 데이터를 로드하여 백테스트를 실행합니다.
-    2. 돌파 신호와 거래량 조건을 통해 매수 시점을 결정합니다.
-    3. ATR 기반 손절 및 고정 익절 전략을 적용합니다.
-    4. 백테스트 결과를 계산하고, 성과를 출력합니다.
+    단기 전략(4시간 봉)을 사용해 돌파 신호를 확인하고,
+    장기 전략(1일 봉)으로 보조 지표를 통해 신호를 검증합니다.
 
-    매개변수:
-    ----------
-    - symbol (str): 테스트할 자산의 심볼 (예: "BTC/USDT")
-    - timeframe (str): 데이터의 시간 간격 (예: "4h")
-    - window (int): 전고점을 계산하는 기간
-    - volume_factor (float): 거래량 필터 배수
-    - confirm_bars (int): 돌파 확정을 위한 봉 개수
-    - breakout_buffer (float): 돌파 기준에 추가할 버퍼
-    - atr_window (int): ATR 계산 기간
-    - atr_multiplier (float): ATR 기반 손절 배수
-    - profit_ratio (float): 고정 익절 비율
-    - account_size (float): 초기 계좌 자산
-    - risk_per_trade (float): 매매당 최대 손실 비율
-    - fee_rate (float): 매수 수수료 비율
-
-    반환값:
-    ----------
-    - DataFrame: 각 매매에 대한 세부 정보가 담긴 DataFrame
+    1. 단기 봉 데이터를 사용해 돌파 신호 계산
+    2. 장기 봉 데이터를 통해 SMA, MACD, RSI, Bollinger Bands 조건 확인
+    3. 매매 시 ATR 기반 손절과 고정 비율 익절 적용
+    4. 결과를 출력하여 총 수익률, 성과 등을 확인
     """
 
     # -------------------------------
-    # 1) 과거 데이터 불러오기
+    # 1) 데이터 불러오기
     # -------------------------------
-    table_name = f"ohlcv_{symbol.replace('/', '').lower()}_{timeframe}"
-    df = load_ohlcv_from_postgres(table_name=table_name)
-    df = df.sort_index()  # 시간순 정렬
+    # 데이터베이스에서 단기/장기 데이터를 불러옵니다.
+    short_table = f"ohlcv_{symbol.replace('/', '').lower()}_{short_timeframe}"  # 단기 데이터 테이블 이름
+    long_table = f"ohlcv_{symbol.replace('/', '').lower()}_{long_timeframe}"  # 장기 데이터 테이블 이름
 
-    if df.empty:
-        print("DataFrame is empty! 데이터가 없습니다.")
+    # 단기/장기 데이터를 로드
+    df_short = load_ohlcv_from_postgres(table_name=short_table)
+    df_long = load_ohlcv_from_postgres(table_name=long_table)
+
+    # 데이터 정렬
+    df_short.sort_index(inplace=True)
+    df_long.sort_index(inplace=True)
+
+    # 데이터 유효성 검사
+    if df_short.empty:
+        print(f"[ERROR] 단기 데이터가 비어 있습니다: {short_table}")
+        return None
+    if df_long.empty:
+        print(f"[ERROR] 장기 데이터가 비어 있습니다: {long_table}")
         return None
 
-    print(f"Loaded data from {table_name}: {df.shape[0]} rows")
+    print(f"[INFO] 단기 데이터 로드 완료: {df_short.shape[0]} 행")
+    print(f"[INFO] 장기 데이터 로드 완료: {df_long.shape[0]} 행\n")
 
     # -------------------------------
-    # 2) 돌파 시그널 계산
+    # 2) 돌파 신호 계산 (단기 데이터)
     # -------------------------------
-    df = calculate_breakout_signals(
-        df=df,
-        window=window,
-        vol_factor=volume_factor,
-        confirm_bars=confirm_bars,
-        use_high=False,
-        breakout_buffer=breakout_buffer
+    # 단기 봉 데이터에서 돌파 신호를 계산합니다.
+    df_short = calculate_breakout_signals(
+        df=df_short,
+        window=window,  # 돌파 기간
+        vol_factor=volume_factor,  # 거래량 필터
+        confirm_bars=confirm_bars,  # 추가 확인 봉 수
+        use_high=False,  # 고점 대신 종가 기준 사용
+        breakout_buffer=breakout_buffer  # 돌파 신호 버퍼
     )
 
-    # 돌파 신호와 관련된 통계를 출력
-    print("\nSignal Stats:")
-    print(f"Breakout signals: {df['breakout_signal'].sum()}")
-    print(f"Confirmed breakouts: {df['confirmed_breakout'].sum()}")
+    # 돌파 신호 통계 출력
+    print("[단기 봉] 신호 통계:")
+    print(f"  -> 돌파 신호: {df_short['breakout_signal'].sum()} 개")
+    print(f"  -> 확인된 돌파: {df_short['confirmed_breakout'].sum()} 개")
 
     # -------------------------------
-    # 3) ATR 손절 및 고정 익절
+    # 3) 보조 지표 계산 (장기 데이터)
     # -------------------------------
-    df['long_entry'] = df['confirmed_breakout'] & df['volume_condition']
 
-    df = apply_stop_loss_atr(
-        df=df,
-        atr_window=atr_window,
-        atr_multiplier=atr_multiplier,
-        sl_colname='stop_loss_price',
-        entry_price_col='entry_price'
+    # (a) SMA 200 계산
+    df_long = apply_sma(
+        df=df_long,
+        price_col='close',  # 종가를 기준으로 계산
+        window=200,  # 200일 이동평균
+        colname='sma200'  # 결과를 저장할 컬럼 이름
     )
 
-    df = apply_take_profit_ratio(
-        df=df,
-        profit_ratio=profit_ratio,
-        tp_colname='take_profit_price',
-        entry_price_col='entry_price'
+    # (b) MACD 계산
+    df_long = apply_macd(
+        df=df_long,
+        price_col='close',  # 종가 사용
+        window_slow=26,  # 느린 이동평균
+        window_fast=12,  # 빠른 이동평균
+        window_sign=9,  # 시그널 이동평균
+        prefix='macd_'  # 컬럼 접두사
+    )
+
+    # (c) RSI(14) 계산
+    df_long = apply_rsi(
+        df=df_long,
+        price_col='close',  # 종가 기준
+        window=14,  # RSI 기간
+        colname='rsi14'  # 결과 저장 컬럼 이름
+    )
+
+    # (d) 볼린저 밴드 계산
+    df_long = apply_bollinger(
+        df=df_long,
+        price_col='close',  # 종가 기준
+        window=20,  # 이동평균 기간
+        window_dev=2.0,  # 표준편차 배수
+        prefix='bb_'  # 컬럼 접두사
+    )
+
+    # 장기 필터 조건 정의 (예시)
+    df_long['long_ok'] = (
+        (df_long['close'] >= df_long['sma200']) &  # SMA200 이상
+        (df_long['rsi14'] < 70) &  # RSI가 과매수 상태가 아님
+        (df_long['macd_diff'] > 0) &  # MACD 상승
+        (df_long['close'] < df_long['bb_hband'])  # 볼린저 상단 밴드 미돌파
     )
 
     # -------------------------------
-    # 4) 백테스트 루프 실행
+    # 4) 손절 및 익절 계산
     # -------------------------------
-    in_position = False
+    # 단기 신호에서 손절/익절 가격 설정
+    df_short['long_entry'] = df_short['confirmed_breakout'] & df_short['volume_condition']
+
+    # ATR 기반 손절 설정
+    df_short = apply_stop_loss_atr(
+        df=df_short,
+        atr_window=atr_window,  # ATR 기간
+        atr_multiplier=atr_multiplier,  # 손절 배수
+        sl_colname='stop_loss_price',  # 손절 가격 컬럼
+        entry_price_col='entry_price'  # 진입 가격
+    )
+
+    # 고정 익절 비율 설정
+    df_short = apply_take_profit_ratio(
+        df=df_short,
+        profit_ratio=profit_ratio,  # 익절 비율
+        tp_colname='take_profit_price',  # 익절 가격 컬럼
+        entry_price_col='entry_price'  # 진입 가격
+    )
+
+    # -------------------------------
+    # 5) 백테스트 수행
+    # -------------------------------
+    # 거래 내역 기록용 리스트
     trades = []
+    # 현재 포지션 보유 여부
+    in_position = False
 
-    for i in range(len(df)):
-        row = df.iloc[i]
-        if not in_position and row['long_entry']:
-            # 포지션 진입
-            entry_price = row['entry_price']
-            stop_loss = row['stop_loss_price']
-            take_profit = row['take_profit_price']
-            size = calculate_position_size(
-                account_balance=account_size,
-                risk_per_trade=risk_per_trade,
-                entry_price=entry_price,
-                stop_loss_price=stop_loss,
-                fee_rate=fee_rate
-            )
-            in_position = True
-            trades.append({
-                'entry_time': row.name,
-                'entry_price': entry_price,
-                'size': size,
-                'exit_time': None,
-                'exit_price': None,
-                'pnl': None,
-                'exit_reason': None
-            })
+    # 단기 데이터를 순회하며 매매 전략 실행
+    for i in range(len(df_short)):
+        row_s = df_short.iloc[i]
+        current_time = row_s.name  # 현재 시간(봉 기준)
+
+        # (A) 포지션 진입
+        if not in_position and row_s['long_entry']:
+            # 장기 데이터에서 현재 시간까지의 데이터 가져오기
+            df_long_sub = df_long.loc[:current_time]
+            if df_long_sub.empty:
+                continue
+            row_l = df_long_sub.iloc[-1]
+
+            # 장기 필터 조건 통과 시 매수
+            if row_l['long_ok']:
+                # 진입 가격, 손절/익절 설정
+                entry_price = row_s['entry_price']
+                stop_loss = row_s['stop_loss_price']
+                take_profit = row_s['take_profit_price']
+
+                # 포지션 크기 계산
+                size = calculate_position_size(
+                    account_balance=account_size,
+                    risk_per_trade=risk_per_trade,
+                    entry_price=entry_price,
+                    stop_loss_price=stop_loss,
+                    fee_rate=fee_rate
+                )
+
+                # 포지션 활성화 및 거래 기록 추가
+                in_position = True
+                trades.append({
+                    'entry_time': current_time,
+                    'entry_price': entry_price,
+                    'size': size,
+                    'stop_loss': stop_loss,
+                    'take_profit': take_profit,
+                    'exit_time': None,
+                    'exit_price': None,
+                    'pnl': None,
+                    'exit_reason': None
+                })
+
+        # (B) 포지션 청산
         elif in_position:
-            # 포지션 청산 조건
-            if row['close'] <= stop_loss:
+            # 손절 조건 확인
+            if row_s['close'] <= trades[-1]['stop_loss']:
                 in_position = False
+                exit_price = row_s['close']
                 trades[-1].update({
-                    'exit_time': row.name,
-                    'exit_price': row['close'],
-                    'pnl': (row['close'] - trades[-1]['entry_price']) * trades[-1]['size'],
+                    'exit_time': current_time,
+                    'exit_price': exit_price,
+                    'pnl': (exit_price - trades[-1]['entry_price']) * trades[-1]['size'],
                     'exit_reason': 'stop_loss'
                 })
-            elif row['close'] >= take_profit:
+            # 익절 조건 확인
+            elif row_s['close'] >= trades[-1]['take_profit']:
                 in_position = False
+                exit_price = row_s['close']
                 trades[-1].update({
-                    'exit_time': row.name,
-                    'exit_price': row['close'],
-                    'pnl': (row['close'] - trades[-1]['entry_price']) * trades[-1]['size'],
+                    'exit_time': current_time,
+                    'exit_price': exit_price,
+                    'pnl': (exit_price - trades[-1]['entry_price']) * trades[-1]['size'],
                     'exit_reason': 'take_profit'
                 })
 
     # -------------------------------
-    # 5) 결과 정리 및 성과 출력
+    # 6) 결과 출력
     # -------------------------------
+    # 거래 내역을 DataFrame으로 변환
     trades_df = pd.DataFrame(trades)
     trades_df.dropna(subset=['exit_time'], inplace=True)
 
+    # 결과 출력
     if trades_df.empty:
-        print("No trades were completed.")
+        print("매매가 실행되지 않았습니다.")
         return None
 
-    total_pnl = trades_df['pnl'].sum()
-    final_balance = account_size + total_pnl
-    roi_percent = (final_balance - account_size) / account_size * 100.0
+    total_pnl = trades_df['pnl'].sum()  # 총 수익 계산
+    final_balance = account_size + total_pnl  # 최종 계좌 잔액
+    roi_percent = (final_balance - account_size) / account_size * 100.0  # 총 수익률
 
-    print(f"Total Trades: {len(trades_df)}")
-    print(f"Total PnL: {total_pnl:.2f} USDT")
-    print(f"Final Balance: {final_balance:.2f} USDT")
-    print(f"ROI: {roi_percent:.2f}%")
+    # 성과 요약 출력
+    print("\n=== 백테스트 결과 ===")
+    print(f"총 거래 수: {len(trades_df)}")
+    print(f"총 수익: {total_pnl:.2f} USDT")
+    print(f"최종 계좌 잔액: {final_balance:.2f} USDT")
+    print(f"수익률: {roi_percent:.2f}%")
 
+    # 성과 세부 지표 출력 (월별 성과 등)
     print_performance_report(trades_df, initial_balance=account_size)
 
     return trades_df
 ---
 # backtesting/param_tuning.py
 
-import itertools
-import pandas as pd
+import itertools  # 파라미터 조합을 만들기 위한 라이브러리
+import pandas as pd  # 데이터 처리를 위한 라이브러리
 
+# 단순 백테스트 함수 임포트
 from backtesting.backtest_simple import run_simple_backtest
-# performance_metrics 모듈에서 필요한 계산 함수를 임포트
-from backtesting.performance_metrics import (
-    calculate_mdd,
-    calculate_monthly_performance,
-    calculate_yearly_performance
-)
+# 성과 지표 계산 함수 임포트
+from backtesting.performance_metrics import calculate_mdd
 
 def param_sweep_test():
     """
-    여러 파라미터(window, atr_multiplier, profit_ratio)의 조합을 테스트하고,
-    각 조합별 성과 지표를 데이터프레임으로 만들어 반환합니다.
-    (CSV 저장이나 상위 결과 출력 등은 이 함수를 호출하는 쪽에서 처리)
+    여러 가지 전략 파라미터 조합(window, atr_multiplier, profit_ratio)을 테스트하여,
+    각 조합의 백테스트 결과를 요약한 데이터프레임을 반환합니다.
     """
+    # -------------------------------
+    # (A) 테스트할 파라미터 정의
+    # -------------------------------
+    # 전략에서 조정할 파라미터 리스트
+    window_list = [10, 20, 30]  # 돌파 신호를 위한 기간
+    atr_list = [1.5, 2.0]  # ATR(평균 진폭) 배수: 손절 기준 설정
+    profit_ratio_list = [0.03, 0.05]  # 고정 익절 비율
 
-    # (A) 테스트할 파라미터 후보 정의
-    window_list = [10, 20, 30]
-    atr_list = [1.5, 2.0]
-    profit_ratio_list = [0.03, 0.05]
-
+    # 결과를 저장할 리스트
     results = []
 
+    # itertools.product를 사용해 모든 파라미터 조합 생성
     for window, atr_mult, pr in itertools.product(window_list, atr_list, profit_ratio_list):
         print(f"\n[Running] window={window}, atr_multiplier={atr_mult}, profit_ratio={pr}")
 
-        # (B) 백테스트 실행
+        # -------------------------------
+        # (B) 각 조합에 대해 백테스트 실행
+        # -------------------------------
         trades_df = run_simple_backtest(
-            symbol="BTC/USDT",
-            timeframe="4h",
-            window=window,
-            volume_factor=1.5,
-            confirm_bars=2,
-            breakout_buffer=0.0,
-            atr_window=14,
-            atr_multiplier=atr_mult,
-            profit_ratio=pr,
-            account_size=10_000.0,
-            risk_per_trade=0.01,
-            fee_rate=0.001
+            symbol="BTC/USDT",  # 거래 종목 (비트코인/테더)
+            short_timeframe="4h",  # 단기 봉 주기 (4시간)
+            long_timeframe="1d",  # 장기 봉 주기 (1일)
+            window=window,  # 돌파 신호를 위한 기간
+            volume_factor=1.5,  # 거래량 필터
+            confirm_bars=2,  # 추가 확인 봉 수
+            breakout_buffer=0.0,  # 돌파 신호 버퍼
+            atr_window=14,  # ATR 계산 기간
+            atr_multiplier=atr_mult,  # 손절 기준 ATR 배수
+            profit_ratio=pr,  # 익절 비율
+            account_size=10_000.0,  # 초기 계좌 잔액
+            risk_per_trade=0.01,  # 1회 거래 시 총 자산 대비 위험 비율
+            fee_rate=0.001  # 거래 수수료 비율
         )
 
+        # 백테스트 결과가 없거나 거래가 발생하지 않은 경우, 다음 조합으로 넘어감
         if trades_df is None or trades_df.empty:
-            # 트레이드가 없거나 비정상 -> 기록X
             continue
 
-        # (C) 성과 지표 추가 계산
-        initial_balance = 10_000.0
+        # -------------------------------
+        # (C) 성과 지표 계산
+        # -------------------------------
+        initial_balance = 10_000.0  # 초기 자산
 
-        # 총 손익 (pnl)
+        # 총 손익 (PnL)
         total_pnl = trades_df['pnl'].sum()
-        final_balance = initial_balance + total_pnl
-        roi_percent = (final_balance - initial_balance) / initial_balance * 100.0
+        final_balance = initial_balance + total_pnl  # 최종 잔액 계산
+        roi_percent = (final_balance - initial_balance) / initial_balance * 100.0  # ROI 계산
 
-        # MDD 계산
+        # 최대 낙폭(MDD)
         mdd_percent = calculate_mdd(trades_df, initial_balance=initial_balance)
 
-        # 승률
-        num_trades = len(trades_df)
-        wins = (trades_df['pnl'] > 0).sum()
-        win_rate = wins / num_trades * 100.0 if num_trades > 0 else 0.0
+        # 승률 계산
+        num_trades = len(trades_df)  # 총 거래 수
+        wins = (trades_df['pnl'] > 0).sum()  # 수익 거래 수
+        win_rate = wins / num_trades * 100.0 if num_trades > 0 else 0.0  # 승률 (%)
 
-        # (D) 필요한 항목만 모아서 results에 저장
+        # -------------------------------
+        # (D) 결과를 정리해 리스트에 저장
+        # -------------------------------
         results.append({
-            'window'        : window,
-            'atr_multiplier': atr_mult,
-            'profit_ratio'  : pr,
-            'num_trades'    : num_trades,
-            'win_rate(%)'   : round(win_rate, 2),
-            'final_balance' : round(final_balance, 2),
-            'ROI(%)'        : round(roi_percent, 2),
-            'MDD(%)'        : round(mdd_percent, 2),  # 보통 음수
+            'window'        : window,  # 돌파 신호 기간
+            'atr_multiplier': atr_mult,  # ATR 배수
+            'profit_ratio'  : pr,  # 익절 비율
+            'num_trades'    : num_trades,  # 총 거래 수
+            'win_rate(%)'   : round(win_rate, 2),  # 승률 (%)
+            'final_balance' : round(final_balance, 2),  # 최종 잔액
+            'ROI(%)'        : round(roi_percent, 2),  # 수익률 (%)
+            'MDD(%)'        : round(mdd_percent, 2),  # 최대 낙폭 (%)
         })
 
-        # (E) (옵션) 월별·연도별 DF CSV 출력은 호출부에서 처리할 수도 있음
-        # monthly_df = calculate_monthly_performance(trades_df)
-        # yearly_df = calculate_yearly_performance(trades_df)
-        # ...
-        # (호출부에서 필요 시 저장)
-
-    # (F) 결과 취합
+    # -------------------------------
+    # (F) 결과를 데이터프레임으로 변환 후 반환
+    # -------------------------------
     results_df = pd.DataFrame(results)
-    return results_df  # ===> 호출부에서 이 결과를 받아 처리
+    return results_df  # 최종 결과를 호출부로 반환
 ---
 # test.py
 
-import pandas as pd
+import pandas as pd  # 데이터 처리를 위한 라이브러리
+# 파라미터 조합 테스트 함수 임포트
 from backtesting.param_tuning import param_sweep_test
 
-
+# 메인 함수 정의
 def main():
-    # 함수 호출하여 결과 DataFrame 가져옴
+    """
+    파라미터 조합 테스트를 실행하고 결과를 CSV로 저장하며,
+    ROI 기준 상위 5개의 결과를 출력합니다.
+    """
+
+    # -------------------------------
+    # 1) 파라미터 조합 테스트 실행
+    # -------------------------------
+    # param_sweep_test 함수 호출 → 백테스트 실행 및 결과 반환
     results_df = param_sweep_test()
 
+    # 결과가 비어 있으면 처리 중단
     if results_df.empty:
-        print("\nNo valid results returned.")
+        print("\nNo valid results returned.")  # 유효한 결과 없음 메시지 출력
         return
 
-    # CSV로 저장
-    csv_filename = "param_sweep_results_with_metrics.csv"
-    results_df.to_csv(csv_filename, index=False, encoding='utf-8-sig')
-    print(f"CSV saved: {csv_filename}")
+    # -------------------------------
+    # 2) 결과를 CSV 파일로 저장
+    # -------------------------------
+    csv_filename = "param_sweep_results_with_metrics.csv"  # 저장할 파일 이름
+    results_df.to_csv(csv_filename, index=False, encoding='utf-8-sig')  # 파일 저장
+    print(f"CSV saved: {csv_filename}")  # 저장 완료 메시지 출력
 
-    # ROI(%)로 정렬 후 상위 5개 출력
+    # -------------------------------
+    # 3) ROI 기준 상위 5개 결과 출력
+    # -------------------------------
+    # ROI(%) 열을 기준으로 결과를 내림차순 정렬
     sorted_df = results_df.sort_values(by='ROI(%)', ascending=False)
+    
+    # 정렬된 데이터프레임의 상위 5개 출력
     print("\n=== Top 5 by ROI ===")
     print(sorted_df.head(5))
 
-
+# 이 스크립트가 직접 실행될 때만 main() 함수를 호출
 if __name__ == "__main__":
     main()
 ---
 window,atr_multiplier,profit_ratio,num_trades,win_rate(%),final_balance,ROI(%),MDD(%)
-10,1.5,0.03,141,56.74,15010.82,50.11,-7.3
-10,1.5,0.05,127,48.82,16613.92,66.14,-7.19
-10,2.0,0.03,139,61.15,13525.7,35.26,-8.64
-10,2.0,0.05,121,52.89,14282.44,42.82,-8.54
-20,1.5,0.03,111,57.66,15032.73,50.33,-5.0
-20,1.5,0.05,102,49.02,15663.4,56.63,-5.23
-20,2.0,0.03,111,63.06,14047.43,40.47,-5.24
-20,2.0,0.05,100,54.0,14504.64,45.05,-5.05
-30,1.5,0.03,99,56.57,14721.39,47.21,-4.11
-30,1.5,0.05,92,47.83,15293.15,52.93,-5.39
-30,2.0,0.03,99,62.63,13729.85,37.3,-4.6
-30,2.0,0.05,90,53.33,14025.04,40.25,-5.92
+10,1.5,0.03,13,69.23,11048.51,10.49,-1.98
+10,1.5,0.05,13,69.23,11794.65,17.95,-1.92
+10,2.0,0.03,12,75.0,10853.27,8.53,-1.87
+10,2.0,0.05,12,75.0,11326.39,13.26,-1.85
+20,1.5,0.03,8,62.5,10521.09,5.21,-2.07
+20,1.5,0.05,8,50.0,10453.5,4.54,-2.06
+20,2.0,0.03,8,75.0,10600.97,6.01,-1.92
+20,2.0,0.05,8,62.5,10549.13,5.49,-1.92
+30,1.5,0.03,8,62.5,10521.09,5.21,-2.07
+30,1.5,0.05,8,50.0,10453.5,4.54,-2.06
+30,2.0,0.03,8,75.0,10600.97,6.01,-1.92
+30,2.0,0.05,8,62.5,10549.13,5.49,-1.92
+
+
+
+
+
+
 
 
 
@@ -1346,28 +1583,114 @@ window=10이 가장 공격적, window=30은 좀 더 보수적
    - 처음부터 여러 타임프레임 다 쓰려면 복잡도가 확 올라가니,  
    - **(1일봉 시그널) + (4시간봉 매매 타이밍)** 같은 2개 TF 조합부터 시도해보면 좋습니다.
 
----
-
-## 3. 동적 파라미터 조정(Adaptive Parameter)
-
-1. **정적 파라미터** 예  
-   - (예) 돌파기간 `window=20`, ATR배수 `atr_multiplier=2.0`, 거래량 배수 `vol_factor=1.5` …  
-   - 백테스트 시, 하나씩 바꿔가며 실험(브루트포스) → 최적값 찾기(파라메트릭 스윕).  
-   - 이 단계까지만 해도 충분히 할 일이 많습니다.
-
-2. **동적(Adaptive) 파라미터**  
-   - 시간 경과나 시장 상황에 따라 파라미터를 실시간으로 변경하는 기법. (예: 변동성이 높아지면 window를 줄이고, 낮아지면 늘린다 등)  
-   - 구현 방식:  
-     - 백테스트 루프 속에서, 일정 주기(예: 매 N 봉)마다 시장 상태를 판단 → 파라미터 재설정.  
-     - 또는, 일봉 지표나 VIX(파생상품) 등으로 변동성 지표를 측정해, “ATR 높으면 돌파기간 단축” 같은 규칙을 세움.
-
-3. **단계적 접근**  
-   - 먼저 “정적 파라미터 전략”을 충분히 시험해보고, 그 이후 “어떤 기준으로 파라미터를 동적으로 바꿀지” 규칙을 구체화.  
-   - 동적 파라미터는 구현 복잡도 + 과적합 가능성도 올라가기 때문에, 주의 깊게 진행해야 합니다.
+####################################################################################################
+## 2. 다중 타임프레임(MTF)로 확장 상세
+아주 자연스러운 확장 플로우 같습니다. 전체 구조를 크게 변경하지 않고, **단기(돌파 신호) + 장기(보조지표 필터)** 방식으로 발전시키는 방향이군요. 각 항목별로 검토 의견을 드릴게요.
 
 ---
 
-## 4. 과적합 방지
+## 1. `signal_generator.py` 파일명 변경
+
+- `signal_generator.py`는 현재 “돌파매매 시그널을 계산하는” 로직에 집중되어 있으므로,  
+  - 예: `breakout_signal.py`, `breakout_strategy.py`, `breakout_signals.py` 등 **돌파 전략**임이 드러나는 이름으로 바꾸면 좋겠습니다.  
+- 만약 “다양한 시그널(돌파, 추세, 스윙 등)을 모두 계산”하고 싶다면, 범용적인 `signal_generator.py`가 나쁘지 않을 수도 있지만,  
+- “돌파 전략에 특화된 파일”이라면 이름을 변경하는 게 가독성에 유리합니다.
+
+---
+
+## 2. `strategies` 디렉토리에 “보조지표 계산 모듈” 추가
+
+- 현재 `strategies` 폴더 아래에 **ATR 손절, 고정익절, 리스크 관리** 등이 분리되어 있듯이,  
+- **MA, MACD, RSI, 볼린저 밴드** 등의 “기술 지표” 계산 로직을 하나의 파일에 모아서 두면, 재사용성이 높아지고 깔끔해집니다.
+- 예) `technical_indicators.py` 파일 안에,
+  ```python
+  def calculate_ma(df: pd.DataFrame, window: int=20):
+      ...
+  def calculate_macd(df: pd.DataFrame, fast=12, slow=26, signal=9):
+      ...
+  def calculate_rsi(df: pd.DataFrame, window=14):
+      ...
+  def calculate_bollinger(df: pd.DataFrame, window=20, nb_std=2):
+      ...
+  ```
+- 다만, 외부 라이브러리(`ta` 등)를 적극 활용하면, 직접 구현 로직을 줄일 수 있습니다. 필요하다면 내부 계산 방식을 커스터마이징할 수도 있겠죠.
+
+---
+
+## 3. `backtest_simple.py`에서 MTF 로직으로 수정
+
+- 현재 코드는 “단일 타임프레임”만 받아서 백테스트를 수행하지만,  
+- 새로 만든 지표 모듈(장기 지표) + 돌파 매매 시그널(단기 지표)을 함께 사용하려면 **2개 이상의 타임프레임**을 불러와야 합니다.
+
+### 3-1) 단기프레임(LTF) + 장기프레임(HTF) 입력 구조
+
+- 예:  
+  ```python
+  def run_simple_backtest(
+      symbol="BTC/USDT",
+      short_timeframe="4h",
+      long_timeframe="1d",
+      ...
+  ):
+      # 1) 단기(4h) 데이터 & 장기(1d) 데이터 불러오기
+      # 2) 장기프레임 DF에 (MA, MACD, RSI, etc.) 계산
+      # 3) 단기프레임 DF에 “돌파 시그널” 계산
+      # 4) 백테스트 루프에서 둘 다 확인 → 진입 여부 결정
+      ...
+  ```
+- 내부에서 `load_ohlcv_from_postgres(...)`를 두 번 호출하여 `df_short`, `df_long`를 각각 가져와 쓰면 됩니다.
+
+### 3-2) “단기에서 시그널 발생 시 → 장기 지표 체크” 방법
+
+- (1) **단기프레임**을 순회(캔들 by 캔들)  
+- (2) 돌파 신호가 True라면,  
+  - 현재 단기 봉 시간(`row_short.name`)에 해당하는 장기봉의 **최근 확정 값**을 `df_long`에서 찾는다.  
+  - 이때 보조지표(예: MA>0, RSI<70, MACD 시그널>0, etc.)가 조건에 부합하면 → 최종 매수 신호  
+- (3) 진입 후 손절/익절도 기존과 동일하게 처리.  
+
+> 구체 코드는 [이전 답변](https://example.com/...)에서 언급된 “다중 타임프레임(HTF/LTF)을 분리해서 참조” 로직과 동일합니다.  
+> 핵심은 “단기봉 시간과 가장 가까운 장기봉 데이터를 `loc[:time].iloc[-1]`로 찾는다.” 입니다.
+
+---
+
+## 4. `param_tuning.py` 수정
+
+- `param_sweep_test()` 등에서 `run_simple_backtest()`를 호출할 때,  
+  - “단일 `timeframe`” 만 넘겨주던 부분을 → “`short_timeframe`, `long_timeframe`” 같이 변경해야 합니다.  
+- “장기프레임”용 파라미터(예: MA기간, MACD설정 등)를 추가하려면,  
+  - `itertools.product(...)`에서 **해당 변수들을 함께 스윕**하거나,  
+  - 일단은 단기 파라미터만 튜닝하고, 장기 파라미터는 고정(예: MA20)으로 놓을 수도 있습니다.  
+- 구현 범위를 어떻게 잡느냐에 따라 `param_tuning.py`가 꽤 복잡해질 수 있습니다.  
+  - 가령, `window_list=[10,20,30]` × `atr_list=[1.5,2.0]` × `profit_ratio_list=[0.03,0.05]` × **`ma_period_list=[20,50]`** ... 이런 식으로 늘어날 수 있으니 주의하세요.
+
+---
+
+## 5. `test.py` 수정
+
+- `test.py`에서 `param_sweep_test()`를 실행하는 부분에서,  
+  - “단일 timeframe”을 넘기던 것을 → “short_timeframe, long_timeframe” 2개 이상으로 수정,  
+  - 또는 `param_sweep_test()` 내부에서 “다중 타임프레임”을 돌리는 로직을 추가해야 합니다.  
+- 만약 기존 코드를 그대로 두면, `backtest_simple.py`의 함수 인자가 바뀌면서 에러가 날 수 있으니 반드시 함께 수정해줘야 합니다.  
+
+---
+
+## 결론
+
+1. **파일명 변경** (`signal_generator.py` → `breakout_signals.py` 등)은 좋은 아이디어입니다.  
+2. **보조지표** 모듈(`technical_indicators.py` 등)을 만드는 것도 깔끔한 구조를 위해 권장합니다.  
+3. **MTF 로직**으로 `backtest_simple.py`를 확장할 때는, “(단기)돌파 신호 → (장기)지표 체크” 순서가 핵심입니다.  
+4. 이후, **`param_tuning.py` + `test.py`**도 같이 수정해야 정상 동작하겠지요.
+
+전반적으로 **단계별**로 잘 잡으신 계획이라 문제 없어 보입니다.  
+- **1차**로는 “MTF 백테스트”가 제대로 작동만 해도 큰 진전입니다.  
+- **2차**로는 파라미터 튜닝까지 가면, 다소 코드가 복잡해질 수 있으니 구조화(함수/클래스/모듈 분리)를 계속 유지해 주세요.
+
+이렇게 진행하시면 무난히 확장 가능합니다. 파이팅입니다!
+####################################################################################################
+
+---
+
+## 3. 과적합 방지
 
 1. **과적합(Overfitting)**이란?  
    - 백테스트 결과는 ‘과거 데이터’에서 최적화되었지만, 실제 미래 시장에서는 성과가 기대에 미치지 못하는 현상.  
@@ -1386,6 +1709,25 @@ window=10이 가장 공격적, window=30은 좀 더 보수적
 3. **테스트 자동화**  
    - 백테스트 스크립트를 짜놓고, 파라미터 여러 후보(예: window=10,20,30 / atr_multiplier=1.5,2.0,2.5 …)에 대해 일괄 실행시키면서,  
    - Out-of-Sample 구간 성능이 가장 좋은 쪽을 찾거나, 여러 지표(승률, MDD, Profit Factor 등)를 비교해서 최종 선택.
+
+---
+
+## 4. 동적 파라미터 조정(Adaptive Parameter)
+
+1. **정적 파라미터** 예  
+   - (예) 돌파기간 `window=20`, ATR배수 `atr_multiplier=2.0`, 거래량 배수 `vol_factor=1.5` …  
+   - 백테스트 시, 하나씩 바꿔가며 실험(브루트포스) → 최적값 찾기(파라메트릭 스윕).  
+   - 이 단계까지만 해도 충분히 할 일이 많습니다.
+
+2. **동적(Adaptive) 파라미터**  
+   - 시간 경과나 시장 상황에 따라 파라미터를 실시간으로 변경하는 기법. (예: 변동성이 높아지면 window를 줄이고, 낮아지면 늘린다 등)  
+   - 구현 방식:  
+     - 백테스트 루프 속에서, 일정 주기(예: 매 N 봉)마다 시장 상태를 판단 → 파라미터 재설정.  
+     - 또는, 일봉 지표나 VIX(파생상품) 등으로 변동성 지표를 측정해, “ATR 높으면 돌파기간 단축” 같은 규칙을 세움.
+
+3. **단계적 접근**  
+   - 먼저 “정적 파라미터 전략”을 충분히 시험해보고, 그 이후 “어떤 기준으로 파라미터를 동적으로 바꿀지” 규칙을 구체화.  
+   - 동적 파라미터는 구현 복잡도 + 과적합 가능성도 올라가기 때문에, 주의 깊게 진행해야 합니다.
 
 ---
 
@@ -1442,4 +1784,25 @@ window=10이 가장 공격적, window=30은 좀 더 보수적
 
 이런 순서대로 진행해보시면, 중간 중간에 “내가 어떤 부분을 해야 하지?”라는 막막함이 훨씬 줄어드실 거예요.  
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 [지시사항]
+"참고사항1"은 "참고사항2"의 "## 2. 다중 타임프레임(MTF)로 확장" 까지 진행한 코드야.
+진행이 잘이뤄지고 있는지 확인해줘.
+이제 "참고사항2"의 "3. 과적합 방지" 를 진행해야될 차례야.
+그런데 어떻게 해야될지 감이 안와서 너가 단계별로 도와줬으면해.

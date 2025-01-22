@@ -1,87 +1,90 @@
 # backtesting/param_tuning.py
 
-import itertools
-import pandas as pd
+import itertools  # 파라미터 조합을 만들기 위한 라이브러리
+import pandas as pd  # 데이터 처리를 위한 라이브러리
 
+# 단순 백테스트 함수 임포트
 from backtesting.backtest_simple import run_simple_backtest
-# performance_metrics 모듈에서 필요한 계산 함수를 임포트
-from backtesting.performance_metrics import (
-    calculate_mdd,
-    calculate_monthly_performance,
-    calculate_yearly_performance
-)
+# 성과 지표 계산 함수 임포트
+from backtesting.performance_metrics import calculate_mdd
 
 def param_sweep_test():
     """
-    여러 파라미터(window, atr_multiplier, profit_ratio)의 조합을 테스트하고,
-    각 조합별 성과 지표를 데이터프레임으로 만들어 반환합니다.
-    (CSV 저장이나 상위 결과 출력 등은 이 함수를 호출하는 쪽에서 처리)
+    여러 가지 전략 파라미터 조합(window, atr_multiplier, profit_ratio)을 테스트하여,
+    각 조합의 백테스트 결과를 요약한 데이터프레임을 반환합니다.
     """
+    # -------------------------------
+    # (A) 테스트할 파라미터 정의
+    # -------------------------------
+    # 전략에서 조정할 파라미터 리스트
+    window_list = [10, 20, 30]  # 돌파 신호를 위한 기간
+    atr_list = [1.5, 2.0]  # ATR(평균 진폭) 배수: 손절 기준 설정
+    profit_ratio_list = [0.03, 0.05]  # 고정 익절 비율
 
-    # (A) 테스트할 파라미터 후보 정의
-    window_list = [10, 20, 30]
-    atr_list = [1.5, 2.0]
-    profit_ratio_list = [0.03, 0.05]
-
+    # 결과를 저장할 리스트
     results = []
 
+    # itertools.product를 사용해 모든 파라미터 조합 생성
     for window, atr_mult, pr in itertools.product(window_list, atr_list, profit_ratio_list):
         print(f"\n[Running] window={window}, atr_multiplier={atr_mult}, profit_ratio={pr}")
 
-        # (B) 백테스트 실행
+        # -------------------------------
+        # (B) 각 조합에 대해 백테스트 실행
+        # -------------------------------
         trades_df = run_simple_backtest(
-            symbol="BTC/USDT",
-            timeframe="4h",
-            window=window,
-            volume_factor=1.5,
-            confirm_bars=2,
-            breakout_buffer=0.0,
-            atr_window=14,
-            atr_multiplier=atr_mult,
-            profit_ratio=pr,
-            account_size=10_000.0,
-            risk_per_trade=0.01,
-            fee_rate=0.001
+            symbol="BTC/USDT",  # 거래 종목 (비트코인/테더)
+            short_timeframe="4h",  # 단기 봉 주기 (4시간)
+            long_timeframe="1d",  # 장기 봉 주기 (1일)
+            window=window,  # 돌파 신호를 위한 기간
+            volume_factor=1.5,  # 거래량 필터
+            confirm_bars=2,  # 추가 확인 봉 수
+            breakout_buffer=0.0,  # 돌파 신호 버퍼
+            atr_window=14,  # ATR 계산 기간
+            atr_multiplier=atr_mult,  # 손절 기준 ATR 배수
+            profit_ratio=pr,  # 익절 비율
+            account_size=10_000.0,  # 초기 계좌 잔액
+            risk_per_trade=0.01,  # 1회 거래 시 총 자산 대비 위험 비율
+            fee_rate=0.001  # 거래 수수료 비율
         )
 
+        # 백테스트 결과가 없거나 거래가 발생하지 않은 경우, 다음 조합으로 넘어감
         if trades_df is None or trades_df.empty:
-            # 트레이드가 없거나 비정상 -> 기록X
             continue
 
-        # (C) 성과 지표 추가 계산
-        initial_balance = 10_000.0
+        # -------------------------------
+        # (C) 성과 지표 계산
+        # -------------------------------
+        initial_balance = 10_000.0  # 초기 자산
 
-        # 총 손익 (pnl)
+        # 총 손익 (PnL)
         total_pnl = trades_df['pnl'].sum()
-        final_balance = initial_balance + total_pnl
-        roi_percent = (final_balance - initial_balance) / initial_balance * 100.0
+        final_balance = initial_balance + total_pnl  # 최종 잔액 계산
+        roi_percent = (final_balance - initial_balance) / initial_balance * 100.0  # ROI 계산
 
-        # MDD 계산
+        # 최대 낙폭(MDD)
         mdd_percent = calculate_mdd(trades_df, initial_balance=initial_balance)
 
-        # 승률
-        num_trades = len(trades_df)
-        wins = (trades_df['pnl'] > 0).sum()
-        win_rate = wins / num_trades * 100.0 if num_trades > 0 else 0.0
+        # 승률 계산
+        num_trades = len(trades_df)  # 총 거래 수
+        wins = (trades_df['pnl'] > 0).sum()  # 수익 거래 수
+        win_rate = wins / num_trades * 100.0 if num_trades > 0 else 0.0  # 승률 (%)
 
-        # (D) 필요한 항목만 모아서 results에 저장
+        # -------------------------------
+        # (D) 결과를 정리해 리스트에 저장
+        # -------------------------------
         results.append({
-            'window'        : window,
-            'atr_multiplier': atr_mult,
-            'profit_ratio'  : pr,
-            'num_trades'    : num_trades,
-            'win_rate(%)'   : round(win_rate, 2),
-            'final_balance' : round(final_balance, 2),
-            'ROI(%)'        : round(roi_percent, 2),
-            'MDD(%)'        : round(mdd_percent, 2),  # 보통 음수
+            'window'        : window,  # 돌파 신호 기간
+            'atr_multiplier': atr_mult,  # ATR 배수
+            'profit_ratio'  : pr,  # 익절 비율
+            'num_trades'    : num_trades,  # 총 거래 수
+            'win_rate(%)'   : round(win_rate, 2),  # 승률 (%)
+            'final_balance' : round(final_balance, 2),  # 최종 잔액
+            'ROI(%)'        : round(roi_percent, 2),  # 수익률 (%)
+            'MDD(%)'        : round(mdd_percent, 2),  # 최대 낙폭 (%)
         })
 
-        # (E) (옵션) 월별·연도별 DF CSV 출력은 호출부에서 처리할 수도 있음
-        # monthly_df = calculate_monthly_performance(trades_df)
-        # yearly_df = calculate_yearly_performance(trades_df)
-        # ...
-        # (호출부에서 필요 시 저장)
-
-    # (F) 결과 취합
+    # -------------------------------
+    # (F) 결과를 데이터프레임으로 변환 후 반환
+    # -------------------------------
     results_df = pd.DataFrame(results)
-    return results_df  # ===> 호출부에서 이 결과를 받아 처리
+    return results_df  # 최종 결과를 호출부로 반환

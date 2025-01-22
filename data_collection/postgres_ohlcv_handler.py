@@ -1,4 +1,4 @@
-# data_collection/save_to_postgres.py
+# data_collection/postgres_ohlcv_handler.py
 
 from sqlalchemy import create_engine # SQL 작업을 쉽고 직관적으로 처리하는 라이브러리
 import psycopg2 # PostgreSQL 데이터베이스와 직접 통신할 때 사용.

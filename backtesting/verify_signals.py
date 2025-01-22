@@ -4,8 +4,8 @@ import matplotlib.pyplot as plt # 시각화를 위한 matplotlib
 import pandas as pd
 
 # 데이터베이스 및 시그널 계산 함수
-from data_collection.save_to_postgres import load_ohlcv_from_postgres
-from strategies.signal_generator import calculate_breakout_signals
+from data_collection.postgres_ohlcv_handler import load_ohlcv_from_postgres
+from strategies.breakout_signal import calculate_breakout_signals
 
 def verify_breakout_signals(
     symbol: str,

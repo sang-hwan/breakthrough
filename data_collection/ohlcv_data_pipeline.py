@@ -10,7 +10,7 @@ from data_collection.fetch_binance_data import (
     fetch_binance_historical_ohlcv,  # 바이낸스에서 역사적 OHLCV 데이터 수집 함수
     fetch_binance_latest_ohlcv       # 바이낸스에서 최신 OHLCV 데이터 수집 함수
 )
-from data_collection.save_to_postgres import save_ohlcv_to_postgres  # 데이터 저장 함수
+from data_collection.postgres_ohlcv_handler import save_ohlcv_to_postgres  # 데이터 저장 함수
 
 def collect_data_for_backtest(
     symbols: List[str],

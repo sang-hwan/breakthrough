@@ -1,4 +1,4 @@
-# strategies/signal_generator.py
+# strategies/breakout_signal.py
 
 import pandas as pd # Pandas 라이브러리: 데이터 분석 및 처리 도구
 
