@@ -1,122 +1,108 @@
 # data_collection/save_to_postgres.py
 
-from sqlalchemy import create_engine
-import psycopg2        # PostgreSQL에 연결하기 위한 파이썬 라이브러리
-import pandas as pd
-from typing import Optional
-from config.db_config import DATABASE  # 데이터베이스 접속 정보를 담고 있는 설정 파일
+from sqlalchemy import create_engine # SQL 작업을 쉽고 직관적으로 처리하는 라이브러리
+import psycopg2 # PostgreSQL 데이터베이스와 직접 통신할 때 사용.
+import pandas as pd # 데이터 분석 및 조작을 위한 라이브러리.
+from typing import Optional # 함수 매개변수의 타입을 명시하기 위한 라이브러리.
+from config.db_config import DATABASE # 데이터베이스 연결 정보를 포함한 설정 파일에서 DATABASE 정보를 가져옵니다.
 
-
+# OHLCV 데이터를 PostgreSQL에 저장하는 함수입니다.
 def save_ohlcv_to_postgres(df: pd.DataFrame, table_name: str = 'ohlcv_data') -> None:
     """
-    OHLCV DataFrame을 PostgreSQL에 저장하는 예시 함수입니다.
+    OHLCV 데이터를 PostgreSQL 데이터베이스에 저장합니다.
     
     Parameters
     ----------
     df : pd.DataFrame
-        timestamp(인덱스), open, high, low, close, volume 컬럼을 갖는 DataFrame.
+        OHLCV 데이터를 담고 있는 pandas DataFrame입니다.
+        필요한 컬럼: timestamp(인덱스), open, high, low, close, volume.
     table_name : str
-        데이터를 저장할 테이블 이름 (기본 'ohlcv_data').
+        데이터를 저장할 데이터베이스 테이블 이름. 기본값은 'ohlcv_data'입니다.
     """
     
-    # 1) DB 연결
-    #    - 'psycopg2.connect'에 접속 정보를 넣어 PostgreSQL에 연결.
+    # 1) 데이터베이스 연결 생성
+    # 데이터베이스 접속 정보를 사용하여 PostgreSQL에 연결합니다.
     conn = psycopg2.connect(
-        user=DATABASE['user'],
-        password=DATABASE['password'],
-        host=DATABASE['host'],
-        port=DATABASE['port'],
-        dbname=DATABASE['dbname']
+        user=DATABASE['user'],          # 사용자 이름
+        password=DATABASE['password'],  # 비밀번호
+        host=DATABASE['host'],          # 데이터베이스 호스트 주소
+        port=DATABASE['port'],          # 데이터베이스 포트 번호
+        dbname=DATABASE['dbname']       # 데이터베이스 이름
     )
-    #    - 연결된 상태에서 SQL 쿼리를 실행하기 위해 cursor(커서)를 얻어옴
-    cur = conn.cursor()
+    cur = conn.cursor()  # SQL 작업을 수행할 커서 생성
 
-    # 2) 테이블 생성(없으면 새로 만들기)
+    # 2) 테이블 생성
+    # 테이블이 존재하지 않으면 새로 생성합니다.
     create_table_query = f"""
     CREATE TABLE IF NOT EXISTS {table_name} (
-        timestamp TIMESTAMP NOT NULL,
-        open DOUBLE PRECISION,
-        high DOUBLE PRECISION,
-        low DOUBLE PRECISION,
-        close DOUBLE PRECISION,
-        volume DOUBLE PRECISION,
-        PRIMARY KEY (timestamp)
+        timestamp TIMESTAMP NOT NULL,       -- 데이터의 시간 정보
+        open DOUBLE PRECISION,             -- 시가
+        high DOUBLE PRECISION,             -- 고가
+        low DOUBLE PRECISION,              -- 저가
+        close DOUBLE PRECISION,            -- 종가
+        volume DOUBLE PRECISION,           -- 거래량
+        PRIMARY KEY (timestamp)            -- 기본 키로 timestamp를 사용
     );
     """
-    #    - 테이블을 만드는 SQL 쿼리 실행
-    cur.execute(create_table_query)
-    #    - 쿼리 적용(커밋)
-    conn.commit()
+    cur.execute(create_table_query)  # SQL 쿼리 실행
+    conn.commit()  # 변경사항 저장
 
-    # 3) DataFrame 레코드를 한 줄씩 INSERT
-    #    - 대량 삽입 시 COPY 문법 등 더 빠른 방법도 사용 가능.
+    # 3) DataFrame 데이터를 테이블에 삽입
+    # DataFrame의 각 행(row)을 데이터베이스에 추가합니다.
     for index, row in df.iterrows():
-        #   - timestamp, open, high, low, close, volume 순으로 값 매핑
         insert_query = f"""
         INSERT INTO {table_name} (timestamp, open, high, low, close, volume)
         VALUES (%s, %s, %s, %s, %s, %s)
         ON CONFLICT (timestamp)
-        DO NOTHING;
+        DO NOTHING;  -- 중복된 timestamp 데이터는 무시
         """
-        #   - index는 DataFrame의 인덱스(즉, timestamp)
-        #   - to_pydatetime()로 Python의 datetime 객체로 변환
-        #   - float(row['open']) 등으로 실수 형태 변환
         cur.execute(insert_query, (
-            index.to_pydatetime(),
-            float(row['open']),
-            float(row['high']),
-            float(row['low']),
-            float(row['close']),
-            float(row['volume'])
+            index.to_pydatetime(),  # 인덱스를 datetime 형식으로 변환
+            float(row['open']),    # 시가
+            float(row['high']),    # 고가
+            float(row['low']),     # 저가
+            float(row['close']),   # 종가
+            float(row['volume'])   # 거래량
         ))
-    #    - INSERT 이후 최종 커밋
-    conn.commit()
-    
-    #    - 커서와 연결 종료
-    cur.close()
-    conn.close()
+    conn.commit()  # 변경사항 저장
 
+    # 4) 데이터베이스 연결 종료
+    cur.close()  # 커서 닫기
+    conn.close()  # 연결 종료
 
+# PostgreSQL에서 OHLCV 데이터를 읽어오는 함수입니다.
 def load_ohlcv_from_postgres(table_name: str = 'ohlcv_data', limit: Optional[int] = None) -> pd.DataFrame:
     """
-    Postgres에서 OHLCV 데이터를 읽어오는 함수입니다.
+    PostgreSQL 데이터베이스에서 OHLCV 데이터를 가져옵니다.
     
     Parameters
     ----------
     table_name : str
-        데이터를 가져올 테이블 이름 (기본 'ohlcv_data').
+        데이터를 가져올 테이블 이름. 기본값은 'ohlcv_data'입니다.
     limit : Optional[int]
-        가져올 레코드 개수를 제한하고 싶을 때 사용 (기본 None: 제한 없음).
+        가져올 데이터의 최대 개수. 기본값은 제한 없음(None)입니다.
         
     Returns
     -------
     pd.DataFrame
-        timestamp(인덱스), open, high, low, close, volume 컬럼을 갖는 DataFrame.
+        OHLCV 데이터를 담고 있는 pandas DataFrame을 반환합니다.
     """
     
     # 1) SQLAlchemy 엔진 생성
-    user     = DATABASE['user']
-    password = DATABASE['password']
-    host     = DATABASE['host']
-    port     = DATABASE['port']
-    dbname   = DATABASE['dbname']
-    
-    # postgresql://user:password@host:port/dbname
-    engine = create_engine(f"postgresql://{user}:{password}@{host}:{port}/{dbname}")
-    
-    # 2) 필요한 SQL 쿼리 생성
-    #    - timestamp 기준으로 정렬하여 전부 가져옴
-    query = f"SELECT * FROM {table_name} ORDER BY timestamp"
-    #    - limit 파라미터가 있으면, 해당 개수만큼만 가져옴
-    if limit:
+    # 데이터베이스 연결 정보를 이용하여 엔진을 생성합니다.
+    engine = create_engine(f"postgresql://{DATABASE['user']}:{DATABASE['password']}@{DATABASE['host']}:{DATABASE['port']}/{DATABASE['dbname']}")
+
+    # 2) SQL 쿼리 생성
+    query = f"SELECT * FROM {table_name} ORDER BY timestamp"  # 데이터를 timestamp 기준으로 정렬
+    if limit:  # limit 값이 있으면 최대 limit 개수만 가져옴
         query += f" LIMIT {limit}"
 
-    # 3) pandas의 read_sql을 통해 SQL 결과를 바로 DataFrame으로 변환
-    #    - parse_dates 옵션으로 timestamp 컬럼을 datetime으로 파싱
-    df = pd.read_sql(query, engine, parse_dates=['timestamp'])
-    
-    # 4) timestamp 컬럼을 인덱스로 설정
-    df.set_index('timestamp', inplace=True)
+    # 3) SQL 결과를 DataFrame으로 변환
+    # pandas의 read_sql()을 사용하여 SQL 결과를 읽어옵니다.
+    df = pd.read_sql(query, engine, parse_dates=['timestamp'])  # timestamp를 datetime 형식으로 변환
 
-    # 가공한 DataFrame 반환
+    # 4) DataFrame 인덱스 설정
+    df.set_index('timestamp', inplace=True)  # timestamp를 인덱스로 설정
+
+    # 5) DataFrame 반환
     return df

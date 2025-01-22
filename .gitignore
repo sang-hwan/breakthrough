@@ -5,3 +5,4 @@ __pycache__/
 # 파일
 __init__.py
 *.zip
+*.csv

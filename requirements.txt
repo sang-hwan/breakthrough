@@ -3,3 +3,4 @@ pandas
 ta
 psycopg2
 sqlalchemy
+matplotlib

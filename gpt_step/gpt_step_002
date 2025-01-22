@@ -2,13 +2,27 @@
 코인 시장에 **systrader79**와 **김대현 저자**의 저서 *“돌파매매 전략”* 을 적용해서 자동매매 하는 프로그램을 만들고 있어.
 연 10~20% 수익을 목표로 약 200~500만원의 시드머니를 투자할 생각이야.
 
-[참고사항1]
-# data_collection/fetch_binance_data.py
 
-import ccxt
-import pandas as pd
-import time
-from datetime import datetime
+
+
+
+
+
+
+
+
+
+[참고사항1]
+아래 코드에 대해 비전문가도 이해할 수 있게 달아줘.
+그리고 보기 좋게 주석 정리해줘.
+---
+# data_collection/fetch_binance_data.py
+# 이 파일은 바이낸스(Binance) 거래소에서 시세 데이터를 수집하는 데 사용됩니다.
+
+import ccxt  # 다양한 거래소 API를 쉽게 사용할 수 있게 해주는 라이브러리
+import pandas as pd  # 데이터 분석을 위한 라이브러리
+import time  # 시간 관련 작업을 처리하기 위한 모듈
+from datetime import datetime  # 날짜 및 시간을 처리하기 위한 모듈
 
 
 def fetch_binance_historical_ohlcv(
@@ -19,47 +33,42 @@ def fetch_binance_historical_ohlcv(
     pause_sec: float = 1.0
 ) -> pd.DataFrame:
     """
-    1) 바이낸스에서 과거 데이터를 대량으로 수집하는 함수입니다.
-    - start_date(시작 시점)부터 현재 시점까지,
-      'limit_per_request'만큼씩 데이터를 끊어서 반복적으로 불러옵니다.
-    - 각 반복 호출 사이에는 'pause_sec'만큼 잠깐 쉬어,
-      API 호출 제한에 걸리지 않도록 합니다.
+    바이낸스에서 과거 데이터를 대량으로 수집하는 함수입니다.
 
-    Parameters
-    ----------
-    symbol : str
-        예) 'BTC/USDT'. (거래쌍: 어떤 코인/토큰을 어떤 기준화폐로 거래하는지 표시)
-    timeframe : str
-        예) '1m', '5m', '15m', '1h', '4h', '1d' 등 (봉 하나가 몇 분, 시간, 일 단위인지)
-    start_date : str
-        데이터 수집을 시작할 시점 (UTC 기준 문자열)
-        예) '2021-01-01 00:00:00'
-    limit_per_request : int
-        한 번 API를 호출할 때 가져올 최대 캔들 수(기본값 1000, 바이낸스에서 보통 1000까지 허용)
-    pause_sec : float
-        연속된 API 호출 사이에 쉬는 시간(초). (기본값 1초)
+    주요 기능:
+    - 특정 시작 날짜부터 현재까지 데이터를 가져옵니다.
+    - 데이터를 한 번에 'limit_per_request'만큼 가져오며,
+      반복 호출로 더 많은 데이터를 수집합니다.
+    - API 호출 제한을 피하기 위해 요청 사이에 대기 시간을 추가합니다.
 
-    Returns
-    -------
-    pd.DataFrame
-        * 인덱스: timestamp (datetime 형태)
-        * 컬럼: open, high, low, close, volume
+    매개변수:
+    - symbol: str
+        거래 쌍을 나타냅니다. 예: 'BTC/USDT'
+    - timeframe: str
+        데이터 간격을 설정합니다. 예: '1m'(1분), '4h'(4시간), '1d'(1일)
+    - start_date: str
+        데이터 수집을 시작할 시점입니다. 예: '2021-01-01 00:00:00'
+    - limit_per_request: int
+        한 번 호출 시 가져올 데이터 개수입니다. 기본값은 1000입니다.
+    - pause_sec: float
+        연속 호출 사이에 대기할 시간(초)입니다. 기본값은 1.0초입니다.
+
+    반환값:
+    - pd.DataFrame
+        날짜와 시세 데이터(open, high, low, close, volume)가 포함된 데이터프레임
     """
-
-    # 바이낸스 거래소에 연결할 수 있는 'ccxt' 객체를 생성합니다.
+    # 바이낸스 거래소 객체 생성
     exchange = ccxt.binance()
 
-    # 1) start_date(문자열)를 바이낸스 API에서 요구하는 timestamp(밀리초)로 변환
+    # 시작 날짜를 타임스탬프(ms 단위)로 변환
     since_ms = exchange.parse8601(start_date)
 
-    # 데이터를 담을 빈 리스트 생성
+    # 수집한 데이터를 저장할 빈 리스트 생성
     all_ohlcv = []
 
-    # 무한 반복문: 더 이상 받아올 데이터가 없을 때까지 계속 API를 호출
+    # 데이터 수집 반복문
     while True:
-        # 2) fetch_ohlcv: 바이낸스 서버에서 OHLCV(시세데이터) 가져오기
-        #    - since=since_ms 부터
-        #    - 최대 limit_per_request개
+        # 바이낸스 API를 사용해 OHLCV(시세 데이터) 수집
         ohlcv = exchange.fetch_ohlcv(
             symbol=symbol,
             timeframe=timeframe,
@@ -67,245 +76,229 @@ def fetch_binance_historical_ohlcv(
             limit=limit_per_request
         )
 
-        # 불러온 데이터가 없다면, (더 이상 가져올 것이 없으므로) 반복 중단
+        # 불러온 데이터가 없으면 종료
         if not ohlcv:
             break
 
-        # 3) 새로 불러온 데이터를 all_ohlcv 리스트에 추가(누적)
+        # 가져온 데이터를 리스트에 추가
         all_ohlcv += ohlcv
 
-        # 4) 새로 불러온 데이터 중 마지막 캔들의 타임스탬프를 구함
-        #    ohlcv는 [[ts, open, high, low, close, volume], [...], ...] 형태로 되어있음
-        last_ts = ohlcv[-1][0]  # ms 단위 정수값
-        # 다음 호출에서는 마지막 캔들의 시각 + 1ms 부터 요청 (겹치지 않게 하기 위함)
+        # 가장 최근 데이터의 타임스탬프를 가져와 다음 요청의 시작점으로 설정
+        last_ts = ohlcv[-1][0]
         since_ms = last_ts + 1
 
-        # 5) 잠깐 휴식 -> API 서버 호출 제한(rate limit)에 걸리지 않도록 배려
+        # API 호출 제한을 피하기 위해 대기
         time.sleep(pause_sec)
 
-        # 6) 만약 이번 호출에서 limit_per_request(기본 1000)보다 적게 가져왔다면,
-        #    더 이상 과거 데이터가 없다고 판단하고 반복 중단
+        # 마지막으로 가져온 데이터 개수가 한 번 호출의 최대 개수보다 적으면 종료
         if len(ohlcv) < limit_per_request:
             break
 
-    # 7) 누적한 리스트(all_ohlcv)를 판다스 DataFrame으로 변환
+    # 수집된 데이터를 데이터프레임으로 변환
     df = pd.DataFrame(all_ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
 
-    # timestamp(숫자:ms)을 판다스에서 인식 가능한 datetime 형식으로 변환
+    # 타임스탬프를 datetime 형식으로 변환
     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
 
-    # DataFrame 인덱스를 timestamp 컬럼으로 설정
+    # 타임스탬프를 데이터프레임의 인덱스로 설정
     df.set_index('timestamp', inplace=True)
 
-    # 시가/고가/저가/종가/거래량을 모두 float(실수)형으로 변환
+    # 시세 데이터 컬럼들을 실수(float)형으로 변환
     numeric_cols = ['open', 'high', 'low', 'close', 'volume']
     df[numeric_cols] = df[numeric_cols].astype(float)
 
-    # 인덱스(날짜)가 중복된 행이 있다면 제거
+    # 중복된 인덱스와 결측치 제거
     df = df[~df.index.duplicated()]
-
-    # 결측치(NaN) 행이 있다면 제거
     df.dropna(inplace=True)
 
-    # 최종적으로 가공이 완료된 DataFrame 반환
+    # 최종 데이터프레임 반환
     return df
 
 
 def fetch_binance_latest_ohlcv(symbol: str, timeframe: str = '4h', limit: int = 500) -> pd.DataFrame:
     """
-    2) 바이낸스에서 '최신' 데이터만 빠르게 수집하는 메서드입니다.
-    - 가장 최근(limit개)의 OHLCV 정보를 가져와서
-      실시간 모니터링 혹은 단기 분석에 활용할 때 사용합니다.
+    바이낸스에서 가장 최근 시세 데이터를 가져오는 함수입니다.
 
-    Parameters
-    ----------
-    symbol : str
-        예) 'BTC/USDT'
-    timeframe : str
-        예) '1m', '5m', '15m', '1h', '4h', '1d' 등
-    limit : int
-        불러올 캔들의 개수 (기본값 500)
+    주요 기능:
+    - 지정된 개수의 최신 데이터를 가져옵니다.
+    - 실시간 분석이나 단기 데이터가 필요한 경우 유용합니다.
 
-    Returns
-    -------
-    pd.DataFrame
-        * 인덱스: timestamp (datetime 형태)
-        * 컬럼: open, high, low, close, volume
+    매개변수:
+    - symbol: str
+        거래 쌍을 나타냅니다. 예: 'BTC/USDT'
+    - timeframe: str
+        데이터 간격을 설정합니다. 예: '1m'(1분), '4h'(4시간), '1d'(1일)
+    - limit: int
+        가져올 데이터의 최대 개수입니다. 기본값은 500입니다.
+
+    반환값:
+    - pd.DataFrame
+        날짜와 시세 데이터(open, high, low, close, volume)가 포함된 데이터프레임
     """
-
-    # 바이낸스 거래소에 연결할 수 있는 'ccxt' 객체 생성
+    # 바이낸스 거래소 객체 생성
     exchange = ccxt.binance()
 
-    # 이번에는 'since' 없이, 마지막 limit개의 데이터만 바로 불러옴
+    # 최신 데이터를 요청
     ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
 
-    # 가져온 2차원 리스트를 DataFrame으로 변환
+    # 데이터를 데이터프레임으로 변환
     df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
 
-    # timestamp를 datetime 형식으로 변환
+    # 타임스탬프를 datetime 형식으로 변환
     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
 
-    # DataFrame 인덱스를 timestamp로 설정
+    # 타임스탬프를 데이터프레임의 인덱스로 설정
     df.set_index('timestamp', inplace=True)
 
-    # 숫자형 컬럼을 float으로 변환
+    # 시세 데이터 컬럼들을 실수(float)형으로 변환
     numeric_cols = ['open', 'high', 'low', 'close', 'volume']
     df[numeric_cols] = df[numeric_cols].astype(float)
 
-    # 인덱스 중복 제거
+    # 중복된 인덱스와 결측치 제거
     df = df[~df.index.duplicated()]
-
-    # 결측치 제거
     df.dropna(inplace=True)
 
-    # 최신 데이터가 들어있는 DataFrame 반환
+    # 최종 데이터프레임 반환
     return df
 ---
 # config/db_config.py
+# 이 파일은 데이터베이스에 연결하기 위한 설정 정보를 저장합니다.
 
 DATABASE = {
-    'user': 'postgres',
-    'password': '1234',
-    'host': 'localhost',
-    'port': 5432,
-    'dbname': 'my_trading_db'
+    # 데이터베이스 사용자 계정 정보
+    'user': 'postgres',         # 데이터베이스 사용자 이름
+    'password': '1234',         # 데이터베이스 사용자 비밀번호
+
+    # 데이터베이스 서버 정보
+    'host': 'localhost',        # 서버 주소 (localhost는 현재 컴퓨터를 의미)
+    'port': 5432,               # 서버 포트 번호 (PostgreSQL의 기본 포트)
+
+    # 데이터베이스 이름
+    'dbname': 'my_trading_db'   # 연결할 데이터베이스의 이름
 }
 ---
 # data_collection/save_to_postgres.py
 
-from sqlalchemy import create_engine
-import psycopg2        # PostgreSQL에 연결하기 위한 파이썬 라이브러리
-import pandas as pd
-from typing import Optional
-from config.db_config import DATABASE  # 데이터베이스 접속 정보를 담고 있는 설정 파일
+from sqlalchemy import create_engine # SQL 작업을 쉽고 직관적으로 처리하는 라이브러리
+import psycopg2 # PostgreSQL 데이터베이스와 직접 통신할 때 사용.
+import pandas as pd # 데이터 분석 및 조작을 위한 라이브러리.
+from typing import Optional # 함수 매개변수의 타입을 명시하기 위한 라이브러리.
+from config.db_config import DATABASE # 데이터베이스 연결 정보를 포함한 설정 파일에서 DATABASE 정보를 가져옵니다.
 
-
+# OHLCV 데이터를 PostgreSQL에 저장하는 함수입니다.
 def save_ohlcv_to_postgres(df: pd.DataFrame, table_name: str = 'ohlcv_data') -> None:
     """
-    OHLCV DataFrame을 PostgreSQL에 저장하는 예시 함수입니다.
+    OHLCV 데이터를 PostgreSQL 데이터베이스에 저장합니다.
     
     Parameters
     ----------
     df : pd.DataFrame
-        timestamp(인덱스), open, high, low, close, volume 컬럼을 갖는 DataFrame.
+        OHLCV 데이터를 담고 있는 pandas DataFrame입니다.
+        필요한 컬럼: timestamp(인덱스), open, high, low, close, volume.
     table_name : str
-        데이터를 저장할 테이블 이름 (기본 'ohlcv_data').
+        데이터를 저장할 데이터베이스 테이블 이름. 기본값은 'ohlcv_data'입니다.
     """
     
-    # 1) DB 연결
-    #    - 'psycopg2.connect'에 접속 정보를 넣어 PostgreSQL에 연결.
+    # 1) 데이터베이스 연결 생성
+    # 데이터베이스 접속 정보를 사용하여 PostgreSQL에 연결합니다.
     conn = psycopg2.connect(
-        user=DATABASE['user'],
-        password=DATABASE['password'],
-        host=DATABASE['host'],
-        port=DATABASE['port'],
-        dbname=DATABASE['dbname']
+        user=DATABASE['user'],          # 사용자 이름
+        password=DATABASE['password'],  # 비밀번호
+        host=DATABASE['host'],          # 데이터베이스 호스트 주소
+        port=DATABASE['port'],          # 데이터베이스 포트 번호
+        dbname=DATABASE['dbname']       # 데이터베이스 이름
     )
-    #    - 연결된 상태에서 SQL 쿼리를 실행하기 위해 cursor(커서)를 얻어옴
-    cur = conn.cursor()
+    cur = conn.cursor()  # SQL 작업을 수행할 커서 생성
 
-    # 2) 테이블 생성(없으면 새로 만들기)
+    # 2) 테이블 생성
+    # 테이블이 존재하지 않으면 새로 생성합니다.
     create_table_query = f"""
     CREATE TABLE IF NOT EXISTS {table_name} (
-        timestamp TIMESTAMP NOT NULL,
-        open DOUBLE PRECISION,
-        high DOUBLE PRECISION,
-        low DOUBLE PRECISION,
-        close DOUBLE PRECISION,
-        volume DOUBLE PRECISION,
-        PRIMARY KEY (timestamp)
+        timestamp TIMESTAMP NOT NULL,       -- 데이터의 시간 정보
+        open DOUBLE PRECISION,             -- 시가
+        high DOUBLE PRECISION,             -- 고가
+        low DOUBLE PRECISION,              -- 저가
+        close DOUBLE PRECISION,            -- 종가
+        volume DOUBLE PRECISION,           -- 거래량
+        PRIMARY KEY (timestamp)            -- 기본 키로 timestamp를 사용
     );
     """
-    #    - 테이블을 만드는 SQL 쿼리 실행
-    cur.execute(create_table_query)
-    #    - 쿼리 적용(커밋)
-    conn.commit()
+    cur.execute(create_table_query)  # SQL 쿼리 실행
+    conn.commit()  # 변경사항 저장
 
-    # 3) DataFrame 레코드를 한 줄씩 INSERT
-    #    - 대량 삽입 시 COPY 문법 등 더 빠른 방법도 사용 가능.
+    # 3) DataFrame 데이터를 테이블에 삽입
+    # DataFrame의 각 행(row)을 데이터베이스에 추가합니다.
     for index, row in df.iterrows():
-        #   - timestamp, open, high, low, close, volume 순으로 값 매핑
         insert_query = f"""
         INSERT INTO {table_name} (timestamp, open, high, low, close, volume)
         VALUES (%s, %s, %s, %s, %s, %s)
         ON CONFLICT (timestamp)
-        DO NOTHING;
+        DO NOTHING;  -- 중복된 timestamp 데이터는 무시
         """
-        #   - index는 DataFrame의 인덱스(즉, timestamp)
-        #   - to_pydatetime()로 Python의 datetime 객체로 변환
-        #   - float(row['open']) 등으로 실수 형태 변환
         cur.execute(insert_query, (
-            index.to_pydatetime(),
-            float(row['open']),
-            float(row['high']),
-            float(row['low']),
-            float(row['close']),
-            float(row['volume'])
+            index.to_pydatetime(),  # 인덱스를 datetime 형식으로 변환
+            float(row['open']),    # 시가
+            float(row['high']),    # 고가
+            float(row['low']),     # 저가
+            float(row['close']),   # 종가
+            float(row['volume'])   # 거래량
         ))
-    #    - INSERT 이후 최종 커밋
-    conn.commit()
-    
-    #    - 커서와 연결 종료
-    cur.close()
-    conn.close()
+    conn.commit()  # 변경사항 저장
 
+    # 4) 데이터베이스 연결 종료
+    cur.close()  # 커서 닫기
+    conn.close()  # 연결 종료
 
+# PostgreSQL에서 OHLCV 데이터를 읽어오는 함수입니다.
 def load_ohlcv_from_postgres(table_name: str = 'ohlcv_data', limit: Optional[int] = None) -> pd.DataFrame:
     """
-    Postgres에서 OHLCV 데이터를 읽어오는 함수입니다.
+    PostgreSQL 데이터베이스에서 OHLCV 데이터를 가져옵니다.
     
     Parameters
     ----------
     table_name : str
-        데이터를 가져올 테이블 이름 (기본 'ohlcv_data').
+        데이터를 가져올 테이블 이름. 기본값은 'ohlcv_data'입니다.
     limit : Optional[int]
-        가져올 레코드 개수를 제한하고 싶을 때 사용 (기본 None: 제한 없음).
+        가져올 데이터의 최대 개수. 기본값은 제한 없음(None)입니다.
         
     Returns
     -------
     pd.DataFrame
-        timestamp(인덱스), open, high, low, close, volume 컬럼을 갖는 DataFrame.
+        OHLCV 데이터를 담고 있는 pandas DataFrame을 반환합니다.
     """
     
     # 1) SQLAlchemy 엔진 생성
-    user     = DATABASE['user']
-    password = DATABASE['password']
-    host     = DATABASE['host']
-    port     = DATABASE['port']
-    dbname   = DATABASE['dbname']
-    
-    # postgresql://user:password@host:port/dbname
-    engine = create_engine(f"postgresql://{user}:{password}@{host}:{port}/{dbname}")
-    
-    # 2) 필요한 SQL 쿼리 생성
-    #    - timestamp 기준으로 정렬하여 전부 가져옴
-    query = f"SELECT * FROM {table_name} ORDER BY timestamp"
-    #    - limit 파라미터가 있으면, 해당 개수만큼만 가져옴
-    if limit:
+    # 데이터베이스 연결 정보를 이용하여 엔진을 생성합니다.
+    engine = create_engine(f"postgresql://{DATABASE['user']}:{DATABASE['password']}@{DATABASE['host']}:{DATABASE['port']}/{DATABASE['dbname']}")
+
+    # 2) SQL 쿼리 생성
+    query = f"SELECT * FROM {table_name} ORDER BY timestamp"  # 데이터를 timestamp 기준으로 정렬
+    if limit:  # limit 값이 있으면 최대 limit 개수만 가져옴
         query += f" LIMIT {limit}"
 
-    # 3) pandas의 read_sql을 통해 SQL 결과를 바로 DataFrame으로 변환
-    #    - parse_dates 옵션으로 timestamp 컬럼을 datetime으로 파싱
-    df = pd.read_sql(query, engine, parse_dates=['timestamp'])
-    
-    # 4) timestamp 컬럼을 인덱스로 설정
-    df.set_index('timestamp', inplace=True)
+    # 3) SQL 결과를 DataFrame으로 변환
+    # pandas의 read_sql()을 사용하여 SQL 결과를 읽어옵니다.
+    df = pd.read_sql(query, engine, parse_dates=['timestamp'])  # timestamp를 datetime 형식으로 변환
 
-    # 가공한 DataFrame 반환
+    # 4) DataFrame 인덱스 설정
+    df.set_index('timestamp', inplace=True)  # timestamp를 인덱스로 설정
+
+    # 5) DataFrame 반환
     return df
 ---
 # data_collection/ohlcv_data_pipeline.py
 
+# 시간 관리 및 데이터 타입을 위한 모듈
 import time
 from datetime import datetime
 from typing import List, Optional
 
-# 아래는 별도 파일(fetch_binance_data.py, save_to_postgres.py)에 정의된 함수를 불러옵니다.
+# 외부 파일에서 데이터 수집 및 저장 함수 가져오기
 from data_collection.fetch_binance_data import (
-    fetch_binance_historical_ohlcv,
-    fetch_binance_latest_ohlcv
+    fetch_binance_historical_ohlcv,  # 바이낸스에서 역사적 OHLCV 데이터 수집 함수
+    fetch_binance_latest_ohlcv       # 바이낸스에서 최신 OHLCV 데이터 수집 함수
 )
-from data_collection.save_to_postgres import save_ohlcv_to_postgres
+from data_collection.save_to_postgres import save_ohlcv_to_postgres  # 데이터 저장 함수
 
 def collect_data_for_backtest(
     symbols: List[str],
@@ -317,51 +310,31 @@ def collect_data_for_backtest(
     pause_sec: float = 1.0
 ) -> None:
     """
-    Binance에서 OHLCV 데이터를 수집 후, PostgreSQL에 저장하는 함수.
-    
-    생계형 투자를 위해 다음을 고려했습니다:
-    1) 주요 타임프레임: 1h, 4h, 1d (신뢰도 높은 신호를 얻기 위함)
-    2) 부가적으로 15m를 추가 가능 (세밀한 돌파 시점 확인), 
-       그러나 지나치게 짧은 분봉은 과매매로 이어질 수 있으므로 주의
-    3) start_date를 5년 전(2018년) 정도로 설정하여 충분히 긴 기간(상승장/하락장 모두 포함) 확보
-    
-    Parameters
-    ----------
-    symbols : List[str]
-        수집할 암호화폐 심볼 목록 (예: ["BTC/USDT", "ETH/USDT"])
-    timeframes : List[str]
-        원하는 타임프레임 목록 (예: ["1h", "4h", "1d", "15m"] 등)
-    use_historical : bool
-        True 면 start_date부터 현재까지 역사적 데이터를 반복 호출로 수집 (기본값: True).
-        False 면 최근 latest_limit개의 데이터만 가져옵니다.
-    start_date : str, optional
-        대량(역사적) 데이터 수집 시작 시점(UTC), 기본값: '2018-01-01 00:00:00' (약 5년치).
-        use_historical=False일 경우 사용되지 않음.
-    limit_per_request : int
-        (역사적 수집 시) fetch_ohlcv 1회당 가져올 최대 캔들 수 (기본 1000).
-    latest_limit : int
-        (최신 데이터 수집 시) 가져올 캔들의 개수 (기본 500).
-    pause_sec : float
-        심볼/타임프레임별 호출 후 대기 시간(초). API 과부하 방지.
+    Binance에서 OHLCV 데이터를 수집 후 PostgreSQL 데이터베이스에 저장하는 함수입니다.
+
+    Parameters:
+        symbols (List[str]): 데이터 수집을 원하는 암호화폐 심볼 리스트. 예: ["BTC/USDT", "ETH/USDT"]
+        timeframes (List[str]): 데이터 수집을 원하는 타임프레임 리스트. 예: ["1h", "4h", "1d"]
+        use_historical (bool): True면 start_date부터 모든 데이터를 수집, False면 최신 데이터만 수집.
+        start_date (str, optional): 역사적 데이터 수집 시작 날짜 (UTC 기준). 기본값: '2018-01-01 00:00:00'
+        limit_per_request (int): 한 번의 요청에서 가져올 데이터 수. 기본값: 1000
+        latest_limit (int): 최신 데이터 수집 시 가져올 데이터 수. 기본값: 500
+        pause_sec (float): 각 요청 사이의 대기 시간(초). 기본값: 1.0
+
+    Returns:
+        None
     """
-    
-    # (1) 심볼(예: "BTC/USDT", "ETH/USDT") 목록을 하나씩 순회
+    # (1) 각 암호화폐 심볼에 대해 작업 시작
     for symbol in symbols:
-        # (2) 각 심볼에 대해 원하는 타임프레임(예: "1h", "4h", "1d" 등)마다 순회
+        # (2) 각 타임프레임에 대해 작업 시작
         for tf in timeframes:
             print(f"\n[*] Fetching {symbol} - {tf} data...")
 
-            # -------------------------------
-            # 1) 바이낸스에서 OHLCV 데이터 수집
-            # -------------------------------
+            # 데이터 수집 단계
             if use_historical:
-                # 장기간(역사적) 데이터를 한 번에 전부 수집하는 경우
+                # (a) 역사적 데이터 수집
                 if not start_date:
-                    # 만약 start_date가 지정되지 않았는데 'use_historical=True'라면 오류 처리
-                    raise ValueError("start_date must be provided for historical data.")
-                
-                # fetch_binance_historical_ohlcv 함수를 이용해
-                # start_date부터 현재까지 데이터를 모두 불러옴
+                    raise ValueError("start_date는 역사적 데이터 수집에 필수입니다.")
                 df = fetch_binance_historical_ohlcv(
                     symbol=symbol,
                     timeframe=tf,
@@ -370,37 +343,27 @@ def collect_data_for_backtest(
                     pause_sec=pause_sec
                 )
             else:
-                # 최근 latest_limit개의 데이터만 가져오고 싶을 때
+                # (b) 최신 데이터 수집
                 df = fetch_binance_latest_ohlcv(
                     symbol=symbol,
                     timeframe=tf,
                     limit=latest_limit
                 )
 
-            # -------------------------------
-            # 2) 테이블 이름 정의
-            # -------------------------------
-            # 예: 심볼 "BTC/USDT" -> "btcusdt", 타임프레임 "4h" -> "4h"
-            # 최종 테이블명 "ohlcv_btcusdt_4h"
+            # 테이블 이름 생성
             table_name = f"ohlcv_{symbol.replace('/', '').lower()}_{tf}"
             print(f"    -> Total Rows Fetched: {len(df)}")
-            
-            # -------------------------------
-            # 3) DB에 저장
-            # -------------------------------
-            # 위에서 불러온 DataFrame(df)을 지정된 테이블(table_name)에 저장
+
+            # 수집한 데이터를 PostgreSQL 데이터베이스에 저장
             save_ohlcv_to_postgres(df, table_name=table_name)
             print(f"    -> Saved to table: {table_name}")
 
-            # -------------------------------
-            # 4) 다음 심볼/타임프레임으로 넘어가기 전 대기
-            # -------------------------------
-            # API 호출을 잇달아 하면 서버 부하 및 제한이 걸릴 수 있으므로 잠시 휴식
+            # 다음 요청 전 잠시 대기 (API 부하 방지)
             time.sleep(pause_sec)
 ---
 # strategies/signal_generator.py
 
-import pandas as pd
+import pandas as pd # Pandas 라이브러리: 데이터 분석 및 처리 도구
 
 def calculate_breakout_signals(
     df: pd.DataFrame,
@@ -411,54 +374,74 @@ def calculate_breakout_signals(
     breakout_buffer: float = 0.0
 ) -> pd.DataFrame:
     """
-    전고점(rolling max) 돌파, 거래량 필터, 확정 돌파 시그널을 계산하는 함수입니다.
+    데이터에서 전고점 돌파, 거래량 조건, 확정 돌파 신호를 계산하는 함수입니다.
+
     ------------------------------------------------------------------------
-    매개변수(Parameter)
-    - df: 시가, 고가, 저가, 종가, 거래량 등의 정보를 담고 있는 DataFrame
-    - window: '전고점' 및 '평균 거래량' 계산 시 사용할 이동 윈도우 크기 (기본값: 20)
-    - vol_factor: 돌파 시 거래량이 얼마만큼(배수) 증가했는지 확인하기 위한 배수 (기본값: 1.5)
-    - confirm_bars: 돌파 신호가 연속으로 몇 개의 봉에서 이어져야 '확정 돌파'로 볼지 설정 (기본값: 2)
-    - use_high: True면 고가 기준, False면 종가 기준으로 돌파 판단 (기본값: False)
-    - breakout_buffer: 돌파 시 (전고점 + 버퍼)의 형태로 추가 여유를 둘 때 사용 (기본값: 0.0)
+    매개변수 (Parameters):
+    - df (DataFrame): 데이터를 포함한 DataFrame (열: 시가, 고가, 저가, 종가, 거래량 등)
+    - window (int): 전고점과 평균 거래량 계산 기준이 되는 과거 데이터 기간 (기본값: 20)
+    - vol_factor (float): 거래량이 과거 평균 대비 얼마나 높은지를 결정하는 배수 (기본값: 1.5)
+    - confirm_bars (int): 돌파 신호가 몇 개의 연속 봉에서 발생해야 확정 돌파로 간주할지 (기본값: 2)
+    - use_high (bool): True이면 고가 기준, False이면 종가 기준으로 돌파 여부 판단 (기본값: False)
+    - breakout_buffer (float): 돌파 기준에 추가 여유값 (비율) (기본값: 0.0)
     ------------------------------------------------------------------------
-    반환(Return)
-    - 원본 DataFrame(df)에 돌파 신호 컬럼들이 추가된 DataFrame.
-      (highest_xx, breakout_signal, volume_condition, confirmed_breakout 등)
+    반환 (Return):
+    - 추가 컬럼들이 포함된 DataFrame:
+      - highest_xx: window 기간 동안의 전고점
+      - breakout_signal: 돌파 신호(True/False)
+      - volume_condition: 거래량 조건 만족 여부(True/False)
+      - confirmed_breakout: 확정 돌파 신호(True/False)
     """
 
-    # 1) 전고점(rolling max) 계산: 과거 window개의 'high' 값 중 최댓값
-    #    - 예: window=20이면 지난 20봉(캔들) 동안 가장 높았던 고가
-    df[f'highest_{window}'] = df['high'].rolling(window).max()
-    
-    # 2) 돌파 시그널 계산: 종가 or 고가가 '전고점 + 버퍼'보다 높은지 확인
-    if use_high:
-        # use_high=True일 경우: 'high(고가)' 기준으로 돌파 여부 확인
-        df['breakout_signal'] = df['high'] > (df[f'highest_{window}'] + df[f'highest_{window}'] * breakout_buffer)
-    else:
-        # use_high=False일 경우: 'close(종가)' 기준으로 돌파 여부 확인
-        df['breakout_signal'] = df['close'] > (df[f'highest_{window}'] + df[f'highest_{window}'] * breakout_buffer)
-    
-    # 3) 거래량 조건: 과거 window봉의 평균 거래량 대비 vol_factor(배수) 이상인지 체크
-    #    - 예: window=20, vol_factor=1.5 => 최근 20봉 평균 거래량의 1.5배 이상인지
-    df[f'vol_ma_{window}'] = df['volume'].rolling(window).mean()  # 거래량 이동평균
-    df['volume_condition'] = df['volume'] > (vol_factor * df[f'vol_ma_{window}'])
-    
-    # 4) '확정 돌파(confirmed_breakout)' 계산
-    #    - 예: confirm_bars=2 => 돌파 신호(breakout_signal)가 연속 2봉 이상 True 이어야 확정으로 판정
-    df['confirmed_breakout'] = (
-        df['breakout_signal']
-        .rolling(confirm_bars)               # 최근 confirm_bars 봉 범위로 rolling
-        .apply(lambda x: all(x), raw=True)   # 해당 범위 내의 값이 모두 True인지 확인
-        .fillna(False)                       # 첫 부분(rolling 불충분 구간)은 NaN이므로 False 처리
+    # 1. 전고점(highest_xx) 계산
+    # - window 기간 동안 고가(high)의 최댓값(전고점)을 구합니다.
+    # - shift(1)를 통해 현재 봉 데이터를 제외하고 계산.
+    df[f'highest_{window}'] = (
+        df['high'].shift(1)  # 현재 봉 제외
+        .rolling(window)    # 지정한 window 기간 동안 계산
+        .max()              # 해당 기간 내 최대값(전고점)
     )
-    
+
+    # 2. 돌파 신호(breakout_signal) 계산
+    # - 주가가 (전고점 + breakout_buffer)보다 높은 경우 돌파로 간주.
+    # - use_high가 True일 경우 고가(high), False일 경우 종가(close)를 기준으로 계산.
+    if use_high:
+        df['breakout_signal'] = df['high'] > (
+            df[f'highest_{window}'] * (1 + breakout_buffer)
+        )
+    else:
+        df['breakout_signal'] = df['close'] > (
+            df[f'highest_{window}'] * (1 + breakout_buffer)
+        )
+
+    # 3. 거래량 조건(volume_condition) 계산
+    # - window 기간 동안 평균 거래량(vol_ma_xx)을 계산.
+    # - 현재 거래량이 평균 거래량 * vol_factor보다 큰 경우 조건 만족(True).
+    df[f'vol_ma_{window}'] = (
+        df['volume'].shift(1)  # 현재 봉 제외
+        .rolling(window)      # 지정된 window 기간 동안 평균값 계산
+        .mean()               # 평균 거래량
+    )
+    df['volume_condition'] = df['volume'] > (vol_factor * df[f'vol_ma_{window}'])
+
+    # 4. 확정 돌파(confirmed_breakout) 계산
+    # - 돌파 신호가 confirm_bars 기간 동안 연속 발생하면 확정 돌파(True).
+    # - rolling(confirm_bars)을 사용해 연속 신호 수를 합산.
+    df['confirmed_breakout'] = (
+        df['breakout_signal'].rolling(confirm_bars).sum() == confirm_bars
+    )
+
+    # NaN(초기 값 없음) 처리: False로 채움
+    df['confirmed_breakout'] = df['confirmed_breakout'].fillna(False)
+
     return df
 ---
 # strategies/stop_loss_take_profit.py
 
+# 데이터 분석 및 수치 연산 라이브러리
 import pandas as pd
 import numpy as np
-import ta  # 'ta' 라이브러리는 여러 기술적 지표(ATR, RSI, MACD 등)를 제공
+import ta  # 'ta'는 ATR, RSI 등 다양한 기술적 지표를 제공하는 라이브러리
 
 def apply_stop_loss_atr(
     df: pd.DataFrame,
@@ -468,55 +451,44 @@ def apply_stop_loss_atr(
     entry_price_col: str = 'entry_price'
 ) -> pd.DataFrame:
     """
-    ATR(평균진폭)을 활용하여 손절가(stop_loss_price)를 DataFrame에 추가하는 함수입니다.
-    실제 매매에서는 '진입 가격'에 기반해 손절가를 설정하는 경우가 많습니다.
+    ATR(평균진폭)을 기반으로 손절가(stop_loss_price)를 계산하여 DataFrame에 추가합니다.
     
-    매개변수
-    ----------
-    df : pd.DataFrame
-        시가, 고가, 저가, 종가 등의 기본 정보와 매수신호(long_entry) 등이 포함된 DataFrame
-    atr_window : int
-        ATR 계산에 사용하는 봉(캔들)의 개수 (기본값: 14)
-    atr_multiplier : float
-        ATR에 곱해줄 배수 (기본값: 2.0 -> '진입가 - 2*ATR' 형태의 손절가)
-    sl_colname : str
-        결과로 저장할 손절가 컬럼명 (기본값: 'stop_loss_price')
-    entry_price_col : str
-        진입가(매수가)를 저장/유지할 컬럼명 (기본값: 'entry_price')
+    ------------------------------------------------------------------------
+    매개변수 (Parameters):
+    - df (DataFrame): 매수 신호(long_entry)와 가격 정보(시가, 고가, 저가, 종가 등)가 포함된 데이터.
+    - atr_window (int): ATR 계산에 사용할 과거 캔들 수. 기본값: 14
+    - atr_multiplier (float): 손절가 계산 시 ATR에 곱할 배수. 기본값: 2.0
+    - sl_colname (str): 계산된 손절가를 저장할 컬럼명. 기본값: 'stop_loss_price'
+    - entry_price_col (str): 진입가(매수가)를 저장할 컬럼명. 기본값: 'entry_price'
 
-    반환값
-    ----------
-    pd.DataFrame
-        원본 DataFrame에 'atr', 'entry_price', 'stop_loss_price' 컬럼이 추가된 상태
+    반환값 (Return):
+    - DataFrame: 'atr', 'entry_price', 'stop_loss_price' 컬럼이 추가된 데이터프레임.
     """
-    # 1) ta 라이브러리의 AverageTrueRange 클래스를 이용해 ATR을 계산합니다.
-    #    - high, low, close 컬럼과, atr_window(14)가 필요
-    #    - fillna=True를 사용해 결측치가 생기지 않도록 처리
+
+    # 1) ATR(평균진폭) 계산
+    # - AverageTrueRange: 고가(high), 저가(low), 종가(close)를 사용해 변동성을 계산.
+    # - window: 계산 기준이 되는 캔들 수
     atr_indicator = ta.volatility.AverageTrueRange(
         high=df['high'],
         low=df['low'],
         close=df['close'],
         window=atr_window,
-        fillna=True
+        fillna=True  # 결측값 발생 방지
     )
-    
-    # ATR 계산 결과를 'atr' 컬럼에 저장
     df['atr'] = atr_indicator.average_true_range()
-    
-    # 2) entry_price: 진입 시점(= long_entry가 True인 곳)의 종가를 저장
-    #    - np.where를 이용해 매수신호(True)인 지점에서는 'close'를, 
-    #      아니라면 np.nan을 저장
+
+    # 2) 매수 시점의 종가(entry_price) 기록
+    # - 매수 신호(long_entry=True) 발생 시 종가(close)를 진입가로 설정.
     df[entry_price_col] = np.where(df['long_entry'], df['close'], np.nan)
-    
-    # 3) forward fill: 한 번 진입한 뒤에는 별도 청산 시점이 오기 전까지 
-    #    같은 entry_price를 유지(단순 예시).
-    #    => 이렇게 해서 전체 구간에 걸쳐 진입가가 '계속' 기록됨
+
+    # 3) 진입가 유지 (forward fill)
+    # - 진입 이후 익절/손절까지 동일한 진입가 유지.
     df[entry_price_col] = df[entry_price_col].ffill()
-    
-    # 4) 손절가 계산: 
-    #    예) 손절가 = entry_price - (atr * atr_multiplier)
+
+    # 4) 손절가(stop_loss_price) 계산
+    # - 손절가 = 진입가 - (ATR × ATR 배수)
     df[sl_colname] = df[entry_price_col] - (df['atr'] * atr_multiplier)
-    
+
     return df
 
 
@@ -527,31 +499,26 @@ def apply_take_profit_ratio(
     entry_price_col: str = 'entry_price'
 ) -> pd.DataFrame:
     """
-    고정된 이익률( profit_ratio )을 사용하여 익절가(take_profit_price)를 계산하는 함수입니다.
+    고정된 목표 수익률을 사용하여 익절가(take_profit_price)를 계산합니다.
     
-    매개변수
-    ----------
-    df : pd.DataFrame
-        매수 시그널과 진입가가 포함된 DataFrame
-    profit_ratio : float
-        목표 수익률 (기본값: 0.05 => 5% 수익에 익절)
-    tp_colname : str
-        익절가를 저장할 컬럼명
-    entry_price_col : str
-        진입가가 기록된 컬럼명
-    
-    반환값
-    ----------
-    pd.DataFrame
-        원본 DataFrame에 익절가(take_profit_price)가 추가된 상태
+    ------------------------------------------------------------------------
+    매개변수 (Parameters):
+    - df (DataFrame): 매수 신호와 진입가가 포함된 데이터프레임.
+    - profit_ratio (float): 목표 수익률 (기본값: 0.05, 즉 5% 수익에 익절).
+    - tp_colname (str): 계산된 익절가를 저장할 컬럼명.
+    - entry_price_col (str): 진입가가 기록된 컬럼명.
+
+    반환값 (Return):
+    - DataFrame: 익절가(take_profit_price)가 추가된 데이터프레임.
     """
-    # 익절가 = 진입가 * (1 + 목표 수익률)
+
+    # 익절가 계산: 진입가 × (1 + 목표 수익률)
     df[tp_colname] = df[entry_price_col] * (1 + profit_ratio)
     return df
 ---
 # strategies/risk_management.py
 
-import math
+import math # 수학 함수 사용을 위한 math 모듈
 
 def calculate_position_size(
     account_balance: float,
@@ -561,70 +528,46 @@ def calculate_position_size(
     fee_rate: float = 0.001
 ) -> float:
     """
-    --------------------------------------------------------------------------------
-    1) 돌파매매 전략에서 강조하는 '1회 손실 최소화' 개념을 반영한 포지션 크기 계산 함수
-    --------------------------------------------------------------------------------
-    - '돌파매매 전략' 책(저자 systrader79 & 김대현)에서 가장 중요한 리스크 관리 개념:
-        "한 번의 트레이드에서 계좌의 (n)% 이상 잃지 말자."
-      예) 계좌 10,000 USDT, n=1% -> 이번 매매로 최대로 잃을 수 있는 돈은 100 USDT
-    - 손절 가격(stop_loss_price)이 정해진 상태에서,
-      (진입가(entry_price) ~ 손절가(stop_loss_price))까지의 가격 차이를 이용해
-      1코인(또는 1계약)당 '최대 예상 손실액'을 구한 뒤,
-      '계좌에서 허용하는 총 손실 한도'와 비교하여 구매 가능한 최대 코인 수를 구합니다.
+    한 번의 매매에서 최대 손실을 제한하도록 포지션 크기를 계산하는 함수입니다.
 
-    파라미터 설명
-    -------------
-    1) account_balance : float
-       - 계좌에 있는 총 금액 (예: 10,000 USDT)
-    2) risk_per_trade : float
-       - 한 번의 매매로 잃어도 괜찮다고 생각하는 비율(계좌 대비)
-       - 예) 0.01 = 1%, 0.02 = 2%
-    3) entry_price : float
-       - 내가 매수(진입)하려는 가격 (돌파 지점 등)
-    4) stop_loss_price : float
-       - 손절가격 (이 가격까지 떨어지면 손실을 확정하고 청산)
-    5) fee_rate : float
-       - 매수 시 발생하는 수수료 비율 (기본 0.1% = 0.001)
-       - 실제 매도 시 수수료, 슬리피지 등은 별도 고려 필요
+    매개변수:
+    ----------
+    - account_balance (float): 계좌 잔고 (예: 10,000 USDT)
+    - risk_per_trade (float): 허용 가능한 손실 비율 (예: 0.01 = 1%)
+    - entry_price (float): 매수 가격
+    - stop_loss_price (float): 손절 가격
+    - fee_rate (float): 매수 수수료 비율 (기본값: 0.001 = 0.1%)
 
-    반환값
-    -------
-    float
-        - '한 번의 매매에서 계좌 (n)% 손실 한도'를 초과하지 않는 범위 내에서
-          매수(혹은 매수 계약 진입)할 수 있는 코인(또는 계약) 수
+    반환값:
+    ----------
+    - float: 계산된 매수 가능 코인(또는 계약) 수량
 
-    작동 흐름 (간단히)
-    ------------------
-    1) price_diff = |entry_price - stop_loss_price|
-       => 1코인당 가격 하락 시 발생할 수 있는 손실액(최악의 경우)
-    2) max_risk_amount = account_balance * risk_per_trade
-       => 이번 트레이드로 감수할 수 있는 손실 총액 (ex. 10,000 * 0.01 = 100 USDT)
-    3) fee_amount = entry_price * fee_rate
-       => 매수 시 수수료 (ex. 100 USDT * 0.001 = 0.1 USDT)
-    4) per_unit_loss = price_diff + fee_amount
-       => 코인 1개당 발생 가능한 최대 손실액
-    5) position_size = max_risk_amount / per_unit_loss
-       => 허용손실 / (1코인당 손실) = 매수 가능 최대 코인 수
-
-    주의사항
-    --------
-    - (entry_price - stop_loss_price)가 0이면, 계산에 문제가 생길 수 있으므로 체크 필요.
-    - 실제 매매에서는 매도 수수료, 슬리피지(체결시 가격차), 펀딩피(선물) 등을 함께 고려하면 더 정확합니다.
-    - 레버리지를 사용하는 경우 마진(증거금)과 청산가격(유지증거금) 계산 등 추가 로직이 필요합니다.
+    계산 절차:
+    1. 코인 1개당 손실 금액 계산:
+       `price_diff = abs(entry_price - stop_loss_price)`
+    2. 최대 감당 가능 손실 금액 계산:
+       `max_risk_amount = account_balance * risk_per_trade`
+    3. 수수료 계산:
+       `fee_amount = entry_price * fee_rate`
+    4. 코인 1개당 총 손실:
+       `per_unit_loss = price_diff + fee_amount`
+    5. 허용 손실 금액 내에서 매수 가능한 최대 코인 수 계산:
+       `position_size = max_risk_amount / per_unit_loss`
     """
-    # 1. 코인 1개당 (진입~손절) 구간에서 발생 가능한 최대 손실금액 계산
+
+    # 코인 1개당 손실 계산 (진입가와 손절가의 차이)
     price_diff = abs(entry_price - stop_loss_price)
 
-    # 2. 계좌에서 이번 매매에 감당할 수 있는 손실 한도(계좌잔고 × 리스크 비율)
+    # 감당 가능한 최대 손실 금액
     max_risk_amount = account_balance * risk_per_trade
 
-    # 3. 매수 시 발생할 수수료 (매도 시 수수료는 별도)
+    # 매수 시 발생할 수수료
     fee_amount = entry_price * fee_rate
 
-    # 4. 코인 1개당 실제 손실: (진입-손절) + 매수 수수료
+    # 코인 1개당 총 손실 계산
     per_unit_loss = price_diff + fee_amount
 
-    # 5. 최대 손실 한도를 넘지 않는 선에서 매수할 수 있는 코인 수(또는 계약 수)
+    # 최대 매수 가능 코인 수 계산
     if per_unit_loss > 0:
         position_size = max_risk_amount / per_unit_loss
     else:
@@ -639,85 +582,654 @@ def split_position_sizes(
     scale_mode: str = 'equal'
 ) -> list:
     """
-    ------------------------------------------------------------------------------------------------
-    2) 돌파매매 전략에서 자주 활용되는 '피라미딩(분할매매)' 기법을 예시로 구현한 함수
-    ------------------------------------------------------------------------------------------------
-    - "돌파 성공 후 추세가 이어질 때, 매수 물량을 추가"하는 기법을 '피라미딩'이라고 합니다.
-      예) 돌파 매매 후 상승 추세가 유효하면 2차 매수를 더 넣어 수익을 극대화.
-    - 여기서는 '전체 매수할 물량'이 정해져 있다고 할 때, 이를 몇 번에 나누어 살지,
-      그리고 그 분할 비율을 어떻게 조정할지(균등/피라미드 업/피라미드 다운)를 간단히 보여줍니다.
+    전체 매수 물량을 여러 단계로 나누는 분할 매매 함수입니다.
 
-    파라미터 설명
-    -------------
-    1) total_position_size : float
-       - 최종적으로 매수하고자 하는 전체 코인 수(또는 계약 수)
-         (예: calculate_position_size()로부터 받은 결과)
-    2) split_count : int, optional
-       - 몇 번에 나누어 매수할지 (기본값 3번)
-    3) scale_mode : str, optional
-       - 'equal'       : 균등 분할 (예: 총 9개, 3번 -> 각 3개씩)
-       - 'pyramid_up'   : 뒤로 갈수록 더 많은 비중으로 매수 (1 : 2 : 3)
-                          => 추세가 확실해질수록 매수량을 늘려 수익 극대화
-       - 'pyramid_down' : 반대로 앞에서 많이 매수하고, 뒤로 갈수록 줄임 (3 : 2 : 1)
-                          => 돌파 직후 초기포지션을 크게 잡는 전략과 유사
+    매개변수:
+    ----------
+    - total_position_size (float): 매수할 총 코인 수량
+    - split_count (int): 매수 단계를 몇 번으로 나눌지 (기본값: 3)
+    - scale_mode (str): 분할 비율 설정
+        * 'equal': 균등 분할
+        * 'pyramid_up': 뒤로 갈수록 매수 물량 증가
+        * 'pyramid_down': 앞으로 갈수록 매수 물량 감소
 
-    반환값
-    -------
-    list
-        각 분할 단계(예: 3단계)에 할당될 매수 물량(코인 수) 목록
+    반환값:
+    ----------
+    - list: 각 단계별 매수 물량
 
-    예시
-    ----
+    예시:
+    ------
     >>> split_position_sizes(9, split_count=3, scale_mode='equal')
     [3.0, 3.0, 3.0]
 
     >>> split_position_sizes(9, split_count=3, scale_mode='pyramid_up')
-    [1.5, 3.0, 4.5]   # 합계=9
-
-    관련 개념 (돌파매매 전략과의 연결)
-    --------------------------------
-    - 책에서는 '돌파 지점'을 여러 구간으로 나눠, 돌파 후 일정 % 더 오르면 2차 매수,
-      또 일정 % 더 오르면 3차 매수… 이런 식으로 '피라미딩'을 제안합니다.
-    - 본 함수는 '몇 번에 나누고', '어떤 비율로 나눌지'만 계산하는 예시입니다.
-      실제로 "언제 2차 매수를 실행하느냐?"(가격 조건 등)는 별도 로직 필요.
+    [1.5, 3.0, 4.5]
     """
-    # 1) 매수 횟수(split_count)는 1 이상이어야 한다.
+
+    # 최소 1회 이상 매수를 나눌 수 있어야 함
     if split_count < 1:
-        raise ValueError("split_count는 최소 1 이상의 정수여야 합니다.")
+        raise ValueError("split_count는 최소 1 이상이어야 합니다.")
 
-    # 2) 지원하는 모드(세 가지) 확인
+    # 지원하지 않는 모드는 예외 처리
     if scale_mode not in ['equal', 'pyramid_up', 'pyramid_down']:
-        raise ValueError("scale_mode는 'equal', 'pyramid_up', 'pyramid_down' 중 하나를 사용하세요.")
+        raise ValueError("scale_mode는 'equal', 'pyramid_up', 'pyramid_down' 중 하나여야 합니다.")
 
-    # 3) 분할매매 계산 로직
     if scale_mode == 'equal':
-        # (A) 균등 분할
-        # 예: 총 9개를 3회 -> 각 3개씩
+        # 균등 분할
         split_size = total_position_size / split_count
         return [split_size] * split_count
 
     elif scale_mode == 'pyramid_up':
-        # (B) 피라미드 업
-        # 예: split_count=3 이면 비율은 (1 : 2 : 3) = 합계 6
-        # => 첫 번째 분할은 총량의 1/6, 두 번째 분할은 2/6, 세 번째 분할은 3/6
-        ratio_sum = split_count * (split_count + 1) / 2  # n(n+1)/2 공식
-        sizes = []
-        for i in range(1, split_count + 1):
-            portion = (i / ratio_sum) * total_position_size
-            sizes.append(portion)
-        return sizes
+        # 피라미드 업: 뒤로 갈수록 더 많은 매수 비중
+        ratio_sum = split_count * (split_count + 1) / 2  # 합계 계산 (1+2+3...)
+        return [(i / ratio_sum) * total_position_size for i in range(1, split_count + 1)]
 
     elif scale_mode == 'pyramid_down':
-        # (C) 피라미드 다운
-        # 예: split_count=3 이면 비율은 (3 : 2 : 1) = 합계 6
-        # => 첫 번째 분할은 총량의 3/6, 두 번째 2/6, 세 번째 1/6
+        # 피라미드 다운: 앞으로 갈수록 더 많은 매수 비중
         ratio_sum = split_count * (split_count + 1) / 2
-        sizes = []
-        # range(3, 0, -1) -> 3, 2, 1
-        for i in range(split_count, 0, -1):
-            portion = (i / ratio_sum) * total_position_size
-            sizes.append(portion)
-        return sizes
+        return [(i / ratio_sum) * total_position_size for i in range(split_count, 0, -1)]
+---
+# backtesting/verify_signals.py
+
+import matplotlib.pyplot as plt # 시각화를 위한 matplotlib
+import pandas as pd
+
+# 데이터베이스 및 시그널 계산 함수
+from data_collection.save_to_postgres import load_ohlcv_from_postgres
+from strategies.signal_generator import calculate_breakout_signals
+
+def verify_breakout_signals(
+    symbol: str,
+    timeframe: str,
+    table_name: str,
+    window: int = 20,
+    vol_factor: float = 1.5,
+    confirm_bars: int = 2,
+    use_high: bool = False,
+    breakout_buffer: float = 0.0,
+    plot_chart: bool = False
+):
+    """
+    돌파 시그널 검증 및 시각화 함수.
+
+    주요 기능:
+    ----------
+    1. PostgreSQL에서 (symbol, timeframe)에 해당하는 데이터를 로드.
+    2. 돌파 시그널(전고점, 거래량, 확정 돌파)을 계산.
+    3. 시그널이 의도대로 생성되었는지 수치적으로 검증.
+    4. (선택적) 차트를 통해 시그널을 시각적으로 확인.
+
+    매개변수:
+    ----------
+    - symbol (str): 자산 심볼 (예: "BTC/USDT")
+    - timeframe (str): 데이터의 시간 간격 (예: "4h")
+    - table_name (str): 데이터베이스 테이블명
+    - window (int): 전고점 계산 기간
+    - vol_factor (float): 거래량 필터 배수
+    - confirm_bars (int): 확정 돌파를 위한 봉 개수
+    - use_high (bool): True면 고가 기준 돌파, False면 종가 기준 돌파
+    - breakout_buffer (float): 돌파 기준에 추가할 버퍼 비율
+    - plot_chart (bool): True면 차트로 결과 시각화
+
+    반환값:
+    ----------
+    None
+    """
+
+    print(f"\n[Verification] symbol={symbol}, timeframe={timeframe}, table={table_name}")
+
+    # 1. 데이터 로드
+    df = load_ohlcv_from_postgres(table_name=table_name)
+    if df.empty:
+        print(f"  -> No data loaded from table: {table_name}")
+        return
+
+    # 2. 돌파 시그널 계산
+    df = calculate_breakout_signals(
+        df=df,
+        window=window,
+        vol_factor=vol_factor,
+        confirm_bars=confirm_bars,
+        use_high=use_high,
+        breakout_buffer=breakout_buffer
+    )
+
+    # -------------------------------
+    # 3. 수치적 검증
+    # -------------------------------
+
+    # (A) breakout_signal 검증
+    condition_breakout_true = (df['breakout_signal'] == True)
+    error_rows = df[condition_breakout_true & 
+                    (df['close'] <= df[f'highest_{window}'] * (1 + breakout_buffer))]
+    if not error_rows.empty:
+        print("[Warning] breakout_signal=True 이지만 실제로 돌파되지 않은 봉이 발견됨!")
+        print(error_rows[['close', f'highest_{window}', 'breakout_signal']].head(10))
+    else:
+        print(" -> breakout_signal과 실제 가격 돌파가 일치합니다. (수치상 오차 없음)")
+
+    # (B) volume_condition 검증
+    cond_vol_true = (df['volume_condition'] == True)
+    error_vol = df[cond_vol_true & (df['volume'] <= df[f'vol_ma_{window}'] * vol_factor)]
+    if not error_vol.empty:
+        print("[Warning] volume_condition=True 이지만 실제 거래량 조건이 만족되지 않은 봉 발견!")
+        print(error_vol[['volume', f'vol_ma_{window}', 'volume_condition']].head(10))
+    else:
+        print(" -> volume_condition과 실제 거래량 조건이 일치합니다. (수치상 오차 없음)")
+
+    # -------------------------------
+    # 4. 차트 시각화 (선택 사항)
+    # -------------------------------
+    if plot_chart:
+        # 최근 300개 봉만 시각화 (데이터가 많을 경우 복잡해짐)
+        df_plot = df.tail(300)
+
+        plt.figure(figsize=(12, 6))
+        plt.plot(df_plot.index, df_plot['close'], label='Close', color='blue')
+
+        # 전고점(highest_xx) 표시
+        plt.plot(df_plot.index, df_plot[f'highest_{window}'], label=f"Highest({window})", linestyle='--', color='orange')
+
+        # breakout_signal이 True인 지점에 빨간 마커
+        breakout_points = df_plot[df_plot['breakout_signal'] == True]
+        plt.scatter(breakout_points.index, breakout_points['close'], color='red', marker='^', label='Breakout Signal')
+
+        # confirmed_breakout이 True인 지점에 녹색 마커
+        confirmed_points = df_plot[df_plot['confirmed_breakout'] == True]
+        plt.scatter(confirmed_points.index, confirmed_points['close'], color='green', marker='o', label='Confirmed Breakout')
+
+        plt.title(f"{symbol} {timeframe} - Breakout Signal Verification")
+        plt.xlabel("Time")
+        plt.ylabel("Price")
+        plt.legend()
+        plt.show()
+   ---
+   # backtesting/performance_metrics.py
+
+# 데이터 분석과 수치 연산을 위한 라이브러리
+import pandas as pd
+import numpy as np
+
+def calculate_monthly_performance(trades_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    월별 손익(PnL), 매매 횟수, 승률을 계산하는 함수.
+
+    주요 기능:
+    ----------
+    - 월(YYYY-MM) 단위로 매매 데이터를 그룹화.
+    - 각 월별 총 손익, 매매 횟수, 승률을 계산.
+
+    매개변수:
+    ----------
+    - trades_df (DataFrame): 매매 기록 데이터프레임.
+      필요한 컬럼: exit_time(datetime), pnl(float).
+
+    반환값:
+    ----------
+    - DataFrame: 월별 성과를 요약한 데이터프레임.
+    """
+    # 연월(YYYY-MM) 기준으로 그룹화
+    trades_df['year_month'] = trades_df['exit_time'].dt.to_period('M')
+
+    # 그룹별 성과 계산
+    grouped = trades_df.groupby('year_month')
+    results = []
+
+    for ym, grp in grouped:
+        total_pnl = grp['pnl'].sum()  # 총 손익
+        num_trades = len(grp)        # 매매 횟수
+        win_trades = (grp['pnl'] > 0).sum()  # 이긴 매매 수
+        win_rate = win_trades / num_trades * 100.0 if num_trades > 0 else 0.0  # 승률 계산
+
+        results.append({
+            'year_month': str(ym),
+            'total_pnl': total_pnl,
+            'num_trades': num_trades,
+            'win_rate(%)': win_rate
+        })
+
+    return pd.DataFrame(results)
+
+
+def calculate_yearly_performance(trades_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    연도별 손익(PnL), 매매 횟수, 승률을 계산하는 함수.
+
+    매개변수:
+    ----------
+    - trades_df (DataFrame): 매매 기록 데이터프레임.
+      필요한 컬럼: exit_time(datetime), pnl(float).
+
+    반환값:
+    ----------
+    - DataFrame: 연도별 성과를 요약한 데이터프레임.
+    """
+    # 연도별 그룹화
+    trades_df['year'] = trades_df['exit_time'].dt.year
+    grouped = trades_df.groupby('year')
+
+    results = []
+    for y, grp in grouped:
+        total_pnl = grp['pnl'].sum()
+        num_trades = len(grp)
+        win_trades = (grp['pnl'] > 0).sum()
+        win_rate = win_trades / num_trades * 100.0 if num_trades > 0 else 0.0
+
+        results.append({
+            'year': y,
+            'total_pnl': total_pnl,
+            'num_trades': num_trades,
+            'win_rate(%)': win_rate
+        })
+
+    return pd.DataFrame(results)
+
+
+def calculate_mdd(trades_df: pd.DataFrame, initial_balance: float) -> float:
+    """
+    최대낙폭(MDD)을 계산하는 함수.
+
+    주요 기능:
+    ----------
+    - 매매 기록을 순서대로 처리하여 최대낙폭(MDD)을 계산.
+
+    매개변수:
+    ----------
+    - trades_df (DataFrame): 매매 기록 데이터프레임.
+      필요한 컬럼: exit_time(datetime), pnl(float).
+    - initial_balance (float): 초기 계좌 잔고.
+
+    반환값:
+    ----------
+    - float: 최대낙폭(MDD) 값(음수, % 단위).
+    """
+    # 시간 순 정렬
+    trades_df = trades_df.sort_values(by='exit_time')
+
+    # 잔고 추적
+    equity_list = []
+    current_balance = initial_balance
+
+    for _, row in trades_df.iterrows():
+        current_balance += row['pnl']
+        equity_list.append(current_balance)
+
+    # MDD 계산
+    equity_arr = np.array(equity_list)
+    peak_arr = np.maximum.accumulate(equity_arr)  # 최고점 추적
+    drawdown_arr = (equity_arr - peak_arr) / peak_arr  # 낙폭 계산
+    mdd = drawdown_arr.min() * 100.0  # %로 변환
+    return mdd
+
+
+def print_performance_report(trades_df: pd.DataFrame, initial_balance: float) -> None:
+    """
+    전체 성과를 요약 출력하는 함수.
+
+    주요 기능:
+    ----------
+    - 월별, 연도별 성과와 MDD(최대낙폭), ROI, 승률 등을 출력.
+
+    매개변수:
+    ----------
+    - trades_df (DataFrame): 매매 기록 데이터프레임.
+    - initial_balance (float): 초기 계좌 잔고.
+
+    반환값:
+    ----------
+    - None
+    """
+    if trades_df.empty:
+        print("No trades to report.")
+        return
+
+    # 성과 계산
+    monthly_df = calculate_monthly_performance(trades_df)
+    yearly_df = calculate_yearly_performance(trades_df)
+    total_pnl = trades_df['pnl'].sum()
+    final_balance = initial_balance + total_pnl
+    mdd = calculate_mdd(trades_df, initial_balance=initial_balance)
+
+    # 출력
+    print("=== (A) 월별 성과 ===")
+    print(monthly_df)
+
+    print("\n=== (B) 연도별 성과 ===")
+    print(yearly_df)
+
+    print("\n=== (C) 전체 성과 ===")
+    print(f"  - 초기 잔고       : {initial_balance:.2f}")
+    print(f"  - 최종 잔고       : {final_balance:.2f}")
+    print(f"  - 총 손익         : {total_pnl:.2f}")
+    print(f"  - ROI(%)          : {(final_balance - initial_balance) / initial_balance * 100:.2f}%")
+    print(f"  - 최대낙폭(MDD)   : {mdd:.2f}%")
+
+    # 매매 통계
+    num_trades = len(trades_df)
+    wins = (trades_df['pnl'] > 0).sum()
+    win_rate = wins / num_trades * 100.0 if num_trades > 0 else 0.0
+    print(f"  - 총 매매 횟수    : {num_trades}")
+    print(f"  - 승률(%)         : {win_rate:.2f}%")
+---
+# backtesting/backtest_simple.py
+
+# 데이터 분석 및 수치 계산을 위한 라이브러리
+import pandas as pd
+import numpy as np
+
+# 필요한 함수와 모듈 불러오기
+from data_collection.save_to_postgres import load_ohlcv_from_postgres
+from strategies.signal_generator import calculate_breakout_signals
+from strategies.stop_loss_take_profit import apply_stop_loss_atr, apply_take_profit_ratio
+from strategies.risk_management import calculate_position_size
+from backtesting.performance_metrics import print_performance_report
+
+def run_simple_backtest(
+    symbol="BTC/USDT",
+    timeframe="4h",
+    window=20,
+    volume_factor=1.5,
+    confirm_bars=2,
+    breakout_buffer=0.0,
+    atr_window=14,
+    atr_multiplier=2.0,
+    profit_ratio=0.05,
+    account_size=10_000.0,
+    risk_per_trade=0.01,
+    fee_rate=0.001
+):
+    """
+    간단한 백테스트를 실행하는 함수입니다.
+
+    주요 기능:
+    ----------
+    1. 과거 데이터를 로드하여 백테스트를 실행합니다.
+    2. 돌파 신호와 거래량 조건을 통해 매수 시점을 결정합니다.
+    3. ATR 기반 손절 및 고정 익절 전략을 적용합니다.
+    4. 백테스트 결과를 계산하고, 성과를 출력합니다.
+
+    매개변수:
+    ----------
+    - symbol (str): 테스트할 자산의 심볼 (예: "BTC/USDT")
+    - timeframe (str): 데이터의 시간 간격 (예: "4h")
+    - window (int): 전고점을 계산하는 기간
+    - volume_factor (float): 거래량 필터 배수
+    - confirm_bars (int): 돌파 확정을 위한 봉 개수
+    - breakout_buffer (float): 돌파 기준에 추가할 버퍼
+    - atr_window (int): ATR 계산 기간
+    - atr_multiplier (float): ATR 기반 손절 배수
+    - profit_ratio (float): 고정 익절 비율
+    - account_size (float): 초기 계좌 자산
+    - risk_per_trade (float): 매매당 최대 손실 비율
+    - fee_rate (float): 매수 수수료 비율
+
+    반환값:
+    ----------
+    - DataFrame: 각 매매에 대한 세부 정보가 담긴 DataFrame
+    """
+
+    # -------------------------------
+    # 1) 과거 데이터 불러오기
+    # -------------------------------
+    table_name = f"ohlcv_{symbol.replace('/', '').lower()}_{timeframe}"
+    df = load_ohlcv_from_postgres(table_name=table_name)
+    df = df.sort_index()  # 시간순 정렬
+
+    if df.empty:
+        print("DataFrame is empty! 데이터가 없습니다.")
+        return None
+
+    print(f"Loaded data from {table_name}: {df.shape[0]} rows")
+
+    # -------------------------------
+    # 2) 돌파 시그널 계산
+    # -------------------------------
+    df = calculate_breakout_signals(
+        df=df,
+        window=window,
+        vol_factor=volume_factor,
+        confirm_bars=confirm_bars,
+        use_high=False,
+        breakout_buffer=breakout_buffer
+    )
+
+    # 돌파 신호와 관련된 통계를 출력
+    print("\nSignal Stats:")
+    print(f"Breakout signals: {df['breakout_signal'].sum()}")
+    print(f"Confirmed breakouts: {df['confirmed_breakout'].sum()}")
+
+    # -------------------------------
+    # 3) ATR 손절 및 고정 익절
+    # -------------------------------
+    df['long_entry'] = df['confirmed_breakout'] & df['volume_condition']
+
+    df = apply_stop_loss_atr(
+        df=df,
+        atr_window=atr_window,
+        atr_multiplier=atr_multiplier,
+        sl_colname='stop_loss_price',
+        entry_price_col='entry_price'
+    )
+
+    df = apply_take_profit_ratio(
+        df=df,
+        profit_ratio=profit_ratio,
+        tp_colname='take_profit_price',
+        entry_price_col='entry_price'
+    )
+
+    # -------------------------------
+    # 4) 백테스트 루프 실행
+    # -------------------------------
+    in_position = False
+    trades = []
+
+    for i in range(len(df)):
+        row = df.iloc[i]
+        if not in_position and row['long_entry']:
+            # 포지션 진입
+            entry_price = row['entry_price']
+            stop_loss = row['stop_loss_price']
+            take_profit = row['take_profit_price']
+            size = calculate_position_size(
+                account_balance=account_size,
+                risk_per_trade=risk_per_trade,
+                entry_price=entry_price,
+                stop_loss_price=stop_loss,
+                fee_rate=fee_rate
+            )
+            in_position = True
+            trades.append({
+                'entry_time': row.name,
+                'entry_price': entry_price,
+                'size': size,
+                'exit_time': None,
+                'exit_price': None,
+                'pnl': None,
+                'exit_reason': None
+            })
+        elif in_position:
+            # 포지션 청산 조건
+            if row['close'] <= stop_loss:
+                in_position = False
+                trades[-1].update({
+                    'exit_time': row.name,
+                    'exit_price': row['close'],
+                    'pnl': (row['close'] - trades[-1]['entry_price']) * trades[-1]['size'],
+                    'exit_reason': 'stop_loss'
+                })
+            elif row['close'] >= take_profit:
+                in_position = False
+                trades[-1].update({
+                    'exit_time': row.name,
+                    'exit_price': row['close'],
+                    'pnl': (row['close'] - trades[-1]['entry_price']) * trades[-1]['size'],
+                    'exit_reason': 'take_profit'
+                })
+
+    # -------------------------------
+    # 5) 결과 정리 및 성과 출력
+    # -------------------------------
+    trades_df = pd.DataFrame(trades)
+    trades_df.dropna(subset=['exit_time'], inplace=True)
+
+    if trades_df.empty:
+        print("No trades were completed.")
+        return None
+
+    total_pnl = trades_df['pnl'].sum()
+    final_balance = account_size + total_pnl
+    roi_percent = (final_balance - account_size) / account_size * 100.0
+
+    print(f"Total Trades: {len(trades_df)}")
+    print(f"Total PnL: {total_pnl:.2f} USDT")
+    print(f"Final Balance: {final_balance:.2f} USDT")
+    print(f"ROI: {roi_percent:.2f}%")
+
+    print_performance_report(trades_df, initial_balance=account_size)
+
+    return trades_df
+---
+# backtesting/param_tuning.py
+
+import itertools
+import pandas as pd
+
+from backtesting.backtest_simple import run_simple_backtest
+# performance_metrics 모듈에서 필요한 계산 함수를 임포트
+from backtesting.performance_metrics import (
+    calculate_mdd,
+    calculate_monthly_performance,
+    calculate_yearly_performance
+)
+
+def param_sweep_test():
+    """
+    여러 파라미터(window, atr_multiplier, profit_ratio)의 조합을 테스트하고,
+    각 조합별 성과 지표를 데이터프레임으로 만들어 반환합니다.
+    (CSV 저장이나 상위 결과 출력 등은 이 함수를 호출하는 쪽에서 처리)
+    """
+
+    # (A) 테스트할 파라미터 후보 정의
+    window_list = [10, 20, 30]
+    atr_list = [1.5, 2.0]
+    profit_ratio_list = [0.03, 0.05]
+
+    results = []
+
+    for window, atr_mult, pr in itertools.product(window_list, atr_list, profit_ratio_list):
+        print(f"\n[Running] window={window}, atr_multiplier={atr_mult}, profit_ratio={pr}")
+
+        # (B) 백테스트 실행
+        trades_df = run_simple_backtest(
+            symbol="BTC/USDT",
+            timeframe="4h",
+            window=window,
+            volume_factor=1.5,
+            confirm_bars=2,
+            breakout_buffer=0.0,
+            atr_window=14,
+            atr_multiplier=atr_mult,
+            profit_ratio=pr,
+            account_size=10_000.0,
+            risk_per_trade=0.01,
+            fee_rate=0.001
+        )
+
+        if trades_df is None or trades_df.empty:
+            # 트레이드가 없거나 비정상 -> 기록X
+            continue
+
+        # (C) 성과 지표 추가 계산
+        initial_balance = 10_000.0
+
+        # 총 손익 (pnl)
+        total_pnl = trades_df['pnl'].sum()
+        final_balance = initial_balance + total_pnl
+        roi_percent = (final_balance - initial_balance) / initial_balance * 100.0
+
+        # MDD 계산
+        mdd_percent = calculate_mdd(trades_df, initial_balance=initial_balance)
+
+        # 승률
+        num_trades = len(trades_df)
+        wins = (trades_df['pnl'] > 0).sum()
+        win_rate = wins / num_trades * 100.0 if num_trades > 0 else 0.0
+
+        # (D) 필요한 항목만 모아서 results에 저장
+        results.append({
+            'window'        : window,
+            'atr_multiplier': atr_mult,
+            'profit_ratio'  : pr,
+            'num_trades'    : num_trades,
+            'win_rate(%)'   : round(win_rate, 2),
+            'final_balance' : round(final_balance, 2),
+            'ROI(%)'        : round(roi_percent, 2),
+            'MDD(%)'        : round(mdd_percent, 2),  # 보통 음수
+        })
+
+        # (E) (옵션) 월별·연도별 DF CSV 출력은 호출부에서 처리할 수도 있음
+        # monthly_df = calculate_monthly_performance(trades_df)
+        # yearly_df = calculate_yearly_performance(trades_df)
+        # ...
+        # (호출부에서 필요 시 저장)
+
+    # (F) 결과 취합
+    results_df = pd.DataFrame(results)
+    return results_df  # ===> 호출부에서 이 결과를 받아 처리
+---
+# test.py
+
+import pandas as pd
+from backtesting.param_tuning import param_sweep_test
+
+
+def main():
+    # 함수 호출하여 결과 DataFrame 가져옴
+    results_df = param_sweep_test()
+
+    if results_df.empty:
+        print("\nNo valid results returned.")
+        return
+
+    # CSV로 저장
+    csv_filename = "param_sweep_results_with_metrics.csv"
+    results_df.to_csv(csv_filename, index=False, encoding='utf-8-sig')
+    print(f"CSV saved: {csv_filename}")
+
+    # ROI(%)로 정렬 후 상위 5개 출력
+    sorted_df = results_df.sort_values(by='ROI(%)', ascending=False)
+    print("\n=== Top 5 by ROI ===")
+    print(sorted_df.head(5))
+
+
+if __name__ == "__main__":
+    main()
+---
+window,atr_multiplier,profit_ratio,num_trades,win_rate(%),final_balance,ROI(%),MDD(%)
+10,1.5,0.03,141,56.74,15010.82,50.11,-7.3
+10,1.5,0.05,127,48.82,16613.92,66.14,-7.19
+10,2.0,0.03,139,61.15,13525.7,35.26,-8.64
+10,2.0,0.05,121,52.89,14282.44,42.82,-8.54
+20,1.5,0.03,111,57.66,15032.73,50.33,-5.0
+20,1.5,0.05,102,49.02,15663.4,56.63,-5.23
+20,2.0,0.03,111,63.06,14047.43,40.47,-5.24
+20,2.0,0.05,100,54.0,14504.64,45.05,-5.05
+30,1.5,0.03,99,56.57,14721.39,47.21,-4.11
+30,1.5,0.05,92,47.83,15293.15,52.93,-5.39
+30,2.0,0.03,99,62.63,13729.85,37.3,-4.6
+30,2.0,0.05,90,53.33,14025.04,40.25,-5.92
+
+
+
+
+
+
+
+
+
+
+
 
 [참고사항2]
 아래는 **복잡한 백테스트 로직**을 **단계별**로 구축해나갈 때 유용한 **가이드라인**입니다.  
@@ -744,6 +1256,74 @@ def split_position_sizes(
      - **(a) 백테스트 결과가 정상적으로 나오는지**,  
      - **(b) 매수·매도 시점이 엑셀·차트로 검증했을 때 맞는지**  
    - 를 먼저 확인하면, 자신감도 생기고 전반적인 구조도 파악이 쉬워집니다.
+
+####################################################################################################
+## 1 단계와 2 단계 사이의 추가적인 점검/보완 
+단순 버전(backtest_simple.py)까지 일단 “제대로 돌아가는 코드”를 완성하셨다면, **큰 흐름상 바로 ‘다중 타임프레임(MTF) 확장’으로 넘어가도 무방**합니다.  
+다만, **실무 경험상** 다음과 같은 **중간 점검/보완**을 거친 뒤에 넘어가면, 이후 단계에서 훨씬 수월해집니다.
+
+---
+
+## 1) 현재 단순 버전의 **정상 동작** 여부를 더 꼼꼼하게 검증
+
+1. **매수·매도 시점(시그널) 점검**  
+   - 예: 2019~2020년 특정 상승장 구간을 구체적으로 골라,  
+     - **차트**(TradingView 등)로 실제 BTC 가격 움직임을 확인하고,  
+     - 백테스트 결과 매수·매도가 발생한 구간이 과연 “전고점 돌파”와 맞아떨어지는지 **핸드체크**  
+   - 이렇게 눈으로 여러 구간을 대조해보면, 돌파 계산(rolling/shift)이나 익절·손절(ATR / 5%) 로직이 **의도대로** 동작하는지 확신을 가질 수 있습니다.
+
+-> 결론:
+자동 검증(verify_signals.py) 결과, “돌파 시그널이 실제 데이터와 오차 없이 일치한다”는 메시지가 나왔고, 차트에서도 신호가 의도한 대로 찍혀 있음을 확인할 수 있습니다.
+이는 (상황1)에서 원하는 **‘시그널 로직이 정말 의도대로 동작하는지 검증’**이 제대로 수행되었다는 의미이므로, 다음 단계(월별·연도별 성과, 파라미터 튜닝 등)로 넘어가시면 됩니다.
+
+2. **추가적인 지표(월별/연도별 손익, MDD 등) 계산**  
+   - “최종 잔고가 얼마다”만 보고 넘어가기보다는,  
+   - **연도별 혹은 월별 성과**, 최대낙폭(MDD), 승률, 손익비(RR) 등도 함께 봐야 합니다.  
+   - 예를 들어, 특정 해(또는 특정 구간)에 큰 손실이 난다면, 그 원인이 무엇인지 파악할 필요가 있습니다.
+
+-> 결론:
+큰 추세(2019~2020 상승장 등)에는 수익을 크게 내고, 일부 구간(예: 2018, 2022)에는 손실이 발생하며,
+전반적으로 약 **45%**의 최종 수익률, 낮은 MDD(-5.05%)로, 안정적이나 폭발적이지는 않은 성장을 달성한 결과로 보입니다.
+세부 지표(연도별·월별 성과, 승률, MDD) 역시 크게 이질적인 구간이 없으므로, “월별·연간 성과 및 MDD 확인”은 정상적으로 마무리되었다고 볼 수 있습니다.
+---
+
+## 2) (옵션) 파라미터 튜닝(Param Sweep) 간단 시도
+
+현재 단일 파라미터로 `window=20`, `atr_multiplier=2.0`, `profit_ratio=0.05` 등이 고정되어 있을 텐데,  
+- `window`를 10/20/30, `atr_multiplier`를 1.5/2.0/2.5 식으로 몇 가지만 바꿔가며,  
+- **“여러 후보 파라미터” → 백테스트 결과를 비교**해보는 작업을 해도 좋습니다.
+
+이 과정을 통해서
+- “단순버전에서 내 전략이 어떤 파라미터 조합에서 가장 나은가?”  
+- “극단적 파라미터로 넣었을 때 이상한 결과가 나오지 않는가?”  
+
+등을 확인할 수 있습니다.  
+물론 **과최적화**를 피하려면, 이 튜닝 작업도 어디까지 할지 적절한 선에서 마무리해야겠지만,  
+**MTF 확장 전에** 한 번쯤 해보면 코드 안정성/유연성을 더 잘 느낄 수 있습니다.
+
+-> 결론:
+가장 높은 ROI: (window=10, atr_multiplier=1.5, profit_ratio=0.05) → 66.14%
+공격적 매매(잦은 진입/청산 + 짧은 손절 + 큰 익절폭)
+MDD -7.19%, 승률 48.82%
+
+전반적 트렌드:
+ATR 배수 1.5가 대체로 ROI를 높임 (적극적 손절)
+**익절(0.05)**가 0.03보다 큰 수익을 냄 (추세 이어갈 때 더 많은 이익)
+window=10이 가장 공격적, window=30은 좀 더 보수적
+
+주의:
+과최적화(Overfitting) 가능성을 반드시 염두에 두어야 함
+“높은 ROI” 조합이 실전에서 좋은 성과를 낸다는 보장은 없음 (슬리피지, 수수료 증가, 시장 변동성 변화 등)
+워크포워드(Out-of-Sample) 검증, 실시간 모의매매 등을 통해 추가 확인이 필요
+
+추가 지표
+연속 손실 횟수, 손익비(R:R), 최대 승률 / 최소 손익률 구간 등도 검토
+실제 투자 성향(고승률 vs 고수익 vs 안정성)에 따라 최적 조합이 달라질 수 있음
+
+단순 ROI만 보면 (10, 1.5, 0.05)가 가장 강력.
+그러나 안정성 면에서 window=20 or 30 + atr_multiplier=1.5도 충분히 매력적 (ROI 50% 전후, MDD -5% 내외).
+최종 선택 전 추가 검증 & 개인 성향 고려가 필수.
+####################################################################################################
 
 ---
 
@@ -863,4 +1443,3 @@ def split_position_sizes(
 이런 순서대로 진행해보시면, 중간 중간에 “내가 어떤 부분을 해야 하지?”라는 막막함이 훨씬 줄어드실 거예요.  
 
 [지시사항]
-"상황"과 "참고사항1"을 참조해서 "참고사항2"의 "## 1. 가장 ‘단순한’ 버전부터 시작"에 대한 파일들을 작성해줘.
