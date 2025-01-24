@@ -6,7 +6,7 @@ from datetime import timedelta  # 날짜 간격 계산에 사용
 
 # 백테스팅 관련 함수 가져오기
 from backtesting.param_tuning import param_sweep_test  # 최적의 파라미터를 찾기 위한 함수
-from backtesting.backtest_simple import run_simple_backtest  # 간단한 백테스트 실행 함수
+from backtesting.backtest_advanced import run_advanced_backtest  # 간단한 백테스트 실행 함수
 
 def train_test_validation(
     symbol: str = "BTC/USDT",  # 거래 대상 (예: 비트코인/테더)
@@ -58,7 +58,7 @@ def train_test_validation(
     print("\n[Train Result] Best Params:", best_params)  # 최적 파라미터 출력
 
     # (C) 테스트 단계: 최적 파라미터로 거래 전략 검증
-    test_trades = run_simple_backtest(
+    test_trades = run_advanced_backtest(
         symbol=symbol,
         short_timeframe=short_timeframe,
         long_timeframe=long_timeframe,

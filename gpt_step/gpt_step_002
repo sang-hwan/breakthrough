@@ -91,6 +91,217 @@
 
 ---
 
+#####################################################################################################
+## 백테스트 정교화 작업
+아래는 **“슬리피지 & 수수료”**부터 **“포지션 객체, 서브 포지션(분할매매), 익절/손절 시 고가/저가 기준 판정”** 등을 단계적으로 구현하는 가이드입니다.  
+이 과정은 기존 프로젝트(`backtest_simple.py` 등)를 **실거래에 더 가깝게** 개선하고, 특히 **익절·손절을 고가·저가 기준으로 판정**하도록 만드는 순서를 제시합니다.
+
+---
+
+# 1. 슬리피지 & 수수료
+
+## 1-A. 슬리피지
+- **권장 슬리피지 비율**  
+  - **시장가 주문**으로 체결한다고 가정할 때, BTC/USDT 같은 유동성이 높은 메이저 코인은 **0.02%~0.05%**(0.0002~0.0005)를 많이 사용  
+  - 변동성 큰 알트코인은 **0.1~0.2%**까지 가정하는 경우도 있음  
+- **단순화**  
+  - 처음엔 **0.05%**(0.0005) 정도의 **고정 비율**을 사용  
+  - 백테스트에서는 **고정 슬리피지 비율**이 해석·구현이 쉽고, 시장 변동성이 커지면 추후에 유동적으로 늘려볼 수 있음
+
+## 1-B. 수수료(메이커·테이커)
+- **바이낸스 수수료 구조** (일반 사용자, 낮은 등급 기준)
+  - 메이커 0.1%, 테이커 0.1%  
+  - BNB로 지불 시 25% 할인 → 메이커 0.075%, 테이커 0.075%  
+  - USDC 마켓 등은 별도 수수료(0.095%, 0.07125% 등)도 있으나,  
+    - 백테스트 초기엔 **테이커 0.1%**(또는 BNB 할인 0.075%) 정도만 가정하면 무난
+- **권장 방식**  
+  1. **단순화**: 백테스트에서 **시장가=테이커 수수료**(0.1% or 0.075%)만 반영  
+  2. 지정가 주문 = 메이커 수수료를 가정할 수도 있지만, **백테스트에서 전량 메이커 체결 보장**은 비현실적  
+  3. 일부 체결만 메이커로 처리하는 고급 로직도 가능하나, 우선은 테이커 수수료만 반영하는 쪽이 구현 단순
+
+### 1-C. 코드 적용 방법
+- **`backtest_simple.py`** 안 `run_advanced_backtest()` 함수에 아래와 같은 파라미터 추가:
+  ```python
+  def run_advanced_backtest(
+      ...
+      slippage_rate=0.0005,  # 0.05%
+      taker_fee_rate=0.001,  # 0.1%
+      ...
+  ):
+      ...
+  ```
+- **매수 시 체결가**:
+  \[
+    \text{buy_price} = \text{close_price} \times (1 + \text{slippage\_rate})
+  \]
+  - 수수료 = `buy_price × size × taker_fee_rate`
+- **매도 시 체결가**:
+  \[
+    \text{sell_price} = \text{close_price} \times (1 - \text{slippage\_rate})
+  \]
+  - 수수료 = `sell_price × size × taker_fee_rate`
+
+백테스트 로직에서 매번 진입/청산 시 위 계산을 수행해 **슬리피지·수수료**를 차감하면 됩니다.
+
+---
+
+# 2. 포지션(Position) 객체
+
+분할매매, 트레일링 스탑, 부분 청산 등을 유연하게 처리하기 위해, “`in_position = False`”같은 단순 플래그 대신 **포지션 객체**를 도입합니다.
+
+```python
+# 예: strategies/position.py
+class Position:
+    def __init__(self, side="LONG"):
+        self.side = side  # "LONG" or "SHORT"
+        self.sub_positions = []
+
+    def add_sub_position(self, entry_price, size, stop_loss=None, take_profit=None):
+        self.sub_positions.append({
+            'entry_price': entry_price,
+            'size': size,
+            'stop_loss': stop_loss,
+            'take_profit': take_profit
+        })
+
+    def total_size(self):
+        return sum(sp['size'] for sp in self.sub_positions)
+
+    def average_price(self):
+        total_cost = 0.0
+        total_qty = 0.0
+        for sp in self.sub_positions:
+            total_cost += (sp['entry_price'] * sp['size'])
+            total_qty += sp['size']
+        return total_cost / total_qty if total_qty > 0 else 0.0
+
+    # 필요 시, update_stop_loss, update_take_profit, partial_close 등의 메서드 추가
+```
+
+- 기존의 `trades` 리스트나 `in_position` 대신,  
+- **`current_position = None`** → 진입 시 `current_position = Position(...)` 생성,  
+- 청산 시 `current_position = None`(전량 청산) 혹은 부분 청산이면 `sub_positions`에서 해당 분만 제거.
+
+---
+
+# 3. 서브 포지션(Sub-position)을 이용한 분할매수
+
+1. **분할매매**:  
+   - 기존 `risk_management.split_position_sizes()`로 분할 수량 계산  
+   - `current_position.add_sub_position(...)`를 여러 번 호출 → sub_position이 여러 개  
+2. **추가 진입(피라미딩)** 시그널이 발생하면, 기존 `current_position`에 계속 `add_sub_position(...)`  
+3. **장점**:  
+   - 각 sub_position마다 `entry_price, stop_loss, take_profit`을 별도 관리 가능  
+   - 익절·손절도 원하는 sub_position만 부분 청산 가능
+
+### 예시 코드 스니핏
+```python
+if long_entry_signal:
+    if current_position is None:
+        current_position = Position(side="LONG")
+
+    total_size = calculate_position_size(...)
+    partial_sizes = split_position_sizes(total_size, split_count=3, scale_mode='equal')
+
+    for sz in partial_sizes:
+        buy_price = row_s['close'] * (1 + slippage_rate)
+        fee = buy_price * sz * taker_fee_rate
+        # 손절/익절가 계산 후 ...
+        current_position.add_sub_position(
+            entry_price=buy_price,
+            size=sz,
+            stop_loss=stop_loss,
+            take_profit=take_profit
+        )
+```
+
+---
+
+# 4. 익절/손절을 “고가/저가” 기준으로 판정
+
+이제 백테스트에서 **매 봉마다**, “이번 봉의 `low`가 손절가 이하인가?”, “이번 봉의 `high`가 익절가 이상인가?”를 확인해 체결 판단을 합니다.
+
+1. **손절**  
+   - 만약 `row_s['low'] <= stop_loss`라면, 손절가 체결로 간주  
+     - 체결가는 `stop_loss × (1 - slippage_rate)` 정도로 계산(매도 시 슬리피지)  
+     - 수수료 = `exit_price × size × taker_fee_rate`  
+   - **동시에** 봉의 `high`가 익절가 이상이면, 보통 “손절을 우선”으로 처리(전략에 따라 다름)
+2. **익절**  
+   - 만약 `row_s['high'] >= take_profit`라면, 익절가 체결  
+     - 체결가는 `take_profit × (1 - slippage_rate)`(매도 시 슬리피지)
+3. **예시 코드 (청산 루프)**
+
+```python
+if current_position is not None:
+    for sp in current_position.sub_positions:
+        sl = sp['stop_loss']
+        tp = sp['take_profit']
+        low_price = row_s['low']
+        high_price = row_s['high']
+
+        triggered_stop = False
+        triggered_take = False
+        
+        # 손절 먼저 확인
+        if low_price <= sl:
+            triggered_stop = True
+        # 익절 확인
+        if high_price >= tp:
+            # 손절이 이미 트리거되면 우선순위 문제 발생
+            if not triggered_stop:
+                triggered_take = True
+        
+        # 손절 처리
+        if triggered_stop:
+            exit_price = sl * (1 - slippage_rate)
+            fee = exit_price * sp['size'] * taker_fee_rate
+            pnl = (exit_price - sp['entry_price']) * sp['size'] - fee
+            # sub_position 청산(전량)
+        
+        # 익절 처리
+        elif triggered_take:
+            exit_price = tp * (1 - slippage_rate)
+            fee = exit_price * sp['size'] * taker_fee_rate
+            pnl = (exit_price - sp['entry_price']) * sp['size'] - fee
+            # sub_position 청산(전량)
+
+    # (만약 모든 sub_position 청산되면) current_position = None
+```
+
+- **부분 청산**이 아니라면, 위 로직으로 전부 닫아버리고 `current_position = None`으로 해도 무방  
+- **부분 청산**을 허용하면 “`sp['size']`만큼” 차감 or 해당 sub_position만 제거.
+
+---
+
+# 5. 익절(분할매도) 로직
+
+### 5-A. 간단한 예: “목표가 도달 시 전량 청산”
+- 위 **고가/저가** 판정으로 take_profit 도달 시 전부 청산
+
+### 5-B. 분할 익절
+- 예: “평단 대비 +3%, +5%, +10%” 구간에서 순차 청산  
+- sub_position마다 다른 `take_profit`을 설정해두면, “목표가 도달 시” 해당 분만 청산 가능
+
+**systrader79 · 김대현** 식 돌파매매에서는 “큰 추세를 최대한 살리기 위해 익절 라인을 멀리 두거나, 추세 이탈 시 청산” 방식을 선호하는 경우가 많습니다.  
+원한다면 “추세 이탈 시 청산 + 트레일링 스탑”도 가능하니, 코드 구조만 유연하게 해두고 실험해 보시는 것을 권장합니다.
+
+---
+
+## 정리
+
+1. **슬리피지 & 수수료**: 먼저 `(슬리피지 + 테이커 수수료)`를 **매수/매도 체결가**에 반영  
+2. **포지션 객체**: `Position` 클래스로 하나의 포지션 및 여러 sub_position을 관리  
+3. **분할매수(Sub-position)**: 시그널 발생 시 여러 번 나누어 진입, 각 sub_position에 `stop_loss` / `take_profit` 별도 설정 가능  
+4. **익절/손절을 고가/저가 기준**으로 체크:  
+   - `row_s['low']` ≤ 손절가면 손절 체결  
+   - `row_s['high']` ≥ 익절가면 익절 체결  
+   - 슬리피지는 체결가에 추가로 적용  
+5. **분할 익절**(스케일 아웃)도 가능: sub_position을 서로 다른 목표가로 설정해 순차 청산  
+   - 혹은 돌파매매 철학대로 “추세 이탈”로 일괄 청산
+
+이 일련의 절차를 **단계별**로 적용해가면, 기존 프로젝트 코드가 **실거래에 가까운** 체결 구조(슬리피지·수수료·고가/저가 SL/TP·분할매매 등)를 모사할 수 있게 됩니다.
+#####################################################################################################
+
 ## 5. 파라미터 전략과 효율적인 탐색·최적화
 
 1) **정적 파라미터 탐색 및 최적화**  

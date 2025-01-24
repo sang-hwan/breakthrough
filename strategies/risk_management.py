@@ -10,7 +10,7 @@ def calculate_position_size(
     fee_rate: float = 0.001
 ) -> float:
     """
-    한 번의 매매에서 최대 손실을 제한하도록 포지션 크기를 계산하는 함수입니다.
+    한 번의 매수에서 최대 손실을 제한하도록 포지션 크기를 계산하는 함수입니다.
 
     매개변수:
     ----------
@@ -64,7 +64,7 @@ def split_position_sizes(
     scale_mode: str = 'equal'
 ) -> list:
     """
-    전체 매수 물량을 여러 단계로 나누는 분할 매매 함수입니다.
+    전체 매수 물량을 여러 단계로 나누는 분할 매수 함수입니다.
 
     매개변수:
     ----------
@@ -110,3 +110,60 @@ def split_position_sizes(
         # 피라미드 다운: 앞으로 갈수록 더 많은 매수 비중
         ratio_sum = split_count * (split_count + 1) / 2
         return [(i / ratio_sum) * total_position_size for i in range(split_count, 0, -1)]
+
+def add_position_sizes(
+    position,
+    current_price: float,
+    threshold_percent: float,
+    slippage_rate: float,
+    stop_loss_price: float,
+    take_profit_price: float,
+    entry_time
+):
+    """
+    1) position.split_plan (리스트)에서 아직 체결되지 않은 분할들을 확인
+    2) 가격이 initial_entry_price 대비 (threshold_percent * splits_filled) 이상이면
+       => 다음 분할 매수
+    3) splits_filled(=인덱스) 하나씩 증가시키며 남은 분할들을 순차 매수
+
+    ex) threshold_percent=0.02, num_splits=3
+      - splits_filled=1 (첫 분할) → 2번째 분할은 +2%, 3번째 분할은 +4% 시 체결
+    """
+    if position is None or position.is_empty():
+        return
+
+    # 최대 splits_filled < num_splits 인 동안 체크
+    while position.splits_filled < position.num_splits:
+        next_split_index = position.splits_filled  # 0-based
+        # ex) 첫 분할이 이미 filled=1이면, next_split_index=1 => 2번째 분할
+        # (단, 내부 로직이 0-based/1-based 혼용되지 않게 주의)
+
+        # 조건: current_price >= initial_entry_price * (1 + threshold_percent*(next_split_index))
+        needed_price = position.initial_entry_price * (1.0 + threshold_percent * next_split_index)
+
+        if current_price < needed_price:
+            break
+
+        # 실제 매수
+        if next_split_index < len(position.split_plan):
+            # 예: split_plan[1] = 0.33
+            portion_rate = position.split_plan[next_split_index]
+        else:
+            # 혹시 split_plan을 초과하면 중단
+            break
+
+        # 이번 분할이 차지할 size
+        chunk_size = position.max_position_size * portion_rate
+
+        # 슬리피지 적용 체결
+        buy_price = current_price * (1.0 + slippage_rate)
+
+        position.add_sub_position(
+            entry_price=buy_price,
+            size=chunk_size,
+            stop_loss=stop_loss_price,
+            take_profit=take_profit_price,
+            entry_time=entry_time
+        )
+
+        position.splits_filled += 1

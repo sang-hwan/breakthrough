@@ -3,7 +3,7 @@
 import itertools  # 여러 파라미터 조합을 생성하기 위해 사용됩니다.
 import pandas as pd  # 데이터 저장 및 처리에 유용한 라이브러리입니다.
 
-from backtesting.backtest_simple import run_simple_backtest  # 단순 백테스트 실행 함수
+from backtesting.backtest_advanced import run_advanced_backtest  # 단순 백테스트 실행 함수
 from backtesting.performance_metrics import calculate_mdd  # 최대 낙폭(MDD)을 계산하는 함수
 
 def param_sweep_test(
@@ -51,7 +51,7 @@ def param_sweep_test(
         print(f"\n[Param Test] window={window}, atr_multiplier={atr_mult}, profit_ratio={pr}")
 
         # 각 파라미터 조합으로 백테스트를 실행합니다.
-        trades_df = run_simple_backtest(
+        trades_df = run_advanced_backtest(
             symbol=symbol,  # 거래 종목
             short_timeframe=short_timeframe,  # 단기 봉 주기
             long_timeframe=long_timeframe,  # 장기 봉 주기

@@ -77,3 +77,54 @@ def apply_take_profit_ratio(
     # 익절가 계산: 진입가 × (1 + 목표 수익률)
     df[tp_colname] = df[entry_price_col] * (1 + profit_ratio)
     return df
+
+def update_trailing_stop(current_stop_loss: float, current_price: float, 
+                         highest_price: float, trailing_percent: float) -> float:
+    """
+    트레일링 스탑 로직:
+      - 현재까지의 최고가(highest_price) 대비 trailing_percent 만큼 뒤로 따라오는 손절가를 설정.
+      - 예) trailing_percent=0.05 → 5% 아래 위치로 손절가를 업데이트.
+    Params
+    ------
+      - current_stop_loss: 기존 손절가
+      - current_price: 현재가
+      - highest_price: 지금까지의 최고가
+      - trailing_percent: 트레일링 % (0.05 = 5%)
+    Returns
+    -------
+      - 새로운 손절가
+    """
+    # 새로 계산된 트레일링 손절가
+    new_stop = highest_price * (1.0 - trailing_percent)
+    # 기존 손절가보다 더 높은 수준일 경우에만 갱신 (손절가가 낮아지지 않도록)
+    if new_stop > current_stop_loss and new_stop < current_price:
+        return new_stop
+    else:
+        return current_stop_loss
+
+def check_trend_exit_condition(
+    df_long: pd.DataFrame,
+    current_time,
+    sma_col: str = 'sma200'
+) -> bool:
+    """
+    예시: 종가가 SMA(200) 아래로 떨어지면 추세 이탈로 보고 청산한다.
+    실제론 MACD나 SuperTrend 등 다양한 지표로 수정 가능.
+    """
+    # 현재 시점의 장기봉 데이터(가장 최근) 가져오기
+    if current_time not in df_long.index:
+        # 만약 간격이 어긋나면, current_time 이전의 가장 가까운 시점으로 찾아볼 수도 있음
+        df_sub = df_long.loc[:current_time]
+        if df_sub.empty:
+            return False
+        row_l = df_sub.iloc[-1]
+    else:
+        row_l = df_long.loc[current_time]
+
+    close_price = row_l['close']
+    sma_val = row_l[sma_col] if sma_col in row_l else np.nan
+
+    # 예) 종가 < sma(200)이면 추세 이탈 판단
+    if pd.notna(sma_val) and close_price < sma_val:
+        return True
+    return False
