@@ -1,9 +1,10 @@
 # strategies/stop_loss_take_profit.py
+# ATR 기반 손절가 설정, 고정익절가, 트레일링 스탑 로직 등을 담은 파일입니다.
 
-# 데이터 분석 및 수치 연산 라이브러리
 import pandas as pd
 import numpy as np
-import ta  # 'ta'는 ATR, RSI 등 다양한 기술적 지표를 제공하는 라이브러리
+import ta  # 'ta' 라이브러리를 이용해 ATR 등을 계산
+
 
 def apply_stop_loss_atr(
     df: pd.DataFrame,
@@ -13,45 +14,44 @@ def apply_stop_loss_atr(
     entry_price_col: str = 'entry_price'
 ) -> pd.DataFrame:
     """
-    ATR(평균진폭)을 기반으로 손절가(stop_loss_price)를 계산하여 DataFrame에 추가합니다.
-    
-    ------------------------------------------------------------------------
-    매개변수 (Parameters):
-    - df (DataFrame): 매수 신호(long_entry)와 가격 정보(시가, 고가, 저가, 종가 등)가 포함된 데이터.
-    - atr_window (int): ATR 계산에 사용할 과거 캔들 수. 기본값: 14
-    - atr_multiplier (float): 손절가 계산 시 ATR에 곱할 배수. 기본값: 2.0
-    - sl_colname (str): 계산된 손절가를 저장할 컬럼명. 기본값: 'stop_loss_price'
-    - entry_price_col (str): 진입가(매수가)를 저장할 컬럼명. 기본값: 'entry_price'
-
-    반환값 (Return):
-    - DataFrame: 'atr', 'entry_price', 'stop_loss_price' 컬럼이 추가된 데이터프레임.
+    ATR(평균진폭)을 활용하여, 매수 시점마다 손절가를 설정합니다.
+    - 진입가 - (ATR * 배수) 식으로 계산
     """
 
-    # 1) ATR(평균진폭) 계산
-    # - AverageTrueRange: 고가(high), 저가(low), 종가(close)를 사용해 변동성을 계산.
-    # - window: 계산 기준이 되는 캔들 수
+    # ta 라이브러리로 ATR(최근 봉들의 변동폭 평균)을 구함
     atr_indicator = ta.volatility.AverageTrueRange(
         high=df['high'],
         low=df['low'],
         close=df['close'],
         window=atr_window,
-        fillna=True  # 결측값 발생 방지
+        fillna=True
     )
     df['atr'] = atr_indicator.average_true_range()
 
-    # 2) 매수 시점의 종가(entry_price) 기록
-    # - 매수 신호(long_entry=True) 발생 시 종가(close)를 진입가로 설정.
+    # 매수 시점의 종가를 entry_price로 기록
     df[entry_price_col] = np.where(df['long_entry'], df['close'], np.nan)
+    df[entry_price_col] = df[entry_price_col].ffill()  # 진입 후엔 계속 유지
 
-    # 3) 진입가 유지 (forward fill)
-    # - 진입 이후 익절/손절까지 동일한 진입가 유지.
-    df[entry_price_col] = df[entry_price_col].ffill()
-
-    # 4) 손절가(stop_loss_price) 계산
-    # - 손절가 = 진입가 - (ATR × ATR 배수)
+    # 손절가 = 진입가 - (ATR * 배수)
     df[sl_colname] = df[entry_price_col] - (df['atr'] * atr_multiplier)
 
     return df
+
+def update_trailing_stop(current_stop_loss: float, current_price: float, 
+                         highest_price: float, trailing_percent: float) -> float:
+    """
+    트레일링 스탑: 상승장에서 최고가가 갱신될 때마다 손절가도 따라올림.
+    - 예: 최고가의 5% 아래로 손절가를 계속 끌어올린다.
+    """
+
+    # highest_price 대비 trailing_percent만큼 내려온 지점
+    new_stop = highest_price * (1.0 - trailing_percent)
+
+    # 기존 손절가보다 높게만 업데이트(손절가가 내려가는 일은 없음), 그리고 현재가보단 낮아야 함
+    if new_stop > current_stop_loss and new_stop < current_price:
+        return new_stop
+    else:
+        return current_stop_loss
 
 
 def apply_take_profit_ratio(
@@ -61,46 +61,13 @@ def apply_take_profit_ratio(
     entry_price_col: str = 'entry_price'
 ) -> pd.DataFrame:
     """
-    고정된 목표 수익률을 사용하여 익절가(take_profit_price)를 계산합니다.
-    
-    ------------------------------------------------------------------------
-    매개변수 (Parameters):
-    - df (DataFrame): 매수 신호와 진입가가 포함된 데이터프레임.
-    - profit_ratio (float): 목표 수익률 (기본값: 0.05, 즉 5% 수익에 익절).
-    - tp_colname (str): 계산된 익절가를 저장할 컬럼명.
-    - entry_price_col (str): 진입가가 기록된 컬럼명.
-
-    반환값 (Return):
-    - DataFrame: 익절가(take_profit_price)가 추가된 데이터프레임.
+    고정된 이익률(예: 5%)을 목표로 익절가를 설정합니다.
+    - 익절가 = 진입가 * (1 + profit_ratio)
     """
 
-    # 익절가 계산: 진입가 × (1 + 목표 수익률)
     df[tp_colname] = df[entry_price_col] * (1 + profit_ratio)
     return df
 
-def update_trailing_stop(current_stop_loss: float, current_price: float, 
-                         highest_price: float, trailing_percent: float) -> float:
-    """
-    트레일링 스탑 로직:
-      - 현재까지의 최고가(highest_price) 대비 trailing_percent 만큼 뒤로 따라오는 손절가를 설정.
-      - 예) trailing_percent=0.05 → 5% 아래 위치로 손절가를 업데이트.
-    Params
-    ------
-      - current_stop_loss: 기존 손절가
-      - current_price: 현재가
-      - highest_price: 지금까지의 최고가
-      - trailing_percent: 트레일링 % (0.05 = 5%)
-    Returns
-    -------
-      - 새로운 손절가
-    """
-    # 새로 계산된 트레일링 손절가
-    new_stop = highest_price * (1.0 - trailing_percent)
-    # 기존 손절가보다 더 높은 수준일 경우에만 갱신 (손절가가 낮아지지 않도록)
-    if new_stop > current_stop_loss and new_stop < current_price:
-        return new_stop
-    else:
-        return current_stop_loss
 
 def check_trend_exit_condition(
     df_long: pd.DataFrame,
@@ -108,12 +75,11 @@ def check_trend_exit_condition(
     sma_col: str = 'sma200'
 ) -> bool:
     """
-    예시: 종가가 SMA(200) 아래로 떨어지면 추세 이탈로 보고 청산한다.
-    실제론 MACD나 SuperTrend 등 다양한 지표로 수정 가능.
+    간단하게 '종가 < SMA(200)이면 추세 이탈' 로 가정하고 True/False를 반환하는 예시.
     """
-    # 현재 시점의 장기봉 데이터(가장 최근) 가져오기
+
+    # current_time이 df_long 인덱스에 없을 수 있으므로 처리
     if current_time not in df_long.index:
-        # 만약 간격이 어긋나면, current_time 이전의 가장 가까운 시점으로 찾아볼 수도 있음
         df_sub = df_long.loc[:current_time]
         if df_sub.empty:
             return False
@@ -124,7 +90,27 @@ def check_trend_exit_condition(
     close_price = row_l['close']
     sma_val = row_l[sma_col] if sma_col in row_l else np.nan
 
-    # 예) 종가 < sma(200)이면 추세 이탈 판단
     if pd.notna(sma_val) and close_price < sma_val:
         return True
     return False
+
+
+def create_sub_tps_for_partial_exit(
+    entry_price: float,
+    partial_ratio: float = 0.5,
+    partial_tp_factor: float = 0.03,  # 3% 익절
+    final_tp_factor: float = 0.06     # 6% 익절
+):
+    """
+    예시:
+      entry_price=10000,
+      partial_tp_factor=0.03 => 10,300 달성 시 50%(partial_ratio=0.5) 익절
+      final_tp_factor=0.06   => 10,600 달성 시 나머지 50% 익절
+    """
+    partial_tp_price = entry_price * (1.0 + partial_tp_factor)
+    final_tp_price   = entry_price * (1.0 + final_tp_factor)
+
+    return [
+        (partial_tp_price, partial_ratio),  # 첫 익절
+        (final_tp_price, 1.0)              # 나머지 전량 익절
+    ]

@@ -1,39 +1,26 @@
 # backtesting/performance_metrics.py
+# 백테스트 결과를 평가하기 위해 MDD, 월별 성과, 연간 성과 등을 계산하는 함수들.
 
-# 데이터 분석과 수치 연산을 위한 라이브러리
 import pandas as pd
 import numpy as np
 
 def calculate_monthly_performance(trades_df: pd.DataFrame) -> pd.DataFrame:
     """
-    월별 손익(PnL), 매매 횟수, 승률을 계산하는 함수.
-
-    주요 기능:
-    ----------
-    - 월(YYYY-MM) 단위로 매매 데이터를 그룹화.
-    - 각 월별 총 손익, 매매 횟수, 승률을 계산.
-
-    매개변수:
-    ----------
-    - trades_df (DataFrame): 매매 기록 데이터프레임.
-      필요한 컬럼: exit_time(datetime), pnl(float).
-
-    반환값:
-    ----------
-    - DataFrame: 월별 성과를 요약한 데이터프레임.
+    월별로(YYYY-MM) 손익, 매매 횟수, 승률을 계산하여 요약한 DataFrame을 반환.
     """
-    # 연월(YYYY-MM) 기준으로 그룹화
+
+    if 'exit_time' not in trades_df.columns:
+        return pd.DataFrame()
+
     trades_df['year_month'] = trades_df['exit_time'].dt.to_period('M')
-
-    # 그룹별 성과 계산
     grouped = trades_df.groupby('year_month')
-    results = []
 
+    results = []
     for ym, grp in grouped:
-        total_pnl = grp['pnl'].sum()  # 총 손익
-        num_trades = len(grp)        # 매매 횟수
-        win_trades = (grp['pnl'] > 0).sum()  # 이긴 매매 수
-        win_rate = win_trades / num_trades * 100.0 if num_trades > 0 else 0.0  # 승률 계산
+        total_pnl = grp['pnl'].sum()
+        num_trades = len(grp)
+        win_trades = (grp['pnl'] > 0).sum()
+        win_rate = (win_trades / num_trades * 100.0) if num_trades > 0 else 0.0
 
         results.append({
             'year_month': str(ym),
@@ -47,18 +34,12 @@ def calculate_monthly_performance(trades_df: pd.DataFrame) -> pd.DataFrame:
 
 def calculate_yearly_performance(trades_df: pd.DataFrame) -> pd.DataFrame:
     """
-    연도별 손익(PnL), 매매 횟수, 승률을 계산하는 함수.
-
-    매개변수:
-    ----------
-    - trades_df (DataFrame): 매매 기록 데이터프레임.
-      필요한 컬럼: exit_time(datetime), pnl(float).
-
-    반환값:
-    ----------
-    - DataFrame: 연도별 성과를 요약한 데이터프레임.
+    연도별(YYYY)로 손익, 매매 횟수, 승률을 계산.
     """
-    # 연도별 그룹화
+
+    if 'exit_time' not in trades_df.columns:
+        return pd.DataFrame()
+
     trades_df['year'] = trades_df['exit_time'].dt.year
     grouped = trades_df.groupby('year')
 
@@ -67,7 +48,7 @@ def calculate_yearly_performance(trades_df: pd.DataFrame) -> pd.DataFrame:
         total_pnl = grp['pnl'].sum()
         num_trades = len(grp)
         win_trades = (grp['pnl'] > 0).sum()
-        win_rate = win_trades / num_trades * 100.0 if num_trades > 0 else 0.0
+        win_rate = (win_trades / num_trades * 100.0) if num_trades > 0 else 0.0
 
         results.append({
             'year': y,
@@ -81,26 +62,15 @@ def calculate_yearly_performance(trades_df: pd.DataFrame) -> pd.DataFrame:
 
 def calculate_mdd(trades_df: pd.DataFrame, initial_balance: float) -> float:
     """
-    최대낙폭(MDD)을 계산하는 함수.
-
-    주요 기능:
-    ----------
-    - 매매 기록을 순서대로 처리하여 최대낙폭(MDD)을 계산.
-
-    매개변수:
-    ----------
-    - trades_df (DataFrame): 매매 기록 데이터프레임.
-      필요한 컬럼: exit_time(datetime), pnl(float).
-    - initial_balance (float): 초기 계좌 잔고.
-
-    반환값:
-    ----------
-    - float: 최대낙폭(MDD) 값(음수, % 단위).
+    MDD(최대낙폭) %를 계산하는 함수.
+    - 거래 순서대로 잔고를 추적하며, 최고점(peak)과 비교해 얼마나 내려갔나를 계산
     """
-    # 시간 순 정렬
+
+    if 'exit_time' not in trades_df.columns:
+        return 0.0
+
     trades_df = trades_df.sort_values(by='exit_time')
 
-    # 잔고 추적
     equity_list = []
     current_balance = initial_balance
 
@@ -108,43 +78,63 @@ def calculate_mdd(trades_df: pd.DataFrame, initial_balance: float) -> float:
         current_balance += row['pnl']
         equity_list.append(current_balance)
 
-    # MDD 계산
     equity_arr = np.array(equity_list)
-    peak_arr = np.maximum.accumulate(equity_arr)  # 최고점 추적
-    drawdown_arr = (equity_arr - peak_arr) / peak_arr  # 낙폭 계산
-    mdd = drawdown_arr.min() * 100.0  # %로 변환
+    peak_arr = np.maximum.accumulate(equity_arr)
+    drawdown_arr = (equity_arr - peak_arr) / peak_arr
+    mdd = drawdown_arr.min() * 100.0
     return mdd
 
+def calculate_sharpe_ratio(trades_df: pd.DataFrame, initial_balance: float, risk_free_rate=0.0) -> float:
+    """
+    각 트레이드마다 발생한 이익을 기반으로 '단순 Sharpe' 지수를 추정.
+    - 실제론 일/주별로 Equity Curve를 만들어서 변동성 분석하는 게 더 정확함.
+    """
+    if trades_df.empty:
+        return 0.0
+
+    if len(trades_df) < 2:
+        return 0.0
+
+    trades_df = trades_df.sort_values(by='exit_time')
+    current_balance = initial_balance
+    returns_list = []
+
+    for _, row in trades_df.iterrows():
+        pnl = row['pnl']
+        ret = pnl / current_balance
+        returns_list.append(ret)
+        current_balance += pnl
+
+    returns_arr = np.array(returns_list)
+
+    if len(returns_arr) < 2:
+        return 0.0
+
+    mean_return = returns_arr.mean()
+    std_return  = returns_arr.std(ddof=1)
+
+    if std_return == 0:
+        return 0.0
+
+    sharpe = (mean_return - risk_free_rate) / std_return
+    return sharpe
 
 def print_performance_report(trades_df: pd.DataFrame, initial_balance: float) -> None:
     """
-    전체 성과를 요약 출력하는 함수.
-
-    주요 기능:
-    ----------
-    - 월별, 연도별 성과와 MDD(최대낙폭), ROI, 승률 등을 출력.
-
-    매개변수:
-    ----------
-    - trades_df (DataFrame): 매매 기록 데이터프레임.
-    - initial_balance (float): 초기 계좌 잔고.
-
-    반환값:
-    ----------
-    - None
+    월별 성과, 연도별 성과, 전체 성과(ROI, MDD, 총손익, 승률 등)를 콘솔에 출력.
     """
+
     if trades_df.empty:
         print("No trades to report.")
         return
 
-    # 성과 계산
     monthly_df = calculate_monthly_performance(trades_df)
     yearly_df = calculate_yearly_performance(trades_df)
     total_pnl = trades_df['pnl'].sum()
     final_balance = initial_balance + total_pnl
     mdd = calculate_mdd(trades_df, initial_balance=initial_balance)
+    sharpe = calculate_sharpe_ratio(trades_df, initial_balance=initial_balance)
 
-    # 출력
     print("=== (A) 월별 성과 ===")
     print(monthly_df)
 
@@ -157,10 +147,10 @@ def print_performance_report(trades_df: pd.DataFrame, initial_balance: float) ->
     print(f"  - 총 손익         : {total_pnl:.2f}")
     print(f"  - ROI(%)          : {(final_balance - initial_balance) / initial_balance * 100:.2f}%")
     print(f"  - 최대낙폭(MDD)   : {mdd:.2f}%")
+    print(f"  - 샤프 지수(단순) : {sharpe:.3f}")
 
-    # 매매 통계
     num_trades = len(trades_df)
     wins = (trades_df['pnl'] > 0).sum()
-    win_rate = wins / num_trades * 100.0 if num_trades > 0 else 0.0
+    win_rate = (wins / num_trades * 100.0) if num_trades > 0 else 0.0
     print(f"  - 총 매매 횟수    : {num_trades}")
     print(f"  - 승률(%)         : {win_rate:.2f}%")
