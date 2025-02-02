@@ -10,7 +10,7 @@
 - **설명:**  
   과거 특정 기간(예: 20일) 동안의 최고가를 넘어서는 순간을 돌파로 판단합니다. 이는 향후 상승 추세 시작을 시사하며, 거래량 증가까지 동반되면 ‘진성 돌파’ 가능성이 높아집니다.
 - **코드 적용:**  
-  - `breakout_signal.py`의 `calculate_breakout_signals()`에서 `window` 기간 동안의 최고가를 `highest_{window}`로 계산해 돌파(breakout_signal) 여부를 확인.
+  - `breakout_signal.py`의 `detect_breakout_signals()`에서 `window` 기간 동안의 최고가를 `highest_{window}`로 계산해 돌파(breakout_signal) 여부를 확인.
   - `use_high` 파라미터로 고가(high) 기준 vs 종가(close) 기준 돌파를 선택 가능.
   - `breakout_buffer`를 통해 “전고점 + α” 여유분을 두어 노이즈성 돌파(가짜 돌파)를 줄일 수 있음.
 - **예시:**  
@@ -28,7 +28,7 @@
 - **설명:**  
   횡보 구간(박스권)의 상단을 돌파하는 순간을 매수 시그널로 간주합니다.
 - **코드 적용:**  
-  - `calculate_breakout_signals()`를 응용해 일정 기간의 “최고가·최저가”를 이용하거나, Donchian Channel과 같은 지표를 통해 박스권을 정의할 수 있음.
+  - `detect_breakout_signals()`를 응용해 일정 기간의 “최고가·최저가”를 이용하거나, Donchian Channel과 같은 지표를 통해 박스권을 정의할 수 있음.
   - 상단을 돌파하면 `breakout_signal=True`로 잡아 매수 조건을 충족.
 - **예시:**  
   - 박스권 상단 120,000원, 하단 110,000원일 때, 주가가 121,000원 이상으로 올라서면 매수 신호.
@@ -45,7 +45,7 @@
 - **설명:**  
   돌파 시점 거래량이 급증한다면 강한 매수세 유입을 의미하므로, 진성 돌파 가능성이 높습니다.
 - **코드 적용:**  
-  - `calculate_breakout_signals()` 내에서 `volume_condition`을 확인: 현재 거래량이 과거 `window`봉 평균 거래량 × `vol_factor`(기본 1.5) 이상인지 검사.
+  - `detect_breakout_signals()` 내에서 `volume_condition`을 확인: 현재 거래량이 과거 `window`봉 평균 거래량 × `vol_factor`(기본 1.5) 이상인지 검사.
 
 #### 2) **종가 기준 확인**
 - **설명:**  
@@ -117,16 +117,16 @@
 ### 6. **데이터 수집 및 데이터베이스 관리**
 
 - **데이터 수집**  
-  - `data_collection/fetch_binance_data.py`에서 **Binance** 거래소의 과거(역사적) 혹은 최신 시세(OHLCV)를 `fetch_binance_historical_ohlcv()`, `fetch_binance_latest_ohlcv()` 함수로 불러올 수 있음.  
+  - `data_collection/fetch_binance_data.py`에서 **Binance** 거래소의 과거(역사적) 혹은 최신 시세(OHLCV)를 `fetch_exchange_historical_ohlcv()`, `fetch_exchange_latest_ohlcv()` 함수로 불러올 수 있음.  
   - `ohlcv_data_pipeline.py`의 `collect_data_for_backtest()` 함수를 사용하면, 여러 심볼(예: BTC/USDT, ETH/USDT)과 여러 타임프레임(1h, 4h, 1d 등)을 한꺼번에 수집해 DataFrame으로 받는 작업이 자동화됨.
 
 - **DB 저장 및 조회**  
-  - `data_collection/postgres_ohlcv_handler.py`의 `save_ohlcv_to_postgres()`를 통해, 가져온 OHLCV 데이터를 PostgreSQL에 저장할 수 있음.  
+  - `data_collection/postgres_ohlcv_handler.py`의 `insert_ohlcv_to_db()`를 통해, 가져온 OHLCV 데이터를 PostgreSQL에 저장할 수 있음.  
     - 테이블 생성(`CREATE TABLE IF NOT EXISTS`) → 중복시 `ON CONFLICT DO NOTHING`으로 무시 → 최종 커밋.  
-  - `load_ohlcv_from_postgres()`로 특정 테이블(예: `ohlcv_btcusdt_4h`)에서 원하는 기간(`start_date`, `end_date`)만큼 데이터를 불러올 수 있으므로, 백테스트나 실시간 분석에 활용 가능.
+  - `read_ohlcv_from_db()`로 특정 테이블(예: `ohlcv_btcusdt_4h`)에서 원하는 기간(`start_date`, `end_date`)만큼 데이터를 불러올 수 있으므로, 백테스트나 실시간 분석에 활용 가능.
 
 - **DB 삭제(정리)**  
-  - `delete_ohlcv_tables_by_symbol(symbol)`를 호출하면, 특정 심볼과 관련된 테이블(예: `ohlcv_btcusdt_1h`, `ohlcv_btcusdt_4h` 등)을 한 번에 삭제할 수 있음.  
+  - `remove_ohlcv_by_symbol(symbol)`를 호출하면, 특정 심볼과 관련된 테이블(예: `ohlcv_btcusdt_1h`, `ohlcv_btcusdt_4h` 등)을 한 번에 삭제할 수 있음.  
   - 데이터 정리나 불필요한 테이블 제거 시에 유용.
 
 ---
