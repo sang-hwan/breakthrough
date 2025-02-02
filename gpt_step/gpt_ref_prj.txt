@@ -13,223 +13,37 @@ DATABASE = {
 
 ---
 
-# data_collection/fetch_binance_data.py
-# 바이낸스(Binance) 거래소의 과거/최신 시세 데이터를 수집하기 위해
-# CCXT 라이브러리를 사용하는 예시 코드를 담은 파일입니다.
-
-import ccxt
-import pandas as pd
-import time
-from datetime import datetime
-
-
-def fetch_binance_historical_ohlcv(
-    symbol: str,
-    timeframe: str = '4h',
-    start_date: str = '2021-01-01 00:00:00',
-    limit_per_request: int = 1000,
-    pause_sec: float = 1.0
-) -> pd.DataFrame:
-    """
-    바이낸스에서 과거 가격 데이터를 여러 번 나눠 요청하여 대량으로 수집합니다.
-    
-    - symbol: 'BTC/USDT' 처럼 거래쌍을 나타냄
-    - timeframe: '1m', '4h', '1d' 처럼 원하는 봉 기간(캔들 간격)
-    - start_date: 어떤 시점부터 데이터를 불러올지(YYYY-MM-DD HH:MM:SS)
-    - limit_per_request: 한 번의 API 호출로 가져올 봉의 최대 개수
-    - pause_sec: API 호출 사이에 쉬는 시간(너무 자주 요청하면 제한에 걸릴 수 있음)
-
-    반환값: 날짜와 OHLCV(시가, 고가, 저가, 종가, 거래량)가 들어 있는 pandas DataFrame
-    """
-
-    # ccxt 라이브러리를 통해 바이낸스 API 사용 준비
-    exchange = ccxt.binance()
-
-    # '2021-01-01 00:00:00' 문자열을 바이낸스에서 요구하는 밀리초 단위 타임스탬프로 변환
-    since_ms = exchange.parse8601(start_date)
-
-    all_ohlcv = []  # 과거 데이터를 모두 모으기 위한 리스트
-
-    while True:
-        # fetch_ohlcv: 시세 데이터를 (timestamp, open, high, low, close, volume) 순으로 반환
-        ohlcv = exchange.fetch_ohlcv(
-            symbol=symbol,
-            timeframe=timeframe,
-            since=since_ms,
-            limit=limit_per_request
-        )
-
-        # 만약 새로 가져온 데이터가 없다면(빈 리스트), 더 이상 받아올 게 없으므로 멈춤
-        if not ohlcv:
-            break
-
-        # 받아온 데이터를 큰 리스트에 이어붙임
-        all_ohlcv += ohlcv
-
-        # 마지막 데이터의 타임스탬프를 기준으로 다음 요청 시작 지점을 갱신
-        last_ts = ohlcv[-1][0]
-        since_ms = last_ts + 1  # 1ms 뒤부터 다시 요청
-
-        # API 사용량 제한을 피하기 위해 잠시 쉬어줌
-        time.sleep(pause_sec)
-
-        # 만약 이번에 가져온 데이터 개수가 최대치보다 작으면, 추가로 가져올 데이터가 없다고 가정하고 종료
-        if len(ohlcv) < limit_per_request:
-            break
-
-    # 여기까지 모은 시세 데이터를 DataFrame으로 변환
-    df = pd.DataFrame(all_ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-
-    # timestamp(ms 단위)를 날짜/시간 형식으로 변환 후 인덱스로 설정
-    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-    df.set_index('timestamp', inplace=True)
-
-    # 숫자값으로 바꿀 컬럼들을 float 타입으로 변환
-    numeric_cols = ['open', 'high', 'low', 'close', 'volume']
-    df[numeric_cols] = df[numeric_cols].astype(float)
-
-    # 혹시 중복된 인덱스가 있으면 제거, NaN 값도 제거
-    df = df[~df.index.duplicated()]
-    df.dropna(inplace=True)
-
-    return df
-
-
-def fetch_binance_latest_ohlcv(symbol: str, timeframe: str = '4h', limit: int = 500) -> pd.DataFrame:
-    """
-    바이낸스에서 '가장 최근' 시세 데이터 여러 개를 가져오는 함수입니다.
-    - symbol: 거래쌍 (예: "BTC/USDT")
-    - timeframe: 캔들 간격
-    - limit: 몇 개의 봉(캔들)을 가져올지
-
-    반환값: OHLCV 데이터가 담긴 pandas DataFrame
-    """
-
-    # 바이낸스 API에 연결할 ccxt 객체 생성
-    exchange = ccxt.binance()
-
-    # 최신 데이터 요청
-    ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
-
-    # 가져온 데이터를 DataFrame으로 변환
-    df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-
-    # timestamp를 사람이 읽을 수 있는 시간 형식으로 바꿈 + 인덱스로 설정
-    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-    df.set_index('timestamp', inplace=True)
-
-    # 숫자 컬럼들을 float로 변환
-    numeric_cols = ['open', 'high', 'low', 'close', 'volume']
-    df[numeric_cols] = df[numeric_cols].astype(float)
-
-    # 인덱스 중복 제거, NaN 제거
-    df = df[~df.index.duplicated()]
-    df.dropna(inplace=True)
-
-    return df
-
----
-
-# data_collection/ohlcv_data_pipeline.py
-# Binance에서 OHLCV 데이터를 수집하여 PostgreSQL에 넣는 과정을 자동화한 파이프라인 코드입니다.
-
-import time
-from datetime import datetime
-from typing import List, Optional
-
-# 다른 파일에서 필요한 함수를 가져옴
-from data_collection.fetch_binance_data import (
-    fetch_binance_historical_ohlcv,
-    fetch_binance_latest_ohlcv
-)
-from data_collection.postgres_ohlcv_handler import save_ohlcv_to_postgres
-
-
-def collect_data_for_backtest(
-    symbols: List[str],
-    timeframes: List[str],
-    use_historical: bool = True,
-    start_date: Optional[str] = '2018-01-01 00:00:00',
-    limit_per_request: int = 1000,
-    latest_limit: int = 500,
-    pause_sec: float = 1.0
-) -> None:
-    """
-    심볼(예: BTC/USDT 등)과 타임프레임(예: 4h, 1d 등)을 지정하면,
-    바이낸스에서 OHLCV를 가져와 PostgreSQL에 저장합니다.
-
-    - use_historical=True => 설정된 start_date부터 모든 과거 데이터를 받아옴
-    - use_historical=False => 최신 데이터만 제한적으로 받음
-    """
-
-    # 선택된 각 심볼을 순회
-    for symbol in symbols:
-        # 각 타임프레임(봉 간격)도 순회
-        for tf in timeframes:
-            print(f"\n[*] Fetching {symbol} - {tf} data...")
-
-            # (1) 데이터 수집
-            if use_historical:
-                # 과거 데이터
-                if not start_date:
-                    raise ValueError("start_date는 과거 데이터 수집 시 반드시 필요합니다.")
-                df = fetch_binance_historical_ohlcv(
-                    symbol=symbol,
-                    timeframe=tf,
-                    start_date=start_date,
-                    limit_per_request=limit_per_request,
-                    pause_sec=pause_sec
-                )
-            else:
-                # 최신 데이터
-                df = fetch_binance_latest_ohlcv(
-                    symbol=symbol,
-                    timeframe=tf,
-                    limit=latest_limit
-                )
-
-            # DB에 저장할 테이블 이름 예: "ohlcv_btcusdt_4h"
-            table_name = f"ohlcv_{symbol.replace('/', '').lower()}_{tf}"
-            print(f"    -> Total Rows Fetched: {len(df)}")
-
-            # (2) 수집한 DataFrame을 PostgreSQL에 저장
-            save_ohlcv_to_postgres(df, table_name=table_name)
-            print(f"    -> Saved to table: {table_name}")
-
-            # (3) 다음 요청 전에 잠깐 대기 (API 부하 방지)
-            time.sleep(pause_sec)
-
----
-
-# data_collection/postgres_ohlcv_handler.py
-# 이 파일은 PostgreSQL과의 입출력을 담당합니다.
-# SQLAlchemy와 psycopg2를 사용합니다.
+# data_collection/db_ohlcv_manager.py
 
 from sqlalchemy import create_engine
 import psycopg2
 import pandas as pd
 from typing import Optional
-from config.db_config import DATABASE  # DB 접속 정보를 담고 있는 설정
+from config.db_config import DATABASE
 
-
-def save_ohlcv_to_postgres(df: pd.DataFrame, table_name: str = 'ohlcv_data') -> None:
+def insert_ohlcv_records(
+    df: pd.DataFrame,
+    table_name: str = 'ohlcv_data',
+    conflict_action: str = "DO NOTHING",  # 중복키 충돌 시 액션
+    db_config: Optional[dict] = None
+) -> None:
     """
-    OHLCV 형태의 DataFrame을 PostgreSQL 테이블에 저장합니다.
-    - table_name이 없다면 'ohlcv_data'라는 이름을 기본 사용
-    - timestamp 컬럼을 PK로 설정해 중복 데이터를 막습니다.
+    OHLCV DataFrame을 PostgreSQL에 저장합니다.
+    conflict_action: 중복키 충돌 시 수행할 액션 (기본 'DO NOTHING')
+    db_config: DB 접속 정보를 담은 dict (없으면 DATABASE 사용)
     """
+    if db_config is None:
+        db_config = DATABASE
 
-    # (1) psycopg2로 DB 연결
     conn = psycopg2.connect(
-        user=DATABASE['user'],
-        password=DATABASE['password'],
-        host=DATABASE['host'],
-        port=DATABASE['port'],
-        dbname=DATABASE['dbname']
+        user=db_config['user'],
+        password=db_config['password'],
+        host=db_config['host'],
+        port=db_config['port'],
+        dbname=db_config['dbname']
     )
     cur = conn.cursor()
 
-    # (2) 테이블이 없으면 생성
     create_table_query = f"""
     CREATE TABLE IF NOT EXISTS {table_name} (
         timestamp TIMESTAMP NOT NULL,
@@ -244,16 +58,15 @@ def save_ohlcv_to_postgres(df: pd.DataFrame, table_name: str = 'ohlcv_data') -> 
     cur.execute(create_table_query)
     conn.commit()
 
-    # (3) DataFrame 행을 돌면서 INSERT (ON CONFLICT DO NOTHING은 중복 timestamp면 삽입 무시)
     for index, row in df.iterrows():
         insert_query = f"""
         INSERT INTO {table_name} (timestamp, open, high, low, close, volume)
         VALUES (%s, %s, %s, %s, %s, %s)
         ON CONFLICT (timestamp) 
-        DO NOTHING;
+        {conflict_action};
         """
         cur.execute(insert_query, (
-            index.to_pydatetime(),  # 인덱스가 날짜이므로 datetime 객체로 변환
+            index.to_pydatetime(),
             float(row['open']),
             float(row['high']),
             float(row['low']),
@@ -265,80 +78,72 @@ def save_ohlcv_to_postgres(df: pd.DataFrame, table_name: str = 'ohlcv_data') -> 
     cur.close()
     conn.close()
 
-
-def load_ohlcv_from_postgres(
+def fetch_ohlcv_records(
     table_name: str = 'ohlcv_data',
     limit: Optional[int] = None,
     start_date: Optional[str] = None,
-    end_date: Optional[str] = None
+    end_date: Optional[str] = None,
+    db_config: Optional[dict] = None
 ) -> pd.DataFrame:
     """
-    PostgreSQL 테이블에서 OHLCV 데이터를 읽어옵니다.
-    - 기간(start_date, end_date)나 limit를 걸 수도 있습니다.
-    - 결과를 DataFrame으로 반환.
+    PostgreSQL에서 OHLCV 데이터를 읽어옵니다.
     """
+    if db_config is None:
+        db_config = DATABASE
 
-    # SQLAlchemy의 create_engine()으로 연결 문자열 구성
     engine = create_engine(
-        f"postgresql://{DATABASE['user']}:{DATABASE['password']}@"
-        f"{DATABASE['host']}:{DATABASE['port']}/{DATABASE['dbname']}"
+        f"postgresql://{db_config['user']}:{db_config['password']}@"
+        f"{db_config['host']}:{db_config['port']}/{db_config['dbname']}"
     )
 
-    # 기본 SELECT 쿼리
     query = f"SELECT * FROM {table_name}"
-
-    # WHERE 절을 위해 조건들을 모을 리스트
     where_clauses = []
     if start_date:
         where_clauses.append(f"timestamp >= '{start_date}'")
     if end_date:
         where_clauses.append(f"timestamp <= '{end_date}'")
-
     if where_clauses:
         query += " WHERE " + " AND ".join(where_clauses)
-
-    # 시간 순서대로 정렬
     query += " ORDER BY timestamp"
-
-    # limit(최대 행 수) 지정이 있다면
     if limit:
         query += f" LIMIT {limit}"
 
-    # 쿼리 실행 후 DataFrame으로 변환, timestamp를 datetime 형식으로 처리
     df = pd.read_sql(query, engine, parse_dates=['timestamp'])
     df.set_index('timestamp', inplace=True)
-
     return df
 
-
-def delete_ohlcv_tables_by_symbol(symbol: str) -> None:
+def delete_ohlcv_tables_by_symbol(
+    symbol: str,
+    schema: str = 'public',
+    db_config: Optional[dict] = None
+) -> None:
     """
-    BTC/USDT => ohlcv_btcusdt_... 처럼 테이블 이름이 matching되는 걸 전부 삭제하는 함수.
-    예) "ohlcv_btcusdt_4h", "ohlcv_btcusdt_1d" 등등
+    지정 심볼과 매칭되는 모든 테이블을 삭제합니다.
+    schema: 사용할 스키마 (기본 'public')
     """
+    if db_config is None:
+        db_config = DATABASE
 
     symbol_for_table = symbol.replace("/", "").lower()
 
     conn = psycopg2.connect(
-        user=DATABASE['user'],
-        password=DATABASE['password'],
-        host=DATABASE['host'],
-        port=DATABASE['port'],
-        dbname=DATABASE['dbname']
+        user=db_config['user'],
+        password=db_config['password'],
+        host=db_config['host'],
+        port=db_config['port'],
+        dbname=db_config['dbname']
     )
     cur = conn.cursor()
 
-    # 해당 심볼 패턴의 테이블 목록을 찾아옴
     find_tables_query = f"""
         SELECT table_name
         FROM information_schema.tables
-        WHERE table_schema = 'public'
+        WHERE table_schema = '{schema}'
           AND table_name LIKE 'ohlcv_{symbol_for_table}_%';
     """
     cur.execute(find_tables_query)
     tables = cur.fetchall()
 
-    # 조회된 테이블을 순회하며 삭제
     for (table_name,) in tables:
         drop_query = f"DROP TABLE IF EXISTS {table_name} CASCADE;"
         print(f"[*] Dropping table: {table_name}")
@@ -350,829 +155,1121 @@ def delete_ohlcv_tables_by_symbol(symbol: str) -> None:
 
 ---
 
-# strategies/breakout_signal.py
-# 특정 전략(돌파전략)에서 사용될 지표 계산 함수를 담은 파일입니다.
+# data_collection/ohlcv_data_fetcher.py
 
+import ccxt
 import pandas as pd
+import time
+from datetime import datetime
 
-def calculate_breakout_signals(
-    df: pd.DataFrame,
-    window: int = 20,
-    vol_factor: float = 1.5,
-    confirm_bars: int = 2,
-    use_high: bool = False,
-    breakout_buffer: float = 0.0
+def fetch_historical_ohlcv_data(
+    symbol: str,
+    timeframe: str = '4h',
+    start_date: str = '2021-01-01 00:00:00',
+    limit_per_request: int = 1000,
+    pause_sec: float = 1.0,
+    exchange_id: str = 'binance',
+    time_offset_ms: int = 1
 ) -> pd.DataFrame:
     """
-    돌파 전략에 필요한 여러 시그널을 DataFrame에 추가해주는 함수.
-    
-    - 전고점(highest_xx) 계산
-    - 종가/고가가 전고점보다 높은지 판단(breakout_signal)
-    - 거래량이 과거 평균보다 큰지 판단(volume_condition)
-    - 돌파 신호가 confirm_bars 연속으로 발생하면 확정 돌파(confirmed_breakout)로 표시
+    거래소에서 과거 가격 데이터를 여러 번 나눠 요청하여 대량으로 수집합니다.
+    추가 매개변수:
+      - exchange_id: 사용할 거래소 ID (기본 'binance')
+      - time_offset_ms: 마지막 데이터 이후 요청 시 오프셋 (기본 1ms)
     """
+    exchange = getattr(ccxt, exchange_id)()
+    since_ms = exchange.parse8601(start_date)
+    all_ohlcv = []
 
-    # 1) window 기간의 전고점(Highest High) 계산 (현재 봉 제외, shift(1) 사용)
-    df[f'highest_{window}'] = (
-        df['high'].shift(1)
-        .rolling(window)
-        .max()
-    )
-
-    # 2) 돌파 신호(breakout_signal) - 전고점 * (1 + breakout_buffer)보다 크면 돌파로 본다
-    if use_high:
-        df['breakout_signal'] = df['high'] > (df[f'highest_{window}'] * (1 + breakout_buffer))
-    else:
-        df['breakout_signal'] = df['close'] > (df[f'highest_{window}'] * (1 + breakout_buffer))
-
-    # 3) 거래량 평균 구하기 (shift(1)로 현재 봉 제외)
-    df[f'vol_ma_{window}'] = (
-        df['volume'].shift(1)
-        .rolling(window)
-        .mean()
-    )
-    df['volume_condition'] = df['volume'] > (vol_factor * df[f'vol_ma_{window}'])
-
-    # 4) 확정 돌파(confirmed_breakout) - 예: 2개 봉 연속 breakout_signal이 True이면 True
-    df['confirmed_breakout'] = (
-        df['breakout_signal'].rolling(confirm_bars).sum() == confirm_bars
-    )
-    df['confirmed_breakout'] = df['confirmed_breakout'].fillna(False)
-
-    return df
-
----
-
-# strategies/position.py
-# 포지션(거래 한 건)을 객체로 관리해 주는 클래스.
-
-class Position:
-    """
-    분할 매수/매도 등을 고려하기 위해, 하나의 '포지션' 안에 여러 sub_position(분할체결)을 저장하는 구조.
-    
-    - side: "LONG" 혹은 "SHORT" (현재는 LONG만 가정)
-    - sub_positions: 실제 매수 체결 내역을 리스트로 보관 (entry_price, size 등)
-    - sub_positions[i]['sub_tps']: 여러 익절 가격대와 청산 비중을 담을 수 있음 (분할 익절).
-    - initial_entry_price: 분할매수를 시작할 때 기준이 되는 가격
-    - max_position_size: 이 포지션에서 최대로 잡을 전체 수량
-    - num_splits: 총 분할 매수 횟수
-    - splits_filled: 지금까지 몇 분할이 체결되었는지
-    - split_plan: 각 분할마다 어느 비중으로 매수할지 비율 리스트 (예: [0.3, 0.3, 0.4])
-    """
-
-    def __init__(
-        self,
-        side="LONG",
-        initial_entry_price=None,
-        max_position_size=0.0,
-        num_splits=1,
-        split_plan=None
-    ):
-        self.side = side
-        self.sub_positions = []
-
-        self.initial_entry_price = initial_entry_price
-        self.max_position_size = max_position_size
-        self.num_splits = num_splits
-        self.splits_filled = 0
-
-        if split_plan is None:
-            split_plan = []
-        self.split_plan = split_plan
-
-    def add_sub_position(
-        self,
-        entry_price,
-        size,
-        stop_loss=None,
-        take_profit=None,
-        entry_time=None,
-        sub_tps=None
-    ):
-        """
-        한 번의 매수(분할 체결)를 기록하여 sub_positions에 추가합니다.
-        sub_tps: 여러 익절 가격과 청산비중을 담은 리스트 (예: [(50000, 0.5), (55000, 1.0)])
-            => 첫 가격도달 시 50% 청산, 두 번째 가격도달 시 나머지 전량 청산
-        """
-        if sub_tps is None:
-            sub_tps = []
-        sub_tps_with_flags = []
-        for (tp_price, tp_ratio) in sub_tps:
-            sub_tps_with_flags.append({
-                'price': tp_price,
-                'close_ratio': tp_ratio,
-                'hit': False
-            })
-
-        self.sub_positions.append({
-            'entry_price': entry_price,
-            'size': size,
-            'stop_loss': stop_loss,
-            'take_profit': take_profit,
-            'entry_time': entry_time,
-            'sub_tps': sub_tps_with_flags
-        })
-        
-    def total_size(self) -> float:
-        """
-        현재까지 매수된 총 수량 합.
-        """
-        return sum(sp['size'] for sp in self.sub_positions)
-
-    def average_price(self) -> float:
-        """
-        가중평균 매수가 계산: (매수가*수량)의 합 / 총수량
-        """
-        total_cost = 0.0
-        total_qty = 0.0
-        for sp in self.sub_positions:
-            total_cost += sp['entry_price'] * sp['size']
-            total_qty += sp['size']
-        return (total_cost / total_qty) if total_qty > 0 else 0.0
-
-    def close_sub_position(self, idx: int):
-        """
-        지정된 인덱스의 sub_position 하나를 전량 청산(목록에서 제거).
-        """
-        if 0 <= idx < len(self.sub_positions):
-            self.sub_positions.pop(idx)
-
-    def is_empty(self) -> bool:
-        """
-        보유 중인 sub_position이 하나도 없으면 True (즉 포지션이 비어있음)
-        """
-        return (len(self.sub_positions) == 0)
-
-    def partial_close_sub_position(self, idx: int, close_ratio: float) -> float:
-        """
-        지정된 sub_position을 close_ratio 비율만큼 청산.
-        예) close_ratio=0.5 => 절반만 청산
-        반환값: 청산된 수량
-        """
-        if 0 <= idx < len(self.sub_positions):
-            sp = self.sub_positions[idx]
-            qty_to_close = sp['size'] * close_ratio
-            sp['size'] = sp['size'] - qty_to_close
-            return qty_to_close
-        return 0.0
-
----
-
-# strategies/risk_management.py
-# 매수/매도할 물량 크기를 결정하거나 분할매수 로직을 구현하는 등 '위험관리' 관련 함수.
-
-import math
-
-def calculate_position_size(
-    account_balance: float,
-    risk_per_trade: float,
-    entry_price: float,
-    stop_loss_price: float,
-    fee_rate: float = 0.001
-) -> float:
-    """
-    계좌에서 1% 손실만 허용한다면, 그에 맞춰 실제 몇 코인을 살 것인지 계산하는 예시 함수.
-    
-    계산 과정:
-    1) (entry_price - stop_loss_price) = 1코인당 손실
-    2) account_balance * risk_per_trade = 전체 허용 손실금
-    3) 수수료(fee_rate)까지 고려해 1코인당 총손실을 구하고
-    4) 허용 손실금 / 1코인당 손실 => 매수할 수 있는 최대 코인수
-    """
-
-    price_diff = abs(entry_price - stop_loss_price)
-    max_risk_amount = account_balance * risk_per_trade
-    fee_amount = entry_price * fee_rate
-    per_unit_loss = price_diff + fee_amount
-
-    if per_unit_loss > 0:
-        position_size = max_risk_amount / per_unit_loss
-    else:
-        position_size = 0.0
-
-    return position_size
-
-
-def split_position_sizes(
-    total_position_size: float,
-    split_count: int = 3,
-    scale_mode: str = 'equal'
-) -> list:
-    """
-    전체 매수 물량을 여러 번에 걸쳐 나누기 위한 분할 비중을 계산하는 함수.
-    
-    - scale_mode='equal': 같은 비중씩 나눔
-    - scale_mode='pyramid_up': 뒤로 갈수록 더 많이 매수
-    - scale_mode='pyramid_down': 앞으로 갈수록 더 많이 매수
-    """
-
-    if split_count < 1:
-        raise ValueError("split_count는 최소 1 이상이어야 합니다.")
-    if scale_mode not in ['equal', 'pyramid_up', 'pyramid_down']:
-        raise ValueError("scale_mode는 'equal', 'pyramid_up', 'pyramid_down' 중 하나여야 합니다.")
-
-    if scale_mode == 'equal':
-        split_size = total_position_size / split_count
-        return [split_size] * split_count
-
-    elif scale_mode == 'pyramid_up':
-        # ex) split_count=3 => (1 + 2 + 3) = 6 을 분모로 하여 비중을 계산
-        ratio_sum = split_count * (split_count + 1) / 2
-        return [(i / ratio_sum) * total_position_size for i in range(1, split_count + 1)]
-
-    elif scale_mode == 'pyramid_down':
-        # ex) split_count=3 => (3 + 2 + 1) = 6
-        ratio_sum = split_count * (split_count + 1) / 2
-        return [(i / ratio_sum) * total_position_size for i in range(split_count, 0, -1)]
-
-
-def add_position_sizes(
-    position,
-    current_price: float,
-    threshold_percent: float,
-    slippage_rate: float,
-    stop_loss_price: float,
-    take_profit_price: float,
-    entry_time
-):
-    """
-    다음 분할 매수가 체결될 조건을 검사하고, 조건 충족 시 sub_position을 추가하는 로직.
-    예: threshold_percent=0.02 => 진입가 대비 +2% 오르면 다음 분할 체결
-    """
-
-    if position is None or position.is_empty():
-        return
-
-    while position.splits_filled < position.num_splits:
-        next_split_index = position.splits_filled
-
-        # 목표 가격(needed_price)을 계산. (예: initial_entry_price * (1 + 0.02 * next_split_index))
-        needed_price = position.initial_entry_price * (1.0 + threshold_percent * next_split_index)
-
-        # 아직 현재가격이 충분히 오르지 않았다면(needed_price 넘지 않았으면) 분할매수 중단
-        if current_price < needed_price:
-            break
-
-        # split_plan에 따라 해당 분할의 비중을 가져옴
-        if next_split_index < len(position.split_plan):
-            portion_rate = position.split_plan[next_split_index]
-        else:
-            break
-
-        # 실제 매수할 수량
-        chunk_size = position.max_position_size * portion_rate
-
-        # 슬리피지를 고려해 약간 높게 체결된다고 가정
-        buy_price = current_price * (1.0 + slippage_rate)
-
-        # sub_position에 추가 (실제 체결 내역 기록)
-        position.add_sub_position(
-            entry_price=buy_price,
-            size=chunk_size,
-            stop_loss=stop_loss_price,
-            take_profit=take_profit_price,
-            entry_time=entry_time
+    while True:
+        ohlcv = exchange.fetch_ohlcv(
+            symbol=symbol,
+            timeframe=timeframe,
+            since=since_ms,
+            limit=limit_per_request
         )
 
-        position.splits_filled += 1
+        if not ohlcv:
+            break
+
+        all_ohlcv += ohlcv
+        last_ts = ohlcv[-1][0]
+        since_ms = last_ts + time_offset_ms  # 시간 오프셋 적용
+
+        time.sleep(pause_sec)
+
+        if len(ohlcv) < limit_per_request:
+            break
+
+    df = pd.DataFrame(all_ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+    df.set_index('timestamp', inplace=True)
+    numeric_cols = ['open', 'high', 'low', 'close', 'volume']
+    df[numeric_cols] = df[numeric_cols].astype(float)
+    df = df[~df.index.duplicated()]
+    df.dropna(inplace=True)
+
+    return df
+
+def fetch_latest_ohlcv_data(
+    symbol: str,
+    timeframe: str = '4h',
+    limit: int = 500,
+    exchange_id: str = 'binance'
+) -> pd.DataFrame:
+    """
+    거래소에서 가장 최근 시세 데이터를 가져옵니다.
+    추가 매개변수:
+      - exchange_id: 사용할 거래소 ID (기본 'binance')
+    """
+    exchange = getattr(ccxt, exchange_id)()
+    
+    ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+    df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+    df.set_index('timestamp', inplace=True)
+    numeric_cols = ['open', 'high', 'low', 'close', 'volume']
+    df[numeric_cols] = df[numeric_cols].astype(float)
+    df = df[~df.index.duplicated()]
+    df.dropna(inplace=True)
+
+    return df
 
 ---
 
-# strategies/stop_loss_take_profit.py
-# ATR 기반 손절가 설정, 고정익절가, 트레일링 스탑 로직 등을 담은 파일입니다.
+# data_collection/ohlcv_pipeline.py
 
-import pandas as pd
-import numpy as np
-import ta  # 'ta' 라이브러리를 이용해 ATR 등을 계산
+import time
+from typing import List, Optional
 
+from data_collection.ohlcv_data_fetcher import (
+    fetch_historical_ohlcv_data,
+    fetch_latest_ohlcv_data
+)
+from data_collection.db_ohlcv_manager import insert_ohlcv_records
 
-def apply_stop_loss_atr(
-    df: pd.DataFrame,
-    atr_window: int = 14,
-    atr_multiplier: float = 2.0,
-    sl_colname: str = 'stop_loss_price',
-    entry_price_col: str = 'entry_price'
-) -> pd.DataFrame:
+def collect_and_store_ohlcv_data(
+    symbols: List[str],
+    timeframes: List[str],
+    use_historical: bool = True,
+    start_date: Optional[str] = '2018-01-01 00:00:00',
+    limit_per_request: int = 1000,
+    latest_limit: int = 500,
+    pause_sec: float = 1.0,
+    table_name_format: str = "ohlcv_{symbol}_{timeframe}",
+    exchange_id: str = 'binance',
+    time_offset_ms: int = 1
+) -> None:
     """
-    ATR(평균진폭)을 활용하여, 매수 시점마다 손절가를 설정합니다.
-    - 진입가 - (ATR * 배수) 식으로 계산
+    지정한 심볼과 타임프레임에 대해 데이터를 수집하여 PostgreSQL에 저장합니다.
+    table_name_format: 예) "ohlcv_{symbol}_{timeframe}" 형식
     """
+    for symbol in symbols:
+        for tf in timeframes:
+            print(f"\n[*] Fetching {symbol} - {tf} data...")
 
-    # ta 라이브러리로 ATR(최근 봉들의 변동폭 평균)을 구함
-    atr_indicator = ta.volatility.AverageTrueRange(
-        high=df['high'],
-        low=df['low'],
-        close=df['close'],
-        window=atr_window,
-        fillna=True
+            if use_historical:
+                if not start_date:
+                    raise ValueError("start_date는 과거 데이터 수집 시 반드시 필요합니다.")
+                df = fetch_historical_ohlcv_data(
+                    symbol=symbol,
+                    timeframe=tf,
+                    start_date=start_date,
+                    limit_per_request=limit_per_request,
+                    pause_sec=pause_sec,
+                    exchange_id=exchange_id,
+                    time_offset_ms=time_offset_ms
+                )
+            else:
+                df = fetch_latest_ohlcv_data(
+                    symbol=symbol,
+                    timeframe=tf,
+                    limit=latest_limit,
+                    exchange_id=exchange_id
+                )
+
+            # 테이블 이름 생성 (table_name_format 활용)
+            table_name = table_name_format.format(symbol=symbol.replace('/', '').lower(), timeframe=tf)
+            print(f"    -> Total Rows Fetched: {len(df)}")
+
+            insert_ohlcv_records(df, table_name=table_name)
+            print(f"    -> Saved to table: {table_name}")
+
+            time.sleep(pause_sec)
+
+---
+
+# init_db.py
+
+import sys
+from data_collection.ohlcv_pipeline import collect_and_store_ohlcv_data
+
+def main():
+    # 예시: 바이낸스에서 가장 시가총액이 큰 코인 3개
+    symbols = ["BTC/USDT", "ETH/USDT", "BNB/USDT"]
+    
+    # 사용하고자 하는 타임프레임 리스트
+    timeframes = ["1d", "4h", "1h", "15m"]
+    
+    # 2016년부터 최신까지 데이터를 수집 (실제로는 거래소가 지원하는 가장 과거 데이터부터)
+    start_date = "2016-01-01 00:00:00"
+    
+    # 과거 데이터를 모두 받아와서 PostgreSQL에 저장
+    collect_and_store_ohlcv_data(
+        symbols=symbols,
+        timeframes=timeframes,
+        use_historical=True,
+        start_date=start_date,
+        limit_per_request=1000,
+        latest_limit=500,  # 최신 데이터 수집 시에만 사용됨
+        pause_sec=1.0
     )
-    df['atr'] = atr_indicator.average_true_range()
 
-    # 매수 시점의 종가를 entry_price로 기록
-    df[entry_price_col] = np.where(df['long_entry'], df['close'], np.nan)
-    df[entry_price_col] = df[entry_price_col].ffill()  # 진입 후엔 계속 유지
+    print("\n[완료] 초기 DB 세팅이 끝났습니다.")
+    print("지정한 코인들(BTC/USDT, ETH/USDT, BNB/USDT)에 대해")
+    print("15m, 1h, 4h, 1d 봉 데이터를 모두 PostgreSQL에 저장했습니다.")
 
-    # 손절가 = 진입가 - (ATR * 배수)
-    df[sl_colname] = df[entry_price_col] - (df['atr'] * atr_multiplier)
-
-    return df
-
-def update_trailing_stop(current_stop_loss: float, current_price: float, 
-                         highest_price: float, trailing_percent: float) -> float:
-    """
-    트레일링 스탑: 상승장에서 최고가가 갱신될 때마다 손절가도 따라올림.
-    - 예: 최고가의 5% 아래로 손절가를 계속 끌어올린다.
-    """
-
-    # highest_price 대비 trailing_percent만큼 내려온 지점
-    new_stop = highest_price * (1.0 - trailing_percent)
-
-    # 기존 손절가보다 높게만 업데이트(손절가가 내려가는 일은 없음), 그리고 현재가보단 낮아야 함
-    if new_stop > current_stop_loss and new_stop < current_price:
-        return new_stop
-    else:
-        return current_stop_loss
-
-
-def apply_take_profit_ratio(
-    df: pd.DataFrame,
-    profit_ratio: float = 0.05,
-    tp_colname: str = 'take_profit_price',
-    entry_price_col: str = 'entry_price'
-) -> pd.DataFrame:
-    """
-    고정된 이익률(예: 5%)을 목표로 익절가를 설정합니다.
-    - 익절가 = 진입가 * (1 + profit_ratio)
-    """
-
-    df[tp_colname] = df[entry_price_col] * (1 + profit_ratio)
-    return df
-
-
-def check_trend_exit_condition(
-    df_long: pd.DataFrame,
-    current_time,
-    sma_col: str = 'sma200'
-) -> bool:
-    """
-    간단하게 '종가 < SMA(200)이면 추세 이탈' 로 가정하고 True/False를 반환하는 예시.
-    """
-
-    # current_time이 df_long 인덱스에 없을 수 있으므로 처리
-    if current_time not in df_long.index:
-        df_sub = df_long.loc[:current_time]
-        if df_sub.empty:
-            return False
-        row_l = df_sub.iloc[-1]
-    else:
-        row_l = df_long.loc[current_time]
-
-    close_price = row_l['close']
-    sma_val = row_l[sma_col] if sma_col in row_l else np.nan
-
-    if pd.notna(sma_val) and close_price < sma_val:
-        return True
-    return False
-
-
-def create_sub_tps_for_partial_exit(
-    entry_price: float,
-    partial_ratio: float = 0.5,
-    partial_tp_factor: float = 0.03,  # 3% 익절
-    final_tp_factor: float = 0.06     # 6% 익절
-):
-    """
-    예시:
-      entry_price=10000,
-      partial_tp_factor=0.03 => 10,300 달성 시 50%(partial_ratio=0.5) 익절
-      final_tp_factor=0.06   => 10,600 달성 시 나머지 50% 익절
-    """
-    partial_tp_price = entry_price * (1.0 + partial_tp_factor)
-    final_tp_price   = entry_price * (1.0 + final_tp_factor)
-
-    return [
-        (partial_tp_price, partial_ratio),  # 첫 익절
-        (final_tp_price, 1.0)              # 나머지 전량 익절
-    ]
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        print(f"[오류 발생] {e}", file=sys.stderr)
+        sys.exit(1)
 
 ---
 
-# strategies/technical_indicators.py
-# SMA, MACD, RSI, 볼린저밴드 등 다양한 기술적 지표를 쉽게 적용하기 위해 만든 함수 모음.
-
+# trading/indicators.py
 import pandas as pd
 from ta.trend import SMAIndicator, MACD
 from ta.momentum import RSIIndicator
 from ta.volatility import BollingerBands
 
-
-def apply_sma(
-    df: pd.DataFrame,
-    price_col: str = 'close',
-    window: int = 20,
+def compute_sma(
+    data: pd.DataFrame,
+    price_column: str = 'close',
+    period: int = 20,
     fillna: bool = False,
-    colname: str = 'sma'
+    output_col: str = 'sma'
 ) -> pd.DataFrame:
-    """
-    SMA(단순 이동평균)을 계산해 컬럼을 추가합니다.
-    """
-
-    indicator = SMAIndicator(
-        close=df[price_col],
-        window=window,
+    sma = SMAIndicator(
+        close=data[price_column],
+        window=period,
         fillna=fillna
     )
-    df[colname] = indicator.sma_indicator()
-    return df
+    data[output_col] = sma.sma_indicator()
+    return data
 
-
-def apply_macd(
-    df: pd.DataFrame,
-    price_col: str = 'close',
-    window_slow: int = 26,
-    window_fast: int = 12,
-    window_sign: int = 9,
+def compute_macd(
+    data: pd.DataFrame,
+    price_column: str = 'close',
+    slow_period: int = 26,
+    fast_period: int = 12,
+    signal_period: int = 9,
     fillna: bool = False,
     prefix: str = 'macd_'
 ) -> pd.DataFrame:
-    """
-    MACD 지표 (움직이는 두 이동평균의 차이).
-    - macd: 기본 MACD 라인
-    - signal: 시그널(9일 이동평균)
-    - diff: 둘의 차이
-    """
-
-    macd_indicator = MACD(
-        close=df[price_col],
-        window_slow=window_slow,
-        window_fast=window_fast,
-        window_sign=window_sign,
+    macd = MACD(
+        close=data[price_column],
+        window_slow=slow_period,
+        window_fast=fast_period,
+        window_sign=signal_period,
         fillna=fillna
     )
-    df[f'{prefix}macd'] = macd_indicator.macd()
-    df[f'{prefix}signal'] = macd_indicator.macd_signal()
-    df[f'{prefix}diff'] = macd_indicator.macd_diff()
-    return df
+    data[f'{prefix}macd'] = macd.macd()
+    data[f'{prefix}signal'] = macd.macd_signal()
+    data[f'{prefix}diff'] = macd.macd_diff()
+    return data
 
-
-def apply_rsi(
-    df: pd.DataFrame,
-    price_col: str = 'close',
-    window: int = 14,
+def compute_rsi(
+    data: pd.DataFrame,
+    price_column: str = 'close',
+    period: int = 14,
     fillna: bool = False,
-    colname: str = 'rsi'
+    output_col: str = 'rsi'
 ) -> pd.DataFrame:
-    """
-    RSI(과매수/과매도 지표)를 계산해 DataFrame에 컬럼 추가.
-    """
-
-    rsi_indicator = RSIIndicator(
-        close=df[price_col],
-        window=window,
+    rsi = RSIIndicator(
+        close=data[price_column],
+        window=period,
         fillna=fillna
     )
-    df[colname] = rsi_indicator.rsi()
-    return df
+    data[output_col] = rsi.rsi()
+    return data
 
-
-def apply_bollinger(
-    df: pd.DataFrame,
-    price_col: str = 'close',
-    window: int = 20,
-    window_dev: float = 2.0,
+def compute_bollinger_bands(
+    data: pd.DataFrame,
+    price_column: str = 'close',
+    period: int = 20,
+    std_multiplier: float = 2.0,
     fillna: bool = False,
     prefix: str = 'bb_'
 ) -> pd.DataFrame:
-    """
-    볼린저 밴드를 계산해 (상단선, 중간선, 하단선 등) 여러 컬럼을 추가.
-    """
-
     bb = BollingerBands(
-        close=df[price_col],
-        window=window,
-        window_dev=window_dev,
+        close=data[price_column],
+        window=period,
+        window_dev=std_multiplier,
         fillna=fillna
     )
-    df[f'{prefix}mavg'] = bb.bollinger_mavg()
-    df[f'{prefix}hband'] = bb.bollinger_hband()
-    df[f'{prefix}lband'] = bb.bollinger_lband()
-    df[f'{prefix}pband'] = bb.bollinger_pband()
-    df[f'{prefix}wband'] = bb.bollinger_wband()
-    df[f'{prefix}hband_ind'] = bb.bollinger_hband_indicator()
-    df[f'{prefix}lband_ind'] = bb.bollinger_lband_indicator()
-    return df
+    data[f'{prefix}mavg'] = bb.bollinger_mavg()
+    data[f'{prefix}hband'] = bb.bollinger_hband()
+    data[f'{prefix}lband'] = bb.bollinger_lband()
+    data[f'{prefix}pband'] = bb.bollinger_pband()
+    data[f'{prefix}wband'] = bb.bollinger_wband()
+    data[f'{prefix}hband_ind'] = bb.bollinger_hband_indicator()
+    data[f'{prefix}lband_ind'] = bb.bollinger_lband_indicator()
+    return data
+
+---
+
+# trading/positions.py
+
+import uuid
+
+class TradePosition:
+    """
+    거래 포지션 관리 클래스.
+    
+    Attributes:
+      - position_id: 포지션에 대한 고유 식별자 (UUID 문자열)
+      - side: "LONG" 혹은 "SHORT"
+      - executions: 개별 체결 내역 리스트 (각 execution은 entry_price, size 등 기록)
+      - initial_price: 첫 체결 기준 가격
+      - maximum_size: 포지션의 총 목표 수량
+      - total_splits: 계획된 분할 매수 횟수
+      - executed_splits: 현재까지 체결된 분할 횟수
+      - allocation_plan: 각 분할 매수 비중 리스트 (예: [0.3, 0.3, 0.4])
+    """
+    def __init__(
+        self,
+        side: str = "LONG",
+        initial_price: float = None,
+        maximum_size: float = 0.0,
+        total_splits: int = 1,
+        allocation_plan: list = None
+    ):
+        self.position_id = str(uuid.uuid4())  # 포지션 고유 식별자 생성
+        self.side = side
+        self.executions = []  # 각 체결 내역을 저장
+        self.initial_price = initial_price
+        self.maximum_size = maximum_size
+        self.total_splits = total_splits
+        self.executed_splits = 0
+        self.allocation_plan = allocation_plan if allocation_plan is not None else []
+
+    def add_execution(
+        self,
+        entry_price: float,
+        size: float,
+        stop_loss: float = None,
+        take_profit: float = None,
+        entry_time = None,
+        exit_targets: list = None,
+        trade_type: str = "unknown"  # 신규 진입("new_entry") 또는 분할 매수("scale_in") 구분
+    ):
+        """
+        하나의 체결(실제 매수)를 기록.
+        exit_targets: [(target_price, exit_ratio), ...]
+                      예) 첫 목표가 도달 시 50% 청산, 이후 전량 청산
+        trade_type: 체결의 유형. 신규 진입("new_entry") 또는 분할 매수("scale_in") 등
+        """
+        exit_targets_flagged = []
+        if exit_targets is not None:
+            for target_price, exit_ratio in exit_targets:
+                exit_targets_flagged.append({
+                    'price': target_price,
+                    'exit_ratio': exit_ratio,
+                    'hit': False
+                })
+        self.executions.append({
+            'entry_price': entry_price,
+            'size': size,
+            'stop_loss': stop_loss,
+            'take_profit': take_profit,
+            'entry_time': entry_time,
+            'exit_targets': exit_targets_flagged,
+            'trade_type': trade_type
+        })
+        
+    def get_total_size(self) -> float:
+        """현재까지 체결된 총 수량"""
+        return sum(exec_record['size'] for exec_record in self.executions)
+
+    def get_average_entry_price(self) -> float:
+        """가중평균 매수가 계산"""
+        total_cost = sum(exec_record['entry_price'] * exec_record['size'] for exec_record in self.executions)
+        total_qty = self.get_total_size()
+        return (total_cost / total_qty) if total_qty > 0 else 0.0
+
+    def remove_execution(self, index: int):
+        """지정된 인덱스의 체결 내역을 제거 (전량 청산)"""
+        if 0 <= index < len(self.executions):
+            self.executions.pop(index)
+
+    def is_empty(self) -> bool:
+        """포지션에 체결 내역이 없으면 True"""
+        return len(self.executions) == 0
+
+    def partial_close_execution(self, index: int, close_ratio: float) -> float:
+        """
+        지정된 체결 내역의 일정 비율(close_ratio)만 청산.
+        반환: 청산된 수량
+        """
+        if 0 <= index < len(self.executions):
+            exec_record = self.executions[index]
+            qty_to_close = exec_record['size'] * close_ratio
+            exec_record['size'] -= qty_to_close
+            return qty_to_close
+        return 0.0
+
+---
+
+# trading/risk.py
+import math
+
+def compute_position_size(
+    account_balance: float,
+    risk_percentage: float,
+    entry_price: float,
+    stop_loss: float,
+    fee_rate: float = 0.001
+) -> float:
+    """
+    계좌 자산 대비 지정 위험 비율에 따라 매수할 수 있는 포지션 사이즈 계산.
+    
+    계산:
+      1) 1코인당 손실 = |entry_price - stop_loss|
+      2) 허용 손실 금액 = account_balance * risk_percentage
+      3) 수수료(fee_rate) 고려: 1코인당 총 손실 = 가격 차이 + (entry_price * fee_rate)
+      4) 포지션 사이즈 = 허용 손실 금액 / (1코인당 총 손실)
+    """
+    price_diff = abs(entry_price - stop_loss)
+    max_risk = account_balance * risk_percentage
+    fee_amount = entry_price * fee_rate
+    loss_per_unit = price_diff + fee_amount
+
+    return max_risk / loss_per_unit if loss_per_unit > 0 else 0.0
+
+def allocate_position_splits(
+    total_size: float,
+    splits_count: int = 3,
+    allocation_mode: str = 'equal'
+) -> list:
+    """
+    전체 포지션 사이즈를 여러 분할 체결하기 위한 비중 리스트 계산.
+    
+    - allocation_mode:
+        'equal'        : 같은 비중
+        'pyramid_up'   : 후속 분할일수록 비중 증가
+        'pyramid_down' : 초기 분할일수록 비중 증가
+    """
+    if splits_count < 1:
+        raise ValueError("splits_count는 1 이상이어야 합니다.")
+    if allocation_mode not in ['equal', 'pyramid_up', 'pyramid_down']:
+        raise ValueError("allocation_mode는 'equal', 'pyramid_up', 'pyramid_down' 중 하나여야 합니다.")
+    
+    if allocation_mode == 'equal':
+        split_amount = total_size / splits_count
+        return [split_amount] * splits_count
+    elif allocation_mode == 'pyramid_up':
+        ratio_sum = splits_count * (splits_count + 1) / 2
+        return [(i / ratio_sum) * total_size for i in range(1, splits_count + 1)]
+    elif allocation_mode == 'pyramid_down':
+        ratio_sum = splits_count * (splits_count + 1) / 2
+        return [(i / ratio_sum) * total_size for i in range(splits_count, 0, -1)]
+
+def attempt_scale_in_position(
+    position,
+    current_price: float,
+    scale_in_threshold: float = 0.02,
+    slippage_rate: float = 0.0,
+    stop_loss: float = None,
+    take_profit: float = None,
+    entry_time = None,
+    trade_type: str = "scale_in"  # 기본적으로 "scale_in"으로 설정
+):
+    """
+    분할 매수(스케일 인) 조건 확인 및 실행.
+    - scale_in_threshold: 초기 진입가 대비 몇 퍼센트 상승하면 추가 체결
+    - slippage_rate: 체결시 발생하는 슬리피지 (가격 상승 비율)
+    - trade_type: 추가 체결에 대한 거래 유형 (기본값 "scale_in")
+    """
+    if position is None or position.is_empty():
+        return
+    
+    # 분할 매수 실행: 아직 체결되지 않은 분할이 남은 경우
+    while position.executed_splits < position.total_splits:
+        next_split = position.executed_splits
+        # 목표 가격 계산: initial_price * (1 + scale_in_threshold * split_index)
+        target_price = position.initial_price * (1.0 + scale_in_threshold * next_split)
+        if current_price < target_price:
+            break  # 아직 추가 체결 조건 미충족
+        if next_split < len(position.allocation_plan):
+            portion = position.allocation_plan[next_split]
+        else:
+            break
+        
+        # 매수 수량 계산: 전체 최대 수량의 해당 비중
+        chunk_size = position.maximum_size * portion
+        # 슬리피지 적용: 체결가는 current_price * (1 + slippage_rate)
+        executed_price = current_price * (1.0 + slippage_rate)
+        # 체결 시 trade_type 인수를 명시적으로 전달
+        position.add_execution(
+            entry_price=executed_price,
+            size=chunk_size,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            entry_time=entry_time,
+            trade_type=trade_type
+        )
+        position.executed_splits += 1
+
+---
+
+# trading/signals.py
+
+import pandas as pd
+from trading.indicators import compute_sma, compute_macd, compute_rsi, compute_bollinger_bands
+
+def generate_breakout_signals(
+    data: pd.DataFrame,
+    lookback_window: int = 20,
+    volume_factor: float = 1.5,
+    confirmation_bars: int = 2,
+    use_high_price: bool = False,
+    breakout_buffer: float = 0.0,
+    high_max_prefix: str = "highest_",
+    breakout_flag_col: str = "breakout_signal",
+    vol_ma_prefix: str = "vol_ma_",
+    confirmed_breakout_flag_col: str = "confirmed_breakout"
+) -> pd.DataFrame:
+    """
+    돌파 전략 신호 생성 함수.
+    - 과거 봉 기준 최고가와 거래량 조건을 적용하여 신호를 생성하고,
+    - confirmation_bars만큼 연속해서 조건이 충족될 때 최종 신호를 확정합니다.
+    """
+    # 1) 이전 봉들 중 최고가 (현재 봉 제외)
+    data[f'{high_max_prefix}{lookback_window}'] = (
+        data['high'].shift(1).rolling(lookback_window).max()
+    )
+    # 2) 돌파 신호 (고가 또는 종가 기준)
+    price_source = data['high'] if use_high_price else data['close']
+    data[breakout_flag_col] = price_source > (data[f'{high_max_prefix}{lookback_window}'] * (1 + breakout_buffer))
+    # 3) 거래량 이동 평균
+    data[f'{vol_ma_prefix}{lookback_window}'] = (
+        data['volume'].shift(1).rolling(lookback_window).mean()
+    )
+    data['volume_condition'] = data['volume'] > (volume_factor * data[f'{vol_ma_prefix}{lookback_window}'])
+    
+    # 4) 최종 신호: 돌파 및 거래량 조건 모두 충족되어야 함.
+    data[breakout_flag_col] = data[breakout_flag_col] & data['volume_condition']
+    
+    # 5) 확정 돌파 (연속 확인)
+    data[confirmed_breakout_flag_col] = (
+        data[breakout_flag_col].rolling(confirmation_bars).sum() == confirmation_bars
+    ).fillna(False)
+    
+    return data
+
+def generate_retest_signals(
+    data: pd.DataFrame,
+    retest_threshold: float = 0.005,
+    confirmation_bars: int = 2,
+    breakout_reference_col: str = "highest_20",
+    breakout_signal_col: str = "breakout_signal",
+    retest_signal_col: str = "retest_signal"
+) -> pd.DataFrame:
+    """
+    돌파 신호 발생 후 일정 기간 내에 가격이 돌파 기준가 근처로 풀백하고, 이후 반등하는 경우를 리테스트 신호로 생성합니다.
+    
+    Parameters:
+      - data: OHLCV 데이터가 포함된 DataFrame. 반드시 breakout_reference_col과 breakout_signal_col이 포함되어 있어야 합니다.
+      - retest_threshold: 돌파 기준가 대비 허용 풀백 범위 (예: 0.005는 0.5% 풀백 허용)
+      - confirmation_bars: 리테스트 신호를 확인하기 위해 확인할 연속 캔들 수
+      - breakout_reference_col: 돌파 기준가(예: 이전 lookback_window 동안의 최고가) 컬럼명
+      - breakout_signal_col: 기존 돌파 신호 컬럼명 (예: breakout_signal)
+      - retest_signal_col: 생성할 리테스트 신호 컬럼명 (예: retest_signal)
+    
+    Returns:
+      - DataFrame에 retest_signal_col 컬럼이 추가되어 리테스트 신호(True/False)가 기록됩니다.
+    """
+    data[retest_signal_col] = False
+    
+    # 돌파 신호가 발생한 인덱스 위치들을 확인합니다.
+    breakout_indices = data.index[data[breakout_signal_col] == True]
+    for br_idx in breakout_indices:
+        # 해당 행의 돌파 기준 가격
+        breakout_level = data.loc[br_idx, breakout_reference_col]
+        try:
+            pos = data.index.get_loc(br_idx)
+        except Exception:
+            continue
+        # 이후 confirmation_bars 기간 동안 리테스트 조건을 확인합니다.
+        for offset in range(1, confirmation_bars + 1):
+            if pos + offset >= len(data):
+                break
+            current_row = data.iloc[pos + offset]
+            # 조건: 현재 행의 low가 breakout_level 범위 내 (즉, breakout_level*(1 - retest_threshold) 이상)
+            if current_row['low'] <= breakout_level and current_row['low'] >= breakout_level * (1 - retest_threshold):
+                # 다음 캔들이 존재하는지 확인한 후, 그 캔들의 close가 breakout_level을 상회하면 리테스트 신호로 간주
+                if pos + offset + 1 < len(data):
+                    next_row = data.iloc[pos + offset + 1]
+                    if next_row['close'] > breakout_level:
+                        retest_idx = next_row.name
+                        data.at[retest_idx, retest_signal_col] = True
+                        break
+    return data
+
+def filter_long_trend(
+    data: pd.DataFrame,
+    price_column: str = 'close',
+    sma_period: int = 200,
+    macd_slow_period: int = 26,
+    macd_fast_period: int = 12,
+    macd_signal_period: int = 9,
+    rsi_period: int = 14,
+    rsi_threshold: float = 70.0,
+    bb_period: int = 20,
+    bb_std_multiplier: float = 2.0,
+    fillna: bool = False,
+    macd_diff_column: str = 'macd_diff',
+    rsi_column: str = 'rsi',
+    bb_upper_band_column: str = 'bb_hband'
+) -> pd.DataFrame:
+    """
+    장기 추세 필터 함수.
+    SMA, MACD, RSI, Bollinger Bands를 계산한 후, 여러 조건을 만족하면 long_filter_pass가 True가 됩니다.
+    """
+    # 1) SMA 계산
+    sma_col = f"sma{sma_period}"
+    data = compute_sma(
+        data,
+        price_column=price_column,
+        period=sma_period,
+        fillna=fillna,
+        output_col=sma_col
+    )
+    # 2) MACD 계산
+    data = compute_macd(
+        data,
+        price_column=price_column,
+        slow_period=macd_slow_period,
+        fast_period=macd_fast_period,
+        signal_period=macd_signal_period,
+        fillna=fillna,
+        prefix='macd_'
+    )
+    # 3) RSI 계산
+    data = compute_rsi(
+        data,
+        price_column=price_column,
+        period=rsi_period,
+        fillna=fillna,
+        output_col=rsi_column
+    )
+    # 4) Bollinger Bands 계산
+    data = compute_bollinger_bands(
+        data,
+        price_column=price_column,
+        period=bb_period,
+        std_multiplier=bb_std_multiplier,
+        fillna=fillna,
+        prefix='bb_'
+    )
+    # 5) 추세 필터 조건 적용
+    data['long_filter_pass'] = (
+        (data[price_column] >= data[sma_col]) &
+        (data[macd_diff_column] > 0) &
+        (data[rsi_column] < rsi_threshold) &
+        (data[bb_upper_band_column] > data[price_column])
+    )
+    return data
+
+---
+
+# trading/trade_management.py
+import pandas as pd
+import numpy as np
+import ta
+
+def calculate_atr_stop_loss(
+    data: pd.DataFrame,
+    atr_period: int = 14,
+    atr_factor: float = 2.0,
+    stop_loss_col: str = 'stop_loss_price',
+    entry_price_col: str = 'entry_price'
+) -> pd.DataFrame:
+    """
+    ATR 기반 손절가 계산.
+    손절가 = entry_price - (ATR * atr_factor)
+    """
+    atr_indicator = ta.volatility.AverageTrueRange(
+        high=data['high'],
+        low=data['low'],
+        close=data['close'],
+        window=atr_period,
+        fillna=True
+    )
+    data['atr'] = atr_indicator.average_true_range()
+    data[entry_price_col] = np.where(data.get('long_entry', False), data['close'], np.nan)
+    data[entry_price_col] = data[entry_price_col].ffill()
+    data[stop_loss_col] = data[entry_price_col] - (data['atr'] * atr_factor)
+    return data
+
+def adjust_trailing_stop(
+    current_stop: float,
+    current_price: float,
+    highest_price: float,
+    trailing_percentage: float
+) -> float:
+    """
+    트레일링 스탑 업데이트:
+      새로운 손절가는 최고가 대비 trailing_percentage만큼 낮은 가격.
+      단, 업데이트된 손절가는 기존 손절가보다 높고 현재 가격보다는 낮아야 함.
+    """
+    new_stop = highest_price * (1.0 - trailing_percentage)
+    if new_stop > current_stop and new_stop < current_price:
+        return new_stop
+    else:
+        return current_stop
+
+def set_fixed_take_profit(
+    data: pd.DataFrame,
+    profit_ratio: float = 0.05,
+    take_profit_col: str = 'take_profit_price',
+    entry_price_col: str = 'entry_price'
+) -> pd.DataFrame:
+    """
+    고정 수익률 기반 익절가 설정:
+      take_profit = entry_price * (1 + profit_ratio)
+    """
+    data[take_profit_col] = data[entry_price_col] * (1 + profit_ratio)
+    return data
+
+def should_exit_trend(
+    data: pd.DataFrame,
+    current_time,
+    window_length: int = 20,
+    price_column: str = 'close'
+) -> bool:
+    """
+    추세 종료(청산) 신호 판단 함수.
+    - 최근 window_length 봉의 최저가보다 현재 종가가 낮으면 추세가 꺾였다고 판단.
+    """
+    if current_time not in data.index:
+        data_sub = data.loc[:current_time]
+        if len(data_sub) < window_length:
+            return False
+        window_data = data_sub.iloc[-window_length:]
+        current_row = data_sub.iloc[-1]
+    else:
+        idx = data.index.get_loc(current_time)
+        if idx < window_length:
+            return False
+        window_data = data.iloc[idx - window_length + 1: idx + 1]
+        current_row = data.loc[current_time]
+    
+    recent_min = window_data[price_column].min()
+    current_price = current_row[price_column]
+    
+    return current_price < recent_min
+
+def calculate_partial_exit_targets(
+    entry_price: float,
+    partial_exit_ratio: float = 0.5,
+    partial_profit_ratio: float = 0.03,  # 예: 3% 상승 시 일부 청산
+    final_profit_ratio: float = 0.06     # 예: 6% 상승 시 전량 청산
+):
+    """
+    분할 청산 목표가 계산 함수.
+    예) entry_price=10000 인 경우:
+         - partial_profit_ratio=0.03 → 10,300 달성 시 50% 청산
+         - final_profit_ratio=0.06   → 10,600 달성 시 나머지 전량 청산
+    반환: [(target_price, exit_ratio), ...]
+    """
+    partial_target = entry_price * (1.0 + partial_profit_ratio)
+    final_target = entry_price * (1.0 + final_profit_ratio)
+    return [
+        (partial_target, partial_exit_ratio),
+        (final_target, 1.0)
+    ]
+
+def calculate_fibonacci_take_profit(
+    entry_price: float,
+    recent_high: float,
+    recent_low: float,
+    levels: list = [0.382, 0.618, 1.0]
+):
+    """
+    피보나치 되돌림 기반으로 익절 목표가를 계산합니다.
+    Parameters:
+      - entry_price: 진입 가격
+      - recent_high: 최근 고가 (지지/저항 분석에 활용)
+      - recent_low: 최근 저가
+      - levels: 사용할 피보나치 비율 리스트
+    Returns:
+      - [(target_price, exit_ratio), ...] 형식의 리스트.
+        예를 들어, 첫 목표는 50% 청산, 이후 전량 청산 등으로 설정.
+    """
+    range_price = recent_high - recent_low
+    targets = []
+    for idx, level in enumerate(levels):
+        target = recent_low + range_price * (1 + level)
+        exit_ratio = 0.5 if idx < len(levels) - 1 else 1.0
+        targets.append((target, exit_ratio))
+    return targets
 
 ---
 
 # backtesting/backtest_advanced.py
-# 실제로 백테스트(가상의 매매 시뮬레이션)를 수행하는 코드가 들어있습니다.
 
 import pandas as pd
 import numpy as np
+from typing import Optional
 
-from data_collection.postgres_ohlcv_handler import load_ohlcv_from_postgres
-from strategies.breakout_signal import calculate_breakout_signals
-from strategies.technical_indicators import apply_sma, apply_macd, apply_rsi, apply_bollinger
-from strategies.stop_loss_take_profit import (
-    apply_stop_loss_atr,
-    update_trailing_stop,
-    apply_take_profit_ratio,
-    check_trend_exit_condition,
-    create_sub_tps_for_partial_exit
+# 기존 함수 임포트
+from data_collection.db_ohlcv_manager import fetch_ohlcv_records
+from trading.signals import (
+    generate_breakout_signals,
+    filter_long_trend,
+    generate_retest_signals
 )
-from strategies.risk_management import (
-    calculate_position_size,
-    split_position_sizes,
-    add_position_sizes
+from trading.trade_management import (
+    calculate_atr_stop_loss,
+    adjust_trailing_stop,
+    set_fixed_take_profit,
+    should_exit_trend,
+    calculate_partial_exit_targets
 )
-from strategies.position import Position
+from trading.risk import (
+    compute_position_size,
+    allocate_position_splits,
+    attempt_scale_in_position
+)
+from trading.positions import TradePosition
 from backtesting.performance_metrics import print_performance_report
+from trading.indicators import compute_rsi
 
-
+# --- 개선된 백테스트 로직 ---
 def run_advanced_backtest(
-    symbol="BTC/USDT",
-    short_timeframe="4h",
-    long_timeframe="1d",
-    window=20,
-    volume_factor=1.5,
-    confirm_bars=2,
-    breakout_buffer=0.0,
-    atr_window=14,
-    atr_multiplier=2.0,
-    profit_ratio=0.05,
-    account_size=10_000.0,
-    risk_per_trade=0.01,
-    fee_rate=0.001,
-    slippage_rate=0.0005,
-    taker_fee_rate=0.001,
-    total_splits=3,
-    threshold_percent=0.02,
-    use_trailing_stop=False,
-    trailing_percent=0.05,
-    use_trend_exit=False,
-    start_date=None,
-    end_date=None,
-    use_partial_take_profit=False,
-    partial_tp_factor=0.03,
-    final_tp_factor=0.06
+    symbol: str = "BTC/USDT",
+    short_timeframe: str = "4h",
+    long_timeframe: str = "1d",
+    window: int = 20,
+    volume_factor: float = 1.5,
+    confirm_bars: int = 2,
+    breakout_buffer: float = 0.005,
+    atr_window: int = 14,
+    atr_multiplier: float = 2.5,
+    profit_ratio: float = 0.05,
+    account_size: float = 10000.0,
+    risk_per_trade: float = 0.01,
+    fee_rate: float = 0.001,
+    slippage_rate: float = 0.0005,
+    taker_fee_rate: float = 0.001,
+    total_splits: int = 3,
+    allocation_mode: str = "equal",
+    threshold_percent: float = 0.02,
+    use_trailing_stop: bool = False,
+    trailing_percent: float = 0.05,
+    use_trend_exit: bool = False,
+    trend_exit_lookback: int = 30,
+    trend_exit_price_column: str = "close",
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    use_partial_take_profit: bool = False,
+    partial_tp_factor: float = 0.03,
+    final_tp_factor: float = 0.06,
+    short_table_format: str = "ohlcv_{symbol}_{timeframe}",
+    long_table_format: str = "ohlcv_{symbol}_{timeframe}",
+    position_side: str = "LONG",
+    stop_loss_col: str = "stop_loss_price",      # 미사용(각 거래별 계산)
+    entry_price_col: str = "entry_price",         # 미사용(각 거래별 저장)
+    take_profit_col: str = "take_profit_price",   # 미사용(각 거래별 계산)
+    # 장기 추세 필터 관련 파라미터
+    sma_period: int = 200,
+    macd_slow_period: int = 26,
+    macd_fast_period: int = 12,
+    macd_signal_period: int = 9,
+    rsi_period: int = 14,
+    rsi_threshold: float = 70.0,
+    bb_period: int = 20,
+    bb_std_multiplier: float = 2.0,
+    # 단기 보조지표 관련 파라미터
+    use_short_term_indicators: bool = True,
+    short_rsi_threshold: float = 40.0,
+    short_rsi_period: int = 14,
+    # 리테스트 관련 파라미터
+    retest_threshold: float = 0.005,
+    retest_confirmation_bars: int = 2,
+    # 신호 컬럼명 (기본값)
+    breakout_flag_col: str = "breakout_signal",
+    confirmed_breakout_flag_col: str = "confirmed_breakout",
+    retest_signal_col: str = "retest_signal",
+    long_entry_col: str = "long_entry"
 ):
     """
-    (1) 데이터 로드
-    (2) 각종 시그널 계산(돌파, 거래량, MACD 등)
-    (3) 캔들을 순회하며 매수/매도 시뮬레이션
-    (4) 모든 거래 내역을 종합해 성과 보고
+    개선된 백테스트 함수
+      - 거래 진입 전에 단기 데이터에 대해 ATR(및 관련 지표)를 미리 계산합니다.
+      - 각 봉마다 포지션 상태(청산, 트레일링 스탑, 분할 매수)를 업데이트합니다.
+      - 신호 조건(돌파/리테스트/단기 보조지표)와 장기 추세 필터를 모두 고려하여 거래 진입 여부를 결정합니다.
     """
-
-    # 1) DB에서 OHLCV 로드
-    short_table = f"ohlcv_{symbol.replace('/', '').lower()}_{short_timeframe}"
-    long_table = f"ohlcv_{symbol.replace('/', '').lower()}_{long_timeframe}"
-
-    df_short = load_ohlcv_from_postgres(
-        table_name=short_table,
-        start_date=start_date,
-        end_date=end_date
-    )
-    df_long = load_ohlcv_from_postgres(
-        table_name=long_table,
-        start_date=start_date,
-        end_date=end_date
-    )
-
+    # 1. 데이터 로드 및 정렬
+    short_table = short_table_format.format(symbol=symbol.replace('/', '').lower(), timeframe=short_timeframe)
+    long_table = long_table_format.format(symbol=symbol.replace('/', '').lower(), timeframe=long_timeframe)
+    df_short = fetch_ohlcv_records(table_name=short_table, start_date=start_date, end_date=end_date)
+    df_long = fetch_ohlcv_records(table_name=long_table, start_date=start_date, end_date=end_date)
     if df_short.empty or df_long.empty:
         print("[ERROR] No data loaded.")
         return None
-
     df_short.sort_index(inplace=True)
     df_long.sort_index(inplace=True)
-
-    # 2) 시그널 계산 (단기봉에서 돌파 신호)
-    df_short = calculate_breakout_signals(
-        df_short,
-        window=window,
-        vol_factor=volume_factor,
-        confirm_bars=confirm_bars,
-        use_high=False,
-        breakout_buffer=breakout_buffer
+    
+    # 2. 신호 생성 (단기: 돌파, 리테스트, 보조지표)
+    df_short = generate_breakout_signals(
+        data=df_short,
+        lookback_window=window,
+        volume_factor=volume_factor,
+        confirmation_bars=confirm_bars,
+        breakout_buffer=breakout_buffer,
+        breakout_flag_col=breakout_flag_col,
+        confirmed_breakout_flag_col=confirmed_breakout_flag_col
     )
-    df_short['long_entry'] = df_short['confirmed_breakout'] & df_short['volume_condition']
-
-    # ATR 손절, 고정익절
-    df_short = apply_stop_loss_atr(df_short, atr_window, atr_multiplier,
-                                   'stop_loss_price', 'entry_price')
-    df_short = apply_take_profit_ratio(df_short, profit_ratio,
-                                       'take_profit_price', 'entry_price')
-
-    # 장기봉(1d)에서 추세 필터 (예: 종가>200SMA, MACD Diff>0, RSI<70, 볼린저 상단이 현재가보다 높음 등)
-    df_long = apply_sma(df_long, price_col='close', window=200, fillna=False, colname='sma200')
-    df_long = apply_macd(df_long, price_col='close', window_slow=26, window_fast=12, window_sign=9, fillna=False)
-    df_long = apply_rsi(df_long, price_col='close', window=14, fillna=False)
-    df_long = apply_bollinger(df_long, price_col='close', window=20, window_dev=2.0, fillna=False)
-    df_long['long_ok'] = (
-        (df_long['close'] >= df_long['sma200']) &
-        (df_long['macd_diff'] > 0) &
-        (df_long['rsi'] < 70) &
-        (df_long['bb_hband'] > df_long['close'])
+    df_short = generate_retest_signals(
+        data=df_short,
+        retest_threshold=retest_threshold,
+        confirmation_bars=retest_confirmation_bars,
+        breakout_reference_col=f"highest_{window}",
+        breakout_signal_col=breakout_flag_col,
+        retest_signal_col=retest_signal_col
     )
+    if use_short_term_indicators:
+        df_short = compute_rsi(df_short, price_column="close", period=short_rsi_period, output_col="short_rsi")
+        short_filter = df_short["short_rsi"] < short_rsi_threshold
+    else:
+        short_filter = True
+    df_short[long_entry_col] = (df_short[confirmed_breakout_flag_col] | df_short[retest_signal_col]) & short_filter
 
-    # 3) 백테스트 시뮬레이션
+    # 3. 장기 추세 필터 (동일 시간대의 데이터 사용)
+    df_long = filter_long_trend(
+        data=df_long,
+        price_column='close',
+        sma_period=sma_period,
+        macd_slow_period=macd_slow_period,
+        macd_fast_period=macd_fast_period,
+        macd_signal_period=macd_signal_period,
+        rsi_period=rsi_period,
+        rsi_threshold=rsi_threshold,
+        bb_period=bb_period,
+        bb_std_multiplier=bb_std_multiplier,
+        fillna=False
+    )
+    
+    # 4. 단기 데이터에 대해 ATR를 미리 계산 (이후 각 거래 진입 시 사용)
+    try:
+        import ta
+    except ImportError:
+        print("[ERROR] 'ta' 라이브러리가 필요합니다.")
+        return None
+
+    atr_indicator = ta.volatility.AverageTrueRange(
+        high=df_short['high'],
+        low=df_short['low'],
+        close=df_short['close'],
+        window=atr_window,
+        fillna=True
+    )
+    df_short['atr'] = atr_indicator.average_true_range()
+
+    # 5. 백테스트 시뮬레이션
     current_position = None
-    trades = []
-    highest_price_since_entry = None
+    trades = []       # 개별 체결별 거래 내역 저장 리스트
+    trade_logs = []   # 체결 상세 기록
+    highest_price_since_entry = None  # 포지션 진입 후 최고가 기록
 
-    for i in range(len(df_short)):
-        row = df_short.iloc[i]
-        current_time = row.name
+    # 각 봉마다 시뮬레이션 진행
+    for current_time, row in df_short.iterrows():
         close_price = row['close']
         high_price = row['high']
         low_price = row['low']
+        atr_value = row['atr']
+        
+        # 5-1. 열린 포지션 업데이트 (청산, 트레일링 스탑, 분할 매수)
+        if current_position is not None:
+            # (A) 트레일링 스탑 업데이트
+            if use_trailing_stop:
+                if highest_price_since_entry is None or high_price > highest_price_since_entry:
+                    highest_price_since_entry = high_price
+                for execution in current_position.executions:
+                    if not execution.get("closed", False):
+                        old_sl = execution['stop_loss']
+                        new_sl = adjust_trailing_stop(
+                            current_stop=old_sl,
+                            current_price=close_price,
+                            highest_price=highest_price_since_entry,
+                            trailing_percentage=trailing_percent
+                        )
+                        execution['stop_loss'] = new_sl
 
-        # A. 이미 보유한 포지션이 있다면: 손절/익절/트레일링 등을 체크
-        if current_position is not None and not current_position.is_empty():
-            sub_positions_to_close = []
-            for idx, sp in enumerate(current_position.sub_positions):
-                ep = sp['entry_price']
-                sl = sp['stop_loss']
-                tp = sp['take_profit']
-                size = sp['size']
-
-                triggered_stop = False
-                triggered_take = False
+            # (B) 각 체결에 대해 청산 조건 확인 (Stop Loss, Take Profit, Trend Exit)
+            executions_to_close = []
+            for i, exec_record in enumerate(current_position.executions):
+                if exec_record.get("closed", False):
+                    continue
+                ep = exec_record['entry_price']
+                sl = exec_record['stop_loss']
+                tp = exec_record.get("take_profit")
+                size = exec_record['size']
+                exit_triggered = False
                 exit_price = None
                 exit_reason = None
 
-                # 손절 여부
+                # Stop Loss 조건
                 if low_price <= sl:
-                    triggered_stop = True
-                    exit_price = sl * (1 - slippage_rate)
-                    exit_reason = 'stop_loss'
-                # 익절 여부
-                elif high_price >= tp:
-                    triggered_take = True
-                    exit_price = tp * (1 - slippage_rate)
-                    exit_reason = 'take_profit'
-                # 분할익절
-                # 우선순위: stop_loss > 단일TP > 부분익절
-                if not triggered_stop and not triggered_take and use_partial_take_profit:
-                    for sub_tp in sp['sub_tps']:
-                        if sub_tp['hit']:
-                            continue
-                        if high_price >= sub_tp['price']:
-                            part_ratio = sub_tp['close_ratio']
-                            part_exit_price = sub_tp['price'] * (1 - slippage_rate)
-                            part_qty = current_position.partial_close_sub_position(idx, part_ratio)
-                            
-                            fee = part_exit_price * part_qty * taker_fee_rate
-                            pnl = (part_exit_price - ep) * part_qty - fee
+                    exit_triggered = True
+                    exit_price = sl  # 슬리피지 적용 가능: sl * (1 - slippage_rate)
+                    exit_reason = "stop_loss"
+                # Take Profit 조건
+                elif tp is not None and high_price >= tp:
+                    exit_triggered = True
+                    exit_price = tp  # 슬리피지 적용 가능: tp * (1 - slippage_rate)
+                    exit_reason = "take_profit"
+                # Trend Exit 조건 (장기 추세 필터 기반)
+                elif use_trend_exit:
+                    # 현재 시간에 대응하는 장기 데이터(또는 가장 최근 데이터) 사용
+                    if current_time in df_long.index:
+                        trend_row = df_long.loc[current_time]
+                    else:
+                        trend_row = df_long.iloc[-1]
+                    df_long_sub = df_long.loc[:current_time]
+                    if len(df_long_sub) >= trend_exit_lookback:
+                        recent_window = df_long_sub.iloc[-trend_exit_lookback:]
+                        recent_min = recent_window[trend_exit_price_column].min()
+                        if close_price < recent_min:
+                            exit_triggered = True
+                            exit_price = close_price
+                            exit_reason = "trend_exit"
 
-                            trades.append({
-                                'entry_time': sp['entry_time'],
-                                'entry_price': ep,
-                                'exit_time': current_time,
-                                'exit_price': part_exit_price,
-                                'size': part_qty,
-                                'pnl': pnl,
-                                'reason': f'partial_tp({sub_tp["price"]})'
-                            })
-
-                            sub_tp['hit'] = True
-                            
-                            if sp['size'] <= 0:
-                                sub_positions_to_close.append(idx)
-                            break
-
-                if triggered_stop or triggered_take:
-                    fee = exit_price * size * taker_fee_rate
+                if exit_triggered:
+                    # 체결 종료 처리
+                    exec_record["closed"] = True
+                    fee = exit_price * size * fee_rate
                     pnl = (exit_price - ep) * size - fee
-                    trades.append({
-                        'entry_time': sp['entry_time'],
+                    trade_detail = {
+                        'entry_time': exec_record['entry_time'],
                         'entry_price': ep,
                         'exit_time': current_time,
                         'exit_price': exit_price,
                         'size': size,
                         'pnl': pnl,
-                        'reason': exit_reason
-                    })
-                    sub_positions_to_close.append(idx)
-
-            # 청산해야 할 sub_position을 뒤에서부터 제거(인덱스가 앞에서부터 변동되지 않도록)
-            for idx_close in reversed(sub_positions_to_close):
-                current_position.close_sub_position(idx_close)
-
-            # 트레일링 스탑
-            if use_trailing_stop and current_position.side == "LONG":
-                if highest_price_since_entry is None or high_price > highest_price_since_entry:
-                    highest_price_since_entry = high_price
-                for sp in current_position.sub_positions:
-                    old_sl = sp['stop_loss']
-                    new_sl = update_trailing_stop(
-                        current_stop_loss=old_sl,
-                        current_price=close_price,
-                        highest_price=highest_price_since_entry,
-                        trailing_percent=trailing_percent
-                    )
-                    sp['stop_loss'] = new_sl
-
-            # 추세 이탈 로직
-            if use_trend_exit:
-                if check_trend_exit_condition(df_long, current_time, 'sma200'):
-                    # 전부 청산
-                    for sp2 in current_position.sub_positions:
-                        ep2 = sp2['entry_price']
-                        sz2 = sp2['size']
-                        exit_price = close_price * (1 - slippage_rate)
-                        fee2 = exit_price * sz2 * taker_fee_rate
-                        pnl2 = (exit_price - ep2) * sz2 - fee2
-                        trades.append({
-                            'entry_time': sp2['entry_time'],
-                            'entry_price': ep2,
-                            'exit_time': current_time,
-                            'exit_price': exit_price,
-                            'size': sz2,
-                            'pnl': pnl2,
-                            'reason': 'trend_exit'
-                        })
-                    current_position = None
-                    highest_price_since_entry = None
-
-            # 포지션이 다 청산되었는지 확인
-            if current_position and current_position.is_empty():
+                        'reason': exit_reason,
+                        'trade_type': exec_record.get("trade_type", "unknown"),
+                        'position_id': current_position.position_id
+                    }
+                    trade_logs.append(trade_detail)
+                    trades.append(trade_detail)
+                    executions_to_close.append(i)
+            
+            # 제거: 종료된 체결은 리스트에서 제거하고, 포지션이 완전히 청산되었으면 None으로 처리
+            for i in sorted(executions_to_close, reverse=True):
+                current_position.executions.pop(i)
+            if current_position.is_empty():
                 current_position = None
                 highest_price_since_entry = None
 
-            # (A-1) 아직 포지션이 남아있다면, 남은 분할매수를 진행
-            if current_position and not current_position.is_empty():
-                add_position_sizes(
-                    position=current_position,
-                    current_price=close_price,
-                    threshold_percent=threshold_percent,
-                    slippage_rate=slippage_rate,
-                    stop_loss_price=row['stop_loss_price'],
-                    take_profit_price=row['take_profit_price'],
-                    entry_time=current_time
-                )
-
-        # B. 새 매수 신호가 있을 때( long_entry=True ) && 장기 필터(long_ok=True)
-        if row['long_entry']:
-            df_long_sub = df_long.loc[:current_time]
-            if not df_long_sub.empty:
-                row_l = df_long_sub.iloc[-1]
-                if row_l['long_ok']:
-                    if current_position is None:
-                        current_position = Position(
-                            side="LONG",
-                            initial_entry_price=close_price,
-                            max_position_size=0.0,
-                            num_splits=total_splits,
-                            split_plan=[]
-                        )
-                        highest_price_since_entry = None
-
-                    # 리스크 기반으로 전체 포지션 크기 계산
-                    entry_price_for_calc = close_price * (1 + slippage_rate)
-                    total_size = calculate_position_size(
-                        account_balance=account_size,
-                        risk_per_trade=risk_per_trade,
-                        entry_price=entry_price_for_calc,
-                        stop_loss_price=row['stop_loss_price'],
-                        fee_rate=taker_fee_rate
-                    )
-                    current_position.max_position_size = total_size
-
-                    # 분할매수 비중 계획 (균등분할로 예시)
-                    plan_list = split_position_sizes(
-                        total_position_size=1.0,
-                        split_count=total_splits,
-                        scale_mode='equal'
-                    )
-                    current_position.split_plan = plan_list
-
-                    # 첫 분할 즉시 매수
-                    if total_splits > 0:
-                        buy_size = total_size * plan_list[0]
-                        buy_price = close_price * (1 + slippage_rate)
-                        
-                        sub_tps = []
-                        if use_partial_take_profit:
-                            sub_tps = create_sub_tps_for_partial_exit(
-                                entry_price=buy_price,
-                                partial_tp_factor=partial_tp_factor,
-                                final_tp_factor=final_tp_factor
-                            )
-
-                        current_position.add_sub_position(
-                            entry_price=buy_price,
-                            size=buy_size,
-                            stop_loss=row['stop_loss_price'],
-                            take_profit=row['take_profit_price'],
+            # (C) 분할 매수 (Scale-In): 열린 포지션이 있고, 아직 전체 분할 횟수 미달이며, 현재 봉이 신규 진입 신호이면 추가 체결 시도
+            if current_position is not None and current_position.executed_splits < current_position.total_splits and row[long_entry_col]:
+                next_split = current_position.executed_splits
+                # 다음 추가 체결 목표가: 초기 진입가의 (1 + threshold_percent * split_index)
+                target_price = current_position.initial_price * (1.0 + threshold_percent * next_split)
+                if close_price >= target_price:
+                    total_size = current_position.maximum_size
+                    plan_list = current_position.allocation_plan
+                    if next_split < len(plan_list):
+                        scale_in_size = total_size * plan_list[next_split]
+                        scale_in_price = close_price  # 현재 가격 사용
+                        scale_in_stop = scale_in_price - (atr_value * atr_multiplier)
+                        scale_in_take_profit = scale_in_price * (1 + profit_ratio)
+                        current_position.add_execution(
+                            entry_price=scale_in_price,
+                            size=scale_in_size,
+                            stop_loss=scale_in_stop,
+                            take_profit=scale_in_take_profit,
                             entry_time=current_time,
-                            sub_tps=sub_tps
+                            exit_targets=[],  # 분할 청산 목표 계산 함수 적용 가능
+                            trade_type="scale_in"
                         )
-                        current_position.splits_filled = 1
+                        current_position.executed_splits += 1
 
-                    if highest_price_since_entry is None:
-                        highest_price_since_entry = close_price
+        # 5-2. 신규 진입: 열린 포지션이 없고, 단기 신호와 장기 추세 필터 조건 모두 만족할 때 진입
+        if current_position is None and row[long_entry_col]:
+            if current_time in df_long.index:
+                trend_row = df_long.loc[current_time]
+            else:
+                trend_row = df_long.iloc[-1]
+            if trend_row.get('long_filter_pass', False):
+                current_position = TradePosition(
+                    side=position_side,
+                    initial_price=close_price,
+                    maximum_size=0.0,  # 아래에서 계산
+                    total_splits=total_splits,
+                    allocation_plan=[]
+                )
+                # 진입 시 ATR을 기반으로 Stop Loss 계산
+                entry_price_for_calc = close_price  # 슬리피지 미적용 가격
+                initial_stop = close_price - (atr_value * atr_multiplier)
+                total_size = compute_position_size(
+                    account_balance=account_size,
+                    risk_percentage=risk_per_trade,
+                    entry_price=entry_price_for_calc,
+                    stop_loss=initial_stop,
+                    fee_rate=fee_rate
+                )
+                current_position.maximum_size = total_size
+                plan_list = allocate_position_splits(
+                    total_size=1.0,
+                    splits_count=total_splits,
+                    allocation_mode=allocation_mode
+                )
+                current_position.allocation_plan = plan_list
+                # 첫 체결: 신규 진입
+                buy_size = total_size * plan_list[0]
+                buy_price = close_price
+                initial_take_profit = buy_price * (1 + profit_ratio)
+                current_position.add_execution(
+                    entry_price=buy_price,
+                    size=buy_size,
+                    stop_loss=initial_stop,
+                    take_profit=initial_take_profit,
+                    entry_time=current_time,
+                    exit_targets=[],  # 필요시 분할 청산 목표 계산 적용
+                    trade_type="new_entry"
+                )
+                current_position.executed_splits = 1
+                highest_price_since_entry = close_price
 
-    # 4) 거래 내역을 종합해 결과 출력
+    # 6. 시뮬레이션 종료 후, 미체결 포지션은 마지막 봉의 종가로 청산 처리
+    if current_position is not None and not current_position.is_empty():
+        final_time = df_short.index[-1]
+        final_close = df_short.iloc[-1]['close']
+        for exec_record in current_position.executions:
+            if not exec_record.get("closed", False):
+                fee = final_close * exec_record['size'] * fee_rate
+                pnl = (final_close - exec_record['entry_price']) * exec_record['size'] - fee
+                exec_record["closed"] = True
+                trade_detail = {
+                    'entry_time': exec_record['entry_time'],
+                    'entry_price': exec_record['entry_price'],
+                    'exit_time': final_time,
+                    'exit_price': final_close,
+                    'size': exec_record['size'],
+                    'pnl': pnl,
+                    'reason': "final_exit",
+                    'trade_type': exec_record.get("trade_type", "unknown"),
+                    'position_id': current_position.position_id
+                }
+                trade_logs.append(trade_detail)
+                trades.append(trade_detail)
+
+    # 7. 결과 정리 및 성과 출력
     trades_df = pd.DataFrame(trades)
     if trades_df.empty:
         print("[INFO] No trades executed.")
@@ -1189,326 +1286,429 @@ def run_advanced_backtest(
     print(f"수익률: {roi_percent:.2f}%")
 
     print_performance_report(trades_df, initial_balance=account_size)
+    return trades_df, trade_logs
 
-    return trades_df
+---
+# backtesting/parameter_group.json
+
+{
+  "signal_generation": {
+    "breakout_signal": {
+      "lookback_window": {
+        "description": "과거 몇 개 봉의 데이터를 참고해 최고가 산출 기간",
+        "range": { "min": 10, "max": 30 }
+      },
+      "volume_factor": {
+        "description": "거래량 이동평균 대비 현재 거래량 배수 조건",
+        "range": { "min": 1.2, "max": 2.0 }
+      },
+      "confirmation_bars": {
+        "description": "조건이 연속으로 충족되어야 하는 봉의 수",
+        "range": { "min": 1, "max": 3 }
+      },
+      "breakout_buffer": {
+        "description": "돌파 시 가격에 적용하는 여유 비율",
+        "range": { "min": 0.001, "max": 0.005 }
+      },
+      "retest_settings": {
+        "retest_threshold": {
+          "description": "돌파 후 리테스트 허용 범위 (비율). 예: 0.005는 0.5% 범위 내 풀백 허용",
+          "range": { "min": 0.003, "max": 0.01 }
+        },
+        "retest_confirmation_bars": {
+          "description": "리테스트 신호 확인에 사용할 연속 캔들 수",
+          "range": { "min": 1, "max": 3 }
+        }
+      },
+      "signal_options": {
+        "use_short_term_indicators": {
+          "description": "단기 보조지표(RSI 등) 사용 여부",
+          "type": "boolean"
+        },
+        "short_rsi_threshold": {
+          "description": "단기 보조지표(RSI)가 진입 조건을 충족하기 위한 임계값",
+          "range": { "min": 20, "max": 50 }
+        },
+        "short_rsi_period": {
+          "description": "단기 보조지표(RSI) 계산에 사용할 기간",
+          "range": { "min": 10, "max": 20 }
+        }
+      }
+    },
+    "trend_filter": {
+      "sma_period": {
+        "description": "장기 단순이동평균(SMA) 계산 기간",
+        "options": [100, 150, 200]
+      },
+      "macd_slow_period": {
+        "description": "MACD 계산 시 느린 기간",
+        "range": { "min": 20, "max": 30 }
+      },
+      "macd_fast_period": {
+        "description": "MACD 계산 시 빠른 기간",
+        "range": { "min": 10, "max": 15 }
+      },
+      "macd_signal_period": {
+        "description": "MACD 신호선 계산 기간",
+        "range": { "min": 7, "max": 12 }
+      },
+      "rsi_period": {
+        "description": "장기 RSI 계산 기간",
+        "range": { "min": 10, "max": 20 }
+      },
+      "rsi_threshold": {
+        "description": "장기 RSI 임계값",
+        "range": { "min": 60, "max": 80 }
+      },
+      "bb_period": {
+        "description": "Bollinger Bands 계산 기간",
+        "range": { "min": 15, "max": 25 }
+      },
+      "bb_std_multiplier": {
+        "description": "Bollinger Bands 표준편차 배수",
+        "range": { "min": 1.5, "max": 2.5 }
+      }
+    }
+  },
+  "risk_management": {
+    "atr_stop": {
+      "atr_period": {
+        "description": "ATR 계산에 사용할 기간",
+        "range": { "min": 10, "max": 20 }
+      },
+      "atr_multiplier": {
+        "description": "ATR에 곱하여 손절 가격 산출 계수",
+        "range": { "min": 1.5, "max": 3.5 }
+      }
+    },
+    "take_profit": {
+      "profit_ratio": {
+        "description": "익절 비율",
+        "range": { "min": 0.05, "max": 0.20 }
+      },
+      "use_trailing_stop": {
+        "description": "트레일링 스탑 사용 여부",
+        "type": "boolean"
+      },
+      "trailing_percent": {
+        "description": "트레일링 스탑 후행 비율",
+        "range": { "min": 0.03, "max": 0.06 }
+      },
+      "use_partial_take_profit": {
+        "description": "분할 청산 사용 여부",
+        "type": "boolean"
+      },
+      "partial_tp_factor": {
+        "description": "분할 청산 익절 목표 비율",
+        "range": { "min": 0.03, "max": 0.06 }
+      },
+      "final_tp_factor": {
+        "description": "최종 청산 익절 목표 비율",
+        "range": { "min": 0.06, "max": 0.10 }
+      },
+      "use_trend_exit": {
+        "description": "추세 종료(exit trend) 조건 적용 여부",
+        "type": "boolean"
+      },
+      "risk_per_trade": {
+        "description": "한 거래에서 감수할 위험 비율 (계좌 자산 대비)",
+        "range": { "min": 0.005, "max": 0.02 }
+      }
+    }
+  },
+  "position_sizing": {
+    "total_splits": {
+      "description": "분할 진입(또는 분할 매수) 횟수",
+      "range": { "min": 2, "max": 3 }
+    },
+    "allocation_mode": {
+      "description": "분할 매수 시 각 체결 비중 분배 방식",
+      "options": ["equal", "pyramid_up", "pyramid_down"]
+    },
+    "scale_in_threshold": {
+      "description": "추가 매수(스케일인)를 위한 가격 상승 비율 조건",
+      "range": { "min": 0.01, "max": 0.02 }
+    }
+  },
+  "exit_management": {
+    "trend_exit_lookback": {
+      "description": "추세 종료 판별 시 사용되는 lookback 기간",
+      "range": { "min": 20, "max": 40 }
+    }
+  },
+  "misc": {
+    "short_timeframe": {
+      "description": "단기 봉 데이터 타임프레임",
+      "example": "4h"
+    },
+    "long_timeframe": {
+      "description": "장기 봉 데이터 타임프레임",
+      "example": "1d"
+    }
+  }
+}
 
 ---
 
-# backtesting/overfit_validation.py
-# 오버피팅(과적합)을 막기 위해 '학습 구간'과 '테스트 구간'을 나눠서
-# 최적 파라미터를 찾고, 그것을 별도 기간에 적용해 검증하는 예시.
+# backtesting/parameter_optimization.py
 
-import pandas as pd
-from datetime import timedelta
-
-# param_sweep.py 에서 전수 조사 함수 불러오기
-from backtesting.param_sweep import run_param_sweep_advanced
-from backtesting.backtest_advanced import run_advanced_backtest
-
-
-def train_test_validation(
-    symbol: str = "BTC/USDT",
-    short_timeframe: str = "4h",
-    long_timeframe: str = "1d",
-    train_start: str = "2021-01-01 00:00:00",
-    train_end: str = "2021-06-30 23:59:59",
-    test_start: str = "2021-07-01 00:00:00",
-    test_end: str = "2021-12-31 23:59:59",
-    account_size: float = 10_000.0
-) -> dict:
-    """
-    (1) 훈련(Train) 구간에서 여러 파라미터를 시도해 최적값(ROI가 최고인 파라미터) 찾기
-    (2) 찾은 파라미터로 테스트(Test) 구간을 백테스트
-    (3) 결과를 dict 형태로 반환
-    """
-
-    # [A] 훈련 구간 파라미터 스윕
-    train_results_df = run_param_sweep_advanced(
-        symbol=symbol,
-        short_timeframe=short_timeframe,
-        long_timeframe=long_timeframe,
-        account_size=account_size,
-        start_date=train_start,
-        end_date=train_end
-    )
-
-    if train_results_df.empty:
-        print("[train_test_validation] 훈련 구간에서 매매 결과가 없습니다.")
-        return {}
-
-    # ROI(%)가 가장 높은 행(파라미터) 추출
-    best_row = train_results_df.iloc[0]  # 이미 ROI 내림차순으로 sort되어 있을 것
-    best_params = {
-        'window': int(best_row['window']),
-        'atr_multiplier': float(best_row['atr_multiplier']),
-        'profit_ratio': float(best_row['profit_ratio']),
-        'use_partial_tp': bool(best_row['use_partial_tp'])
-    }
-
-    # [B] 테스트 구간 백테스트 (최적 파라미터 적용)
-    test_trades_df = run_advanced_backtest(
-        symbol=symbol,
-        short_timeframe=short_timeframe,
-        long_timeframe=long_timeframe,
-        window=best_params['window'],
-        atr_multiplier=best_params['atr_multiplier'],
-        profit_ratio=best_params['profit_ratio'],
-        use_partial_take_profit=best_params['use_partial_tp'],
-        account_size=account_size,
-        start_date=test_start,
-        end_date=test_end
-    )
-
-    return {
-        'best_params': best_params,
-        'train_results': train_results_df,
-        'test_trades': test_trades_df
-    }
-
-
-def walk_forward_analysis(
-    symbol: str = "BTC/USDT",
-    short_timeframe: str = "4h",
-    long_timeframe: str = "1d",
-    overall_start: str = "2021-01-01 00:00:00",
-    overall_end: str = "2022-12-31 23:59:59",
-    n_splits: int = 3,
-    account_size: float = 10_000.0,
-    train_ratio: float = 0.5
-) -> list:
-    """
-    전체 기간(overall_start ~ overall_end)을 n_splits 구간으로 나누어:
-      - 각 구간에서 train_ratio 만큼의 기간을 '훈련(Train)'으로 사용,
-      - 나머지 기간을 '테스트(Test)'로 사용,
-      - 이를 순차적으로 반복(워크포워드)하며 성능을 측정.
-
-    Returns:
-        list: 각 split마다의 결과(훈련 결과, 테스트 결과, 최적 파라미터 등)가 들어 있는 dict들의 리스트
-    """
-
-    results_list = []
-
-    start_dt = pd.to_datetime(overall_start)
-    end_dt = pd.to_datetime(overall_end)
-    total_days = (end_dt - start_dt).days
-
-    if n_splits < 1 or total_days < 1:
-        print("[walk_forward_analysis] 기간 또는 n_splits가 유효하지 않습니다.")
-        return results_list
-
-    # 각 split마다 사용할 일수
-    split_days = total_days // n_splits
-
-    for i in range(n_splits):
-        split_start_dt = start_dt + pd.to_timedelta(split_days * i, unit='D')
-        split_end_dt = start_dt + pd.to_timedelta(split_days * (i + 1), unit='D')
-
-        # 마지막 split은 end_dt까지
-        if i == n_splits - 1:
-            split_end_dt = end_dt
-
-        days_in_this_split = (split_end_dt - split_start_dt).days
-        if days_in_this_split <= 1:
-            continue
-
-        # 훈련 기간 vs. 테스트 기간 분할
-        train_days = int(days_in_this_split * train_ratio)
-
-        train_start = split_start_dt
-        train_end = train_start + pd.to_timedelta(train_days, unit='D')
-        test_start = train_end + pd.to_timedelta(1, unit='D')
-        test_end = split_end_dt
-
-        # str 변환
-        t_start_str = train_start.strftime("%Y-%m-%d %H:%M:%S")
-        t_end_str = train_end.strftime("%Y-%m-%d %H:%M:%S")
-        v_start_str = test_start.strftime("%Y-%m-%d %H:%M:%S")
-        v_end_str = test_end.strftime("%Y-%m-%d %H:%M:%S")
-
-        # 훈련/테스트 진행
-        result_dict = train_test_validation(
-            symbol=symbol,
-            short_timeframe=short_timeframe,
-            long_timeframe=long_timeframe,
-            train_start=t_start_str,
-            train_end=t_end_str,
-            test_start=v_start_str,
-            test_end=v_end_str,
-            account_size=account_size
-        )
-
-        if not result_dict:
-            # 비어있으면 넘어감
-            continue
-
-        # 결과 저장
-        results_list.append({
-            'split_index': i + 1,
-            'train_start': t_start_str,
-            'train_end': t_end_str,
-            'test_start': v_start_str,
-            'test_end': v_end_str,
-            'best_params': result_dict.get('best_params'),
-            'train_results': result_dict.get('train_results'),
-            'test_trades': result_dict.get('test_trades')
-        })
-
-    return results_list
-
----
-
-# backtesting/param_sweep.py
-# 다양한 파라미터 조합(예: window=10,20 / atr_multiplier=1.5,2.0 / profit_ratio=0.03,0.05 등)을
-# 전수 테스트하고, 각 결과를 비교해주는 코드입니다.
-
-import itertools
-import pandas as pd
+import os
+import json
+import hashlib
+import optuna
+import traceback
 
 from backtesting.backtest_advanced import run_advanced_backtest
-from backtesting.performance_metrics import calculate_mdd, calculate_sharpe_ratio
 
+# 캐시 폴더 설정 (없으면 생성)
+CACHE_DIR = os.path.join(os.path.dirname(__file__), "cache")
+if not os.path.exists(CACHE_DIR):
+    os.makedirs(CACHE_DIR)
 
-def run_param_sweep_advanced(
-    symbol="BTC/USDT",
-    short_timeframe="4h",
-    long_timeframe="1d",
-    account_size=10_000.0,
-    # 테스트할 파라미터 리스트들(None이면 디폴트 목록 사용)
-    window_list=None,
-    atr_multiplier_list=None,
-    profit_ratio_list=None,
-    use_partial_tp_list=None,
-    # 부분 익절 관련 파라미터
-    partial_tp_factor=0.02,
-    final_tp_factor=0.05,
-    # 날짜 범위
-    start_date=None,
-    end_date=None
-) -> pd.DataFrame:
-    """
-    (1) 여러 파라미터 조합(window, atr_multiplier, profit_ratio, use_partial_tp 등)을 전수 조사.
-    (2) 각 조합에 대해 run_advanced_backtest() 함수를 실행.
-    (3) 트레이드 결과(Trades DataFrame)로부터 ROI, MDD, Sharpe 등을 계산.
-    (4) 최종 결과를 DataFrame으로 묶어서 반환.
+def get_cache_key(params: dict, start_date: str, end_date: str) -> str:
+    key_data = {"params": params, "start_date": start_date, "end_date": end_date}
+    key_str = json.dumps(key_data, sort_keys=True)
+    key_hash = hashlib.md5(key_str.encode("utf-8")).hexdigest()
+    return key_hash
 
-    Args:
-        symbol (str): 거래 종목 예) "BTC/USDT"
-        short_timeframe (str): 짧은 주기의 타임프레임 예) "4h"
-        long_timeframe (str): 긴 주기의 타임프레임 예) "1d"
-        account_size (float): 초기 투자금(기본: 10000)
-        window_list (list[int] or None): 예) [10, 20, 30]
-        atr_multiplier_list (list[float] or None): 예) [1.5, 2.0]
-        profit_ratio_list (list[float] or None): 예) [0.03, 0.05]
-        use_partial_tp_list (list[bool] or None): 예) [False, True]
-        partial_tp_factor (float): 부분 익절 퍼센트(예: 0.02 → 2% 익절 지점)
-        final_tp_factor (float): 최종 익절 퍼센트(예: 0.05 → 5% 익절 지점)
-        start_date (str or None): 백테스트 시작일 (YYYY-MM-DD)
-        end_date (str or None): 백테스트 종료일 (YYYY-MM-DD)
+def load_cached_result(cache_key: str):
+    cache_file = os.path.join(CACHE_DIR, f"{cache_key}.json")
+    if os.path.exists(cache_file):
+        try:
+            with open(cache_file, "r") as f:
+                data = json.load(f)
+            return data.get("roi")
+        except Exception:
+            return None
+    return None
 
-    Returns:
-        pd.DataFrame:
-            각 파라미터 조합별 결과가 행(row) 하나씩으로 구성된 DataFrame
-            (columns 예시: ['window', 'atr_multiplier', 'profit_ratio', 'use_partial_tp', 'num_trades', ...])
-    """
+def save_cached_result(cache_key: str, roi: float):
+    cache_file = os.path.join(CACHE_DIR, f"{cache_key}.json")
+    with open(cache_file, "w") as f:
+        json.dump({"roi": roi}, f)
 
-    # (A) 파라미터가 None으로 넘어온 경우 기본값 지정
-    if window_list is None:
-        window_list = [10, 20, 30]
-    if atr_multiplier_list is None:
-        atr_multiplier_list = [1.5, 2.0]
-    if profit_ratio_list is None:
-        profit_ratio_list = [0.03, 0.05]
-    if use_partial_tp_list is None:
-        use_partial_tp_list = [False, True]
-
-    results = []
-
-    # (B) 모든 파라미터 조합을 itertools.product()로 생성
-    for window, atr_mult, pr, partial_flag in itertools.product(
-        window_list, atr_multiplier_list, profit_ratio_list, use_partial_tp_list
-    ):
-
-        # (C) 백테스트 실행
-        trades_df = run_advanced_backtest(
-            symbol=symbol,
-            short_timeframe=short_timeframe,
-            long_timeframe=long_timeframe,
-            window=window,
-            atr_multiplier=atr_mult,
-            profit_ratio=pr,
-            use_partial_take_profit=partial_flag,
-            partial_tp_factor=partial_tp_factor,
-            final_tp_factor=final_tp_factor,
-            account_size=account_size,
-            start_date=start_date,
-            end_date=end_date
-        )
-
-        # (D) 결과 집계
-        if trades_df is None or trades_df.empty:
-            # 매매가 하나도 없을 경우
-            results.append({
-                'window': window,
-                'atr_multiplier': atr_mult,
-                'profit_ratio': pr,
-                'use_partial_tp': partial_flag,
-                'num_trades': 0,
-                'final_balance': account_size,
-                'ROI(%)': 0.0,
-                'MDD(%)': 0.0,
-                'Sharpe': 0.0,
-            })
+def sample_parameter(trial, name, param_spec):
+    if "options" in param_spec:
+        return trial.suggest_categorical(name, param_spec["options"])
+    elif "type" in param_spec and param_spec["type"] == "boolean":
+        return trial.suggest_categorical(name, [True, False])
+    elif "range" in param_spec:
+        min_val = param_spec["range"]["min"]
+        max_val = param_spec["range"]["max"]
+        if isinstance(min_val, int) and isinstance(max_val, int):
+            return trial.suggest_int(name, min_val, max_val)
         else:
-            # 총 손익
-            total_pnl = trades_df['pnl'].sum()
-            final_balance = account_size + total_pnl
-            roi_percent = (final_balance - account_size) / account_size * 100.0
+            return trial.suggest_float(name, min_val, max_val)
+    else:
+        raise ValueError(f"Parameter spec for {name} not recognized.")
 
-            # MDD, Sharpe 계산
-            mdd_percent = calculate_mdd(trades_df, initial_balance=account_size)
-            sharpe_val = calculate_sharpe_ratio(trades_df, initial_balance=account_size)
+def objective(trial: optuna.trial.Trial) -> float:
+    # parameter_group.json 파일 읽기
+    param_file = os.path.join(os.path.dirname(__file__), "parameter_group.json")
+    with open(param_file, "r", encoding="utf-8") as f:
+        param_groups = json.load(f)
 
-            results.append({
-                'window': window,
-                'atr_multiplier': atr_mult,
-                'profit_ratio': pr,
-                'use_partial_tp': partial_flag,
-                'num_trades': len(trades_df),
-                'final_balance': round(final_balance, 2),
-                'ROI(%)': round(roi_percent, 2),
-                'MDD(%)': round(mdd_percent, 2),
-                'Sharpe': round(sharpe_val, 3),
-            })
+    candidate_params = {}
 
-    # (E) DataFrame으로 변환 후 ROI 기준 내림차순 정렬
-    results_df = pd.DataFrame(results)
-    results_df.sort_values(by='ROI(%)', ascending=False, inplace=True)
-    return results_df
+    # [신호 생성] - breakout_signal 그룹
+    breakout_signal = param_groups["signal_generation"]["breakout_signal"]
+    candidate_params["lookback_window"] = sample_parameter(trial, "lookback_window", breakout_signal["lookback_window"])
+    candidate_params["volume_factor"] = sample_parameter(trial, "volume_factor", breakout_signal["volume_factor"])
+    candidate_params["confirmation_bars"] = sample_parameter(trial, "confirmation_bars", breakout_signal["confirmation_bars"])
+    candidate_params["breakout_buffer"] = sample_parameter(trial, "breakout_buffer", breakout_signal["breakout_buffer"])
+    
+    # [신호 생성] - 리테스트 관련
+    retest_settings = breakout_signal["retest_settings"]
+    candidate_params["retest_threshold"] = sample_parameter(trial, "retest_threshold", retest_settings["retest_threshold"])
+    candidate_params["retest_confirmation_bars"] = sample_parameter(trial, "retest_confirmation_bars", retest_settings["retest_confirmation_bars"])
+    
+    # [신호 생성] - 옵션 (signal_options 그룹)
+    signal_options = breakout_signal["signal_options"]
+    candidate_params["use_short_term_indicators"] = sample_parameter(trial, "use_short_term_indicators", signal_options["use_short_term_indicators"])
+    candidate_params["short_rsi_threshold"] = sample_parameter(trial, "short_rsi_threshold", signal_options["short_rsi_threshold"])
+    candidate_params["short_rsi_period"] = sample_parameter(trial, "short_rsi_period", signal_options["short_rsi_period"])
+
+    # [신호 생성] - trend_filter 그룹
+    trend_filter = param_groups["signal_generation"]["trend_filter"]
+    candidate_params["sma_period"] = sample_parameter(trial, "sma_period", trend_filter["sma_period"])
+    candidate_params["macd_slow_period"] = sample_parameter(trial, "macd_slow_period", trend_filter["macd_slow_period"])
+    candidate_params["macd_fast_period"] = sample_parameter(trial, "macd_fast_period", trend_filter["macd_fast_period"])
+    candidate_params["macd_signal_period"] = sample_parameter(trial, "macd_signal_period", trend_filter["macd_signal_period"])
+    candidate_params["rsi_period"] = sample_parameter(trial, "rsi_period", trend_filter["rsi_period"])
+    candidate_params["rsi_threshold"] = sample_parameter(trial, "rsi_threshold", trend_filter["rsi_threshold"])
+    candidate_params["bb_period"] = sample_parameter(trial, "bb_period", trend_filter["bb_period"])
+    candidate_params["bb_std_multiplier"] = sample_parameter(trial, "bb_std_multiplier", trend_filter["bb_std_multiplier"])
+
+    # [리스크 관리] - atr_stop 그룹
+    atr_stop = param_groups["risk_management"]["atr_stop"]
+    candidate_params["atr_period"] = sample_parameter(trial, "atr_period", atr_stop["atr_period"])
+    candidate_params["atr_multiplier"] = sample_parameter(trial, "atr_multiplier", atr_stop["atr_multiplier"])
+
+    # [리스크 관리] - take_profit 그룹
+    take_profit = param_groups["risk_management"]["take_profit"]
+    candidate_params["profit_ratio"] = sample_parameter(trial, "profit_ratio", take_profit["profit_ratio"])
+    candidate_params["use_trailing_stop"] = sample_parameter(trial, "use_trailing_stop", take_profit["use_trailing_stop"])
+    candidate_params["trailing_percent"] = (
+        sample_parameter(trial, "trailing_percent", take_profit["trailing_percent"])
+        if candidate_params["use_trailing_stop"] else 0.0
+    )
+    candidate_params["use_partial_take_profit"] = sample_parameter(trial, "use_partial_take_profit", take_profit["use_partial_take_profit"])
+    candidate_params["partial_tp_factor"] = sample_parameter(trial, "partial_tp_factor", take_profit["partial_tp_factor"])
+    candidate_params["final_tp_factor"] = sample_parameter(trial, "final_tp_factor", take_profit["final_tp_factor"])
+    candidate_params["use_trend_exit"] = sample_parameter(trial, "use_trend_exit", take_profit["use_trend_exit"])
+    candidate_params["risk_per_trade"] = sample_parameter(trial, "risk_per_trade", take_profit["risk_per_trade"])
+
+    # [포지션 사이징]
+    position_sizing = param_groups["position_sizing"]
+    candidate_params["total_splits"] = sample_parameter(trial, "total_splits", position_sizing["total_splits"])
+    candidate_params["allocation_mode"] = sample_parameter(trial, "allocation_mode", position_sizing["allocation_mode"])
+    candidate_params["scale_in_threshold"] = sample_parameter(trial, "scale_in_threshold", position_sizing["scale_in_threshold"])
+
+    # [청산 관리] - exit_management 그룹
+    exit_management = param_groups["exit_management"]
+    candidate_params["trend_exit_lookback"] = sample_parameter(trial, "trend_exit_lookback", exit_management["trend_exit_lookback"])
+
+    # [기타] - misc (타임프레임은 최적화 대상이 아니므로 예시값 사용)
+    candidate_params["short_timeframe"] = param_groups["misc"]["short_timeframe"]["example"]
+    candidate_params["long_timeframe"] = param_groups["misc"]["long_timeframe"]["example"]
+    candidate_params["trend_exit_price_column"] = "close"
+
+    # 추가 고정 파라미터
+    candidate_params["atr_window"] = candidate_params["atr_period"]
+    candidate_params["window"] = candidate_params["lookback_window"]
+
+    # 신호 관련 컬럼명 (고정값)
+    candidate_params["breakout_flag_col"] = "breakout_signal"
+    candidate_params["confirmed_breakout_flag_col"] = "confirmed_breakout"
+    candidate_params["retest_signal_col"] = "retest_signal"
+    candidate_params["long_entry_col"] = "long_entry"
+
+    fee_rate = 0.001
+    slippage_rate = 0.0005
+    taker_fee_rate = 0.001
+    account_size = 10000.0
+
+    walk_forward_periods = [
+        ("2018-01-01", "2019-01-01"),
+        ("2019-01-01", "2020-01-01"),
+        ("2020-01-01", "2021-01-01")
+    ]
+
+    cumulative_roi = 0.0
+    period_count = 0
+
+    params_for_cache = candidate_params.copy()
+
+    for start_date, end_date in walk_forward_periods:
+        cache_key = get_cache_key(params_for_cache, start_date, end_date)
+        cached_roi = load_cached_result(cache_key)
+        if cached_roi is not None:
+            roi = cached_roi
+        else:
+            try:
+                result = run_advanced_backtest(
+                    symbol="BTC/USDT",
+                    short_timeframe=candidate_params["short_timeframe"],
+                    long_timeframe=candidate_params["long_timeframe"],
+                    window=candidate_params["window"],
+                    volume_factor=candidate_params["volume_factor"],
+                    confirm_bars=candidate_params["confirmation_bars"],
+                    breakout_buffer=candidate_params["breakout_buffer"],
+                    atr_window=candidate_params["atr_window"],
+                    atr_multiplier=candidate_params["atr_multiplier"],
+                    profit_ratio=candidate_params["profit_ratio"],
+                    account_size=account_size,
+                    risk_per_trade=candidate_params["risk_per_trade"],
+                    fee_rate=fee_rate,
+                    slippage_rate=slippage_rate,
+                    taker_fee_rate=taker_fee_rate,
+                    total_splits=candidate_params["total_splits"],
+                    allocation_mode=candidate_params["allocation_mode"],
+                    threshold_percent=candidate_params["scale_in_threshold"],
+                    use_trailing_stop=candidate_params["use_trailing_stop"],
+                    trailing_percent=candidate_params["trailing_percent"],
+                    use_trend_exit=candidate_params["use_trend_exit"],
+                    trend_exit_lookback=candidate_params["trend_exit_lookback"],
+                    trend_exit_price_column=candidate_params["trend_exit_price_column"],
+                    start_date=start_date,
+                    end_date=end_date,
+                    use_partial_take_profit=candidate_params["use_partial_take_profit"],
+                    partial_tp_factor=candidate_params["partial_tp_factor"],
+                    final_tp_factor=candidate_params["final_tp_factor"],
+                    # Trend Filter 관련 파라미터
+                    sma_period=candidate_params["sma_period"],
+                    macd_slow_period=candidate_params["macd_slow_period"],
+                    macd_fast_period=candidate_params["macd_fast_period"],
+                    macd_signal_period=candidate_params["macd_signal_period"],
+                    rsi_period=candidate_params["rsi_period"],
+                    rsi_threshold=candidate_params["rsi_threshold"],
+                    bb_period=candidate_params["bb_period"],
+                    bb_std_multiplier=candidate_params["bb_std_multiplier"],
+                    # 리테스트 및 신호 관련 파라미터
+                    retest_threshold=candidate_params["retest_threshold"],
+                    retest_confirmation_bars=candidate_params["retest_confirmation_bars"],
+                    breakout_flag_col=candidate_params["breakout_flag_col"],
+                    confirmed_breakout_flag_col=candidate_params["confirmed_breakout_flag_col"],
+                    retest_signal_col=candidate_params["retest_signal_col"],
+                    long_entry_col=candidate_params["long_entry_col"]
+                )
+            except Exception:
+                trial.set_user_attr("error", traceback.format_exc())
+                return 1e6
+
+            if result is None:
+                roi = -5.0
+            else:
+                trades_df, _ = result
+                if trades_df is None or trades_df.empty:
+                    roi = -5.0
+                else:
+                    total_pnl = trades_df["pnl"].sum()
+                    final_balance = account_size + total_pnl
+                    roi = (final_balance - account_size) / account_size * 100
+            save_cached_result(cache_key, roi)
+        cumulative_roi += roi
+        period_count += 1
+
+    average_roi = cumulative_roi / period_count if period_count > 0 else -100.0
+    return -average_roi  # Optuna는 최소화를 목표로 하므로 ROI 부호를 반전
+
+def optimize_parameters(n_trials: int = 50) -> optuna.study.Study:
+    study = optuna.create_study(direction="minimize")
+    study.optimize(objective, n_trials=n_trials)
+    return study
 
 ---
 
 # backtesting/performance_metrics.py
-# 백테스트 결과를 평가하기 위해 MDD, 월별 성과, 연간 성과 등을 계산하는 함수들.
 
 import pandas as pd
 import numpy as np
 
-def calculate_monthly_performance(trades_df: pd.DataFrame) -> pd.DataFrame:
+def calculate_monthly_performance(
+    trades_df: pd.DataFrame,
+    exit_time_col: str = "exit_time",
+    pnl_col: str = "pnl"
+) -> pd.DataFrame:
     """
-    월별로(YYYY-MM) 손익, 매매 횟수, 승률을 계산하여 요약한 DataFrame을 반환.
+    월별(YYYY-MM) 손익, 매매 횟수, 승률을 계산하여 요약한 DataFrame을 반환합니다.
+    
+    매개변수:
+      - trades_df: 거래 내역 DataFrame
+      - exit_time_col: 거래 종료 시간 컬럼 이름 (기본: "exit_time")
+      - pnl_col: 손익(PnL) 컬럼 이름 (기본: "pnl")
     """
-
-    if 'exit_time' not in trades_df.columns:
+    if exit_time_col not in trades_df.columns:
         return pd.DataFrame()
 
-    trades_df['year_month'] = trades_df['exit_time'].dt.to_period('M')
-    grouped = trades_df.groupby('year_month')
+    trades_df["year_month"] = trades_df[exit_time_col].dt.to_period('M')
+    grouped = trades_df.groupby("year_month")
 
     results = []
     for ym, grp in grouped:
-        total_pnl = grp['pnl'].sum()
+        total_pnl = grp[pnl_col].sum()
         num_trades = len(grp)
-        win_trades = (grp['pnl'] > 0).sum()
+        win_trades = (grp[pnl_col] > 0).sum()
         win_rate = (win_trades / num_trades * 100.0) if num_trades > 0 else 0.0
 
         results.append({
@@ -1521,22 +1721,30 @@ def calculate_monthly_performance(trades_df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(results)
 
 
-def calculate_yearly_performance(trades_df: pd.DataFrame) -> pd.DataFrame:
+def calculate_yearly_performance(
+    trades_df: pd.DataFrame,
+    exit_time_col: str = "exit_time",
+    pnl_col: str = "pnl"
+) -> pd.DataFrame:
     """
-    연도별(YYYY)로 손익, 매매 횟수, 승률을 계산.
+    연도별(YYYY)로 손익, 매매 횟수, 승률을 계산합니다.
+    
+    매개변수:
+      - trades_df: 거래 내역 DataFrame
+      - exit_time_col: 거래 종료 시간 컬럼 이름 (기본: "exit_time")
+      - pnl_col: 손익(PnL) 컬럼 이름 (기본: "pnl")
     """
-
-    if 'exit_time' not in trades_df.columns:
+    if exit_time_col not in trades_df.columns:
         return pd.DataFrame()
 
-    trades_df['year'] = trades_df['exit_time'].dt.year
-    grouped = trades_df.groupby('year')
+    trades_df["year"] = trades_df[exit_time_col].dt.year
+    grouped = trades_df.groupby("year")
 
     results = []
     for y, grp in grouped:
-        total_pnl = grp['pnl'].sum()
+        total_pnl = grp[pnl_col].sum()
         num_trades = len(grp)
-        win_trades = (grp['pnl'] > 0).sum()
+        win_trades = (grp[pnl_col] > 0).sum()
         win_rate = (win_trades / num_trades * 100.0) if num_trades > 0 else 0.0
 
         results.append({
@@ -1549,22 +1757,30 @@ def calculate_yearly_performance(trades_df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(results)
 
 
-def calculate_mdd(trades_df: pd.DataFrame, initial_balance: float) -> float:
+def calculate_mdd(
+    trades_df: pd.DataFrame,
+    initial_balance: float,
+    exit_time_col: str = "exit_time",
+    pnl_col: str = "pnl"
+) -> float:
     """
-    MDD(최대낙폭) %를 계산하는 함수.
-    - 거래 순서대로 잔고를 추적하며, 최고점(peak)과 비교해 얼마나 내려갔나를 계산
+    MDD(최대낙폭) %를 계산합니다.
+    
+    매개변수:
+      - trades_df: 거래 내역 DataFrame (종료 시간 컬럼을 포함)
+      - initial_balance: 초기 잔고
+      - exit_time_col: 거래 종료 시간 컬럼 이름 (기본: "exit_time")
+      - pnl_col: 손익(PnL) 컬럼 이름 (기본: "pnl")
     """
-
-    if 'exit_time' not in trades_df.columns:
+    if exit_time_col not in trades_df.columns:
         return 0.0
 
-    trades_df = trades_df.sort_values(by='exit_time')
-
+    trades_df = trades_df.sort_values(by=exit_time_col)
     equity_list = []
     current_balance = initial_balance
 
     for _, row in trades_df.iterrows():
-        current_balance += row['pnl']
+        current_balance += row[pnl_col]
         equity_list.append(current_balance)
 
     equity_arr = np.array(equity_list)
@@ -1573,10 +1789,23 @@ def calculate_mdd(trades_df: pd.DataFrame, initial_balance: float) -> float:
     mdd = drawdown_arr.min() * 100.0
     return mdd
 
-def calculate_sharpe_ratio(trades_df: pd.DataFrame, initial_balance: float, risk_free_rate=0.0) -> float:
+
+def calculate_sharpe_ratio(
+    trades_df: pd.DataFrame,
+    initial_balance: float,
+    risk_free_rate: float = 0.0,
+    exit_time_col: str = "exit_time",
+    pnl_col: str = "pnl"
+) -> float:
     """
-    각 트레이드마다 발생한 이익을 기반으로 '단순 Sharpe' 지수를 추정.
-    - 실제론 일/주별로 Equity Curve를 만들어서 변동성 분석하는 게 더 정확함.
+    단순 Sharpe 지수를 계산합니다.
+    
+    매개변수:
+      - trades_df: 거래 내역 DataFrame (종료 시간 컬럼을 포함)
+      - initial_balance: 초기 잔고
+      - risk_free_rate: 무위험 이자율 (기본: 0.0)
+      - exit_time_col: 거래 종료 시간 컬럼 이름 (기본: "exit_time")
+      - pnl_col: 손익(PnL) 컬럼 이름 (기본: "pnl")
     """
     if trades_df.empty:
         return 0.0
@@ -1584,45 +1813,54 @@ def calculate_sharpe_ratio(trades_df: pd.DataFrame, initial_balance: float, risk
     if len(trades_df) < 2:
         return 0.0
 
-    trades_df = trades_df.sort_values(by='exit_time')
+    trades_df = trades_df.sort_values(by=exit_time_col)
     current_balance = initial_balance
     returns_list = []
 
     for _, row in trades_df.iterrows():
-        pnl = row['pnl']
+        pnl = row[pnl_col]
         ret = pnl / current_balance
         returns_list.append(ret)
         current_balance += pnl
 
     returns_arr = np.array(returns_list)
-
     if len(returns_arr) < 2:
         return 0.0
 
     mean_return = returns_arr.mean()
-    std_return  = returns_arr.std(ddof=1)
-
+    std_return = returns_arr.std(ddof=1)
     if std_return == 0:
         return 0.0
 
     sharpe = (mean_return - risk_free_rate) / std_return
     return sharpe
 
-def print_performance_report(trades_df: pd.DataFrame, initial_balance: float) -> None:
-    """
-    월별 성과, 연도별 성과, 전체 성과(ROI, MDD, 총손익, 승률 등)를 콘솔에 출력.
-    """
 
+def print_performance_report(
+    trades_df: pd.DataFrame,
+    initial_balance: float,
+    exit_time_col: str = "exit_time",
+    pnl_col: str = "pnl"
+) -> None:
+    """
+    월별, 연도별, 전체 성과(ROI, MDD, 총손익, 승률 등)를 콘솔에 출력합니다.
+    
+    매개변수:
+      - trades_df: 거래 내역 DataFrame
+      - initial_balance: 초기 잔고
+      - exit_time_col: 거래 종료 시간 컬럼 이름 (기본: "exit_time")
+      - pnl_col: 손익(PnL) 컬럼 이름 (기본: "pnl")
+    """
     if trades_df.empty:
         print("No trades to report.")
         return
 
-    monthly_df = calculate_monthly_performance(trades_df)
-    yearly_df = calculate_yearly_performance(trades_df)
-    total_pnl = trades_df['pnl'].sum()
+    monthly_df = calculate_monthly_performance(trades_df, exit_time_col, pnl_col)
+    yearly_df = calculate_yearly_performance(trades_df, exit_time_col, pnl_col)
+    total_pnl = trades_df[pnl_col].sum()
     final_balance = initial_balance + total_pnl
-    mdd = calculate_mdd(trades_df, initial_balance=initial_balance)
-    sharpe = calculate_sharpe_ratio(trades_df, initial_balance=initial_balance)
+    mdd = calculate_mdd(trades_df, initial_balance=initial_balance, exit_time_col=exit_time_col, pnl_col=pnl_col)
+    sharpe = calculate_sharpe_ratio(trades_df, initial_balance=initial_balance, exit_time_col=exit_time_col, pnl_col=pnl_col)
 
     print("=== (A) 월별 성과 ===")
     print(monthly_df)
@@ -1639,162 +1877,125 @@ def print_performance_report(trades_df: pd.DataFrame, initial_balance: float) ->
     print(f"  - 샤프 지수(단순) : {sharpe:.3f}")
 
     num_trades = len(trades_df)
-    wins = (trades_df['pnl'] > 0).sum()
+    wins = (trades_df[pnl_col] > 0).sum()
     win_rate = (wins / num_trades * 100.0) if num_trades > 0 else 0.0
     print(f"  - 총 매매 횟수    : {num_trades}")
     print(f"  - 승률(%)         : {win_rate:.2f}%")
-
 
 ---
 
 # backtest_validation.py
 
+import os
+import json
+import pandas as pd
 from backtesting.backtest_advanced import run_advanced_backtest
 
-
 def main():
-    # 백테스트 파라미터 예시 (필요시 수정)
+    # 백테스트 기본 설정
     symbol = "BTC/USDT"
     short_tf = "4h"
     long_tf = "1d"
-
-    # 실제로 DB에 해당 구간 데이터가 있어야 매매가 발생할 수 있습니다.
     start_date = "2018-01-01"
-    end_date   = "2025-01-21"
-
-    # 백테스트 실행
-    trades_df = run_advanced_backtest(
+    end_date   = "2025-02-01"
+    
+    # best_params.json 파일 읽기
+    best_params_path = os.path.join(os.path.dirname(__file__), "best_params.json")
+    with open(best_params_path, "r", encoding="utf-8") as f:
+        best_params = json.load(f)
+    
+    # best_params.json 에 없는 파라미터는 기본값으로 설정합니다.
+    # 예를 들어, 추세 종료(Trend Exit) 관련 파라미터가 없으면 기본값 30 사용
+    default_trend_exit_lookback = 30
+    
+    # 백테스트 실행 시 최적 파라미터들을 적용합니다.
+    result = run_advanced_backtest(
         symbol=symbol,
         short_timeframe=short_tf,
         long_timeframe=long_tf,
-        window=20,               # 돌파 확인 시 사용되는 window
-        volume_factor=1.5,
-        confirm_bars=2,
-        breakout_buffer=0.0,
-        atr_window=14,
-        atr_multiplier=2.0,
-        profit_ratio=0.05,
-        account_size=10_000.0,
-        risk_per_trade=0.01,
+        window=best_params["lookback_window"],
+        volume_factor=best_params["volume_factor"],
+        confirm_bars=best_params["confirmation_bars"],
+        breakout_buffer=best_params["breakout_buffer"],
+        atr_window=best_params["atr_period"],
+        atr_multiplier=best_params["atr_multiplier"],
+        profit_ratio=best_params["profit_ratio"],
+        account_size=10000.0,
+        risk_per_trade=best_params["risk_per_trade"],
         fee_rate=0.001,
         slippage_rate=0.0005,
         taker_fee_rate=0.001,
-        total_splits=3,
-        threshold_percent=0.02,
-        use_trailing_stop=False,
-        trailing_percent=0.05,
-        use_trend_exit=False,
+        total_splits=best_params["total_splits"],
+        allocation_mode=best_params["allocation_mode"],
+        threshold_percent=best_params["scale_in_threshold"],
+        use_trailing_stop=best_params["use_trailing_stop"],
+        trailing_percent=best_params["trailing_percent"],
+        use_trend_exit=best_params["use_trend_exit"],
+        trend_exit_lookback=default_trend_exit_lookback,
+        trend_exit_price_column="close",
         start_date=start_date,
         end_date=end_date,
-        use_partial_take_profit=False,    # 부분 익절 사용 여부
-        partial_tp_factor=0.03,
-        final_tp_factor=0.06
+        use_partial_take_profit=best_params["use_partial_take_profit"],
+        partial_tp_factor=best_params["partial_tp_factor"],
+        final_tp_factor=best_params["final_tp_factor"],
+        # 장기 추세 필터 관련 파라미터
+        sma_period=best_params["sma_period"],
+        macd_slow_period=best_params["macd_slow_period"],
+        macd_fast_period=best_params["macd_fast_period"],
+        macd_signal_period=best_params["macd_signal_period"],
+        rsi_period=best_params["rsi_period"],
+        rsi_threshold=best_params["rsi_threshold"],
+        bb_period=best_params["bb_period"],
+        bb_std_multiplier=best_params["bb_std_multiplier"],
+        # 리테스트 관련 파라미터
+        retest_threshold=best_params["retest_threshold"],
+        retest_confirmation_bars=best_params["retest_confirmation_bars"],
+        # 신호 옵션 (돌파, 리테스트, 단기 보조지표)
+        use_breakout_signal=best_params["use_breakout_signal"],
+        use_retest_signal=best_params["use_retest_signal"],
+        use_short_term_indicators=best_params["use_short_term_indicators"],
+        short_rsi_threshold=best_params["short_rsi_threshold"],
+        short_rsi_period=best_params["short_rsi_period"],
+        # 신호 컬럼명 (기본값 사용)
+        breakout_flag_col="breakout_signal",
+        confirmed_breakout_flag_col="confirmed_breakout",
+        retest_signal_col="retest_signal",
+        long_entry_col="long_entry"
     )
-
-    # 결과 처리
-    if trades_df is not None and not trades_df.empty:
-        # 결과 DataFrame을 CSV로 저장
+    
+    if result is not None:
+        trades_df, trade_logs = result
+        
+        # 거래 요약 결과를 CSV 파일로 저장합니다.
         trades_df.to_csv("backtest_validation.csv", index=False)
+        print("백테스트 결과가 'backtest_validation.csv'로 저장되었습니다.")
+        
+        # 거래 체결 상세 정보를 CSV 파일로 저장합니다.
+        if trade_logs:
+            trade_logs_df = pd.DataFrame(trade_logs)
+            trade_logs_df.to_csv("trade_details.csv", index=False)
+            print("거래 체결 상세 정보가 'trade_details.csv'로 저장되었습니다.")
+        else:
+            print("거래 체결 상세 정보가 없습니다.")
     else:
         print("매매가 발생하지 않았거나 백테스트 결과가 없습니다.")
 
-
 if __name__ == "__main__":
     main()
 
 ---
 
-# param_sweep_test.py
-
-from backtesting.param_sweep import run_param_sweep_advanced
-
-def main():
-    # (1) 파라미터 스윕 실행
-    result_df = run_param_sweep_advanced(
-        symbol="BTC/USDT",
-        short_timeframe="4h",
-        long_timeframe="1d",
-        account_size=10000.0,
-        window_list=[10, 20],
-        atr_multiplier_list=[1.5, 2.0],
-        profit_ratio_list=[0.03, 0.05],
-        use_partial_tp_list=[False, True],
-        partial_tp_factor=0.02,
-        final_tp_factor=0.05,
-        start_date="2018-01-01",
-        end_date="2025-01-25"
-    )
-
-    # (2) CSV 파일로 저장 (현재 폴더에 "param_sweep_result.csv" 생성)
-    result_df.to_csv("param_sweep_result.csv", index=False)
-
-if __name__ == "__main__":
-    main()
-
----
-
-# overfit_validation_test.py
-
-import os
-import pandas as pd
-from backtesting.overfit_validation import walk_forward_analysis
+# run_optimization.py
+import json
+from backtesting.parameter_optimization import optimize_parameters
 
 def main():
-    # 결과 저장 디렉토리 생성
-    output_dir = "walk_forward_results"
-    os.makedirs(output_dir, exist_ok=True)
-    
-    # 워크포워드 분석 실행
-    results = walk_forward_analysis(
-        symbol="BTC/USDT",
-        short_timeframe="4h",
-        long_timeframe="1d",
-        overall_start="2018-01-01 00:00:00",
-        overall_end="2025-01-25 23:59:59",
-        n_splits=3,          # 예: 3분할
-        account_size=10_000,
-        train_ratio=0.5      # 각 구간의 절반은 '훈련', 절반은 '테스트'
-    )
-
-    # 스플릿별 요약 정보를 저장하기 위한 리스트
-    summary_data = []
-
-    for split_res in results:
-        idx = split_res['split_index']
-        best_params = split_res['best_params'] if split_res['best_params'] else {}
-        train_start, train_end = split_res['train_start'], split_res['train_end']
-        test_start, test_end = split_res['test_start'], split_res['test_end']
-
-        # 훈련 결과 (DataFrame)
-        train_df = split_res['train_results']
-        # 테스트 트레이드 (DataFrame)
-        test_trades = split_res['test_trades']
-
-        # 1) 스플릿별 훈련 결과를 CSV로 저장
-        if train_df is not None and not train_df.empty:
-            train_df.to_csv(os.path.join(output_dir, f"train_result_split{idx}.csv"), index=False)
-
-        # 2) 스플릿별 테스트 트레이드를 CSV로 저장
-        if test_trades is not None and not test_trades.empty:
-            test_trades.to_csv(os.path.join(output_dir, f"test_trades_split{idx}.csv"), index=False)
-
-        # 3) 스플릿별 요약(최적 파라미터 등) 정보를 리스트에 담음
-        summary_data.append({
-            "split_index": idx,
-            "train_start": train_start,
-            "train_end": train_end,
-            "test_start": test_start,
-            "test_end": test_end,
-            "best_window": best_params.get("window", None),
-            "best_atr_multiplier": best_params.get("atr_multiplier", None),
-            "best_profit_ratio": best_params.get("profit_ratio", None),
-            "use_partial_tp": best_params.get("use_partial_tp", None)
-        })
-
-    # 4) 스플릿별 요약 정보 전체를 하나의 CSV로 저장
-    if summary_data:
-        summary_df = pd.DataFrame(summary_data)
-        summary_df.to_csv(os.path.join(output_dir, "walk_forward_summary.csv"), index=False)
+    study = optimize_parameters(n_trials=50)
+    best_trial = study.best_trial
+    print("===== 최적 파라미터 =====")
+    print(best_trial)
+    with open("best_params.json", "w") as f:
+        json.dump(best_trial.params, f, indent=4)
 
 if __name__ == "__main__":
     main()
