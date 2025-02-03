@@ -1,0 +1,415 @@
+[trading]
+# trading/indicators.py
+import pandas as pd
+from ta.trend import SMAIndicator, MACD
+from ta.momentum import RSIIndicator
+from ta.volatility import BollingerBands
+
+def compute_sma(
+    data: pd.DataFrame,
+    price_column: str = 'close',
+    period: int = 20,
+    fillna: bool = False,
+    output_col: str = 'sma'
+) -> pd.DataFrame:
+    sma = SMAIndicator(close=data[price_column], window=period, fillna=fillna)
+    data[output_col] = sma.sma_indicator()
+    return data
+
+def compute_macd(
+    data: pd.DataFrame,
+    price_column: str = 'close',
+    slow_period: int = 26,
+    fast_period: int = 12,
+    signal_period: int = 9,
+    fillna: bool = False,
+    prefix: str = 'macd_'
+) -> pd.DataFrame:
+    macd = MACD(close=data[price_column],
+                window_slow=slow_period,
+                window_fast=fast_period,
+                window_sign=signal_period,
+                fillna=fillna)
+    data[f'{prefix}macd'] = macd.macd()
+    data[f'{prefix}signal'] = macd.macd_signal()
+    data[f'{prefix}diff'] = macd.macd_diff()
+    return data
+
+def compute_rsi(
+    data: pd.DataFrame,
+    price_column: str = 'close',
+    period: int = 14,
+    fillna: bool = False,
+    output_col: str = 'rsi'
+) -> pd.DataFrame:
+    rsi = RSIIndicator(close=data[price_column], window=period, fillna=fillna)
+    data[output_col] = rsi.rsi()
+    return data
+
+def compute_bollinger_bands(
+    data: pd.DataFrame,
+    price_column: str = 'close',
+    period: int = 20,
+    std_multiplier: float = 2.0,
+    fillna: bool = False,
+    prefix: str = 'bb_'
+) -> pd.DataFrame:
+    bb = BollingerBands(close=data[price_column], window=period, window_dev=std_multiplier, fillna=fillna)
+    data[f'{prefix}mavg'] = bb.bollinger_mavg()
+    data[f'{prefix}hband'] = bb.bollinger_hband()
+    data[f'{prefix}lband'] = bb.bollinger_lband()
+    data[f'{prefix}pband'] = bb.bollinger_pband()
+    data[f'{prefix}wband'] = bb.bollinger_wband()
+    data[f'{prefix}hband_ind'] = bb.bollinger_hband_indicator()
+    data[f'{prefix}lband_ind'] = bb.bollinger_lband_indicator()
+    return data
+
+---
+
+# trading/positions.py
+import uuid
+import logging
+
+class TradePosition:
+    def __init__(self, side="LONG", initial_price: float = None, maximum_size: float = 0.0, total_splits: int = 1, allocation_plan: list = None):
+        self.position_id = str(uuid.uuid4())
+        self.side = side
+        self.executions = []
+        self.initial_price = initial_price
+        self.maximum_size = maximum_size
+        self.total_splits = total_splits
+        self.executed_splits = 0
+        self.allocation_plan = allocation_plan if allocation_plan is not None else []
+        self.highest_price = initial_price if initial_price is not None else 0.0
+
+    def add_execution(self, entry_price: float, size: float, stop_loss: float = None, take_profit: float = None, entry_time = None, exit_targets: list = None, trade_type: str = "unknown", min_order_size: float = 1e-8):
+        if size < min_order_size:
+            logging.info("Execution size below min_order_size; skipping execution.")
+            return
+        exit_targets_flagged = []
+        if exit_targets is not None:
+            for target_price, exit_ratio in exit_targets:
+                exit_targets_flagged.append({
+                    'price': target_price,
+                    'exit_ratio': exit_ratio,
+                    'hit': False
+                })
+        self.executions.append({
+            'entry_price': entry_price,
+            'size': size,
+            'stop_loss': stop_loss,
+            'take_profit': take_profit,
+            'entry_time': entry_time,
+            'exit_targets': exit_targets_flagged,
+            'trade_type': trade_type,
+            'highest_price_since_entry': entry_price
+        })
+        
+    def get_total_size(self) -> float:
+        return sum(exec_record['size'] for exec_record in self.executions)
+
+    def get_average_entry_price(self) -> float:
+        total_cost = sum(exec_record['entry_price'] * exec_record['size'] for exec_record in self.executions)
+        total_qty = self.get_total_size()
+        return (total_cost / total_qty) if total_qty > 0 else 0.0
+
+    def remove_execution(self, index: int):
+        if 0 <= index < len(self.executions):
+            self.executions.pop(index)
+
+    def is_empty(self) -> bool:
+        return len(self.executions) == 0
+
+    def partial_close_execution(self, index: int, close_ratio: float, min_order_size: float = 1e-8) -> float:
+        if 0 <= index < len(self.executions):
+            exec_record = self.executions[index]
+            qty_to_close = exec_record['size'] * close_ratio
+            exec_record['size'] -= qty_to_close
+            if 'exit_targets' in exec_record and exec_record['exit_targets']:
+                exec_record['exit_targets'] = [t for t in exec_record['exit_targets'] if not t.get('hit', False)]
+            if exec_record['size'] < min_order_size:
+                exec_record['closed'] = True
+            return qty_to_close
+        return 0.0
+
+---
+
+# trading/risk.py
+import math
+
+def compute_position_size(
+    account_balance: float,
+    risk_percentage: float,
+    entry_price: float,
+    stop_loss: float,
+    fee_rate: float = 0.001,
+    min_order_size: float = 1e-8
+) -> float:
+    price_diff = abs(entry_price - stop_loss)
+    max_risk = account_balance * risk_percentage
+    fee_amount = entry_price * fee_rate
+    loss_per_unit = price_diff + fee_amount
+    computed_size = max_risk / loss_per_unit if loss_per_unit > 0 else 0.0
+    return computed_size if computed_size >= min_order_size else 0.0
+
+def allocate_position_splits(
+    total_size: float,
+    splits_count: int = 3,
+    allocation_mode: str = 'equal',
+    min_order_size: float = 1e-8
+) -> list:
+    if splits_count < 1:
+        raise ValueError("splits_count는 1 이상이어야 합니다.")
+    if allocation_mode not in ['equal', 'pyramid_up', 'pyramid_down']:
+        raise ValueError("allocation_mode는 'equal', 'pyramid_up', 'pyramid_down' 중 하나여야 합니다.")
+    if total_size < min_order_size:
+        return [1.0]
+    if allocation_mode == 'equal':
+        split_amount = 1.0 / splits_count
+        return [split_amount] * splits_count
+    elif allocation_mode == 'pyramid_up':
+        ratio_sum = splits_count * (splits_count + 1) / 2
+        return [(i / ratio_sum) for i in range(1, splits_count + 1)]
+    elif allocation_mode == 'pyramid_down':
+        ratio_sum = splits_count * (splits_count + 1) / 2
+        return [(i / ratio_sum) for i in range(splits_count, 0, -1)]
+
+def attempt_scale_in_position(
+    position,
+    current_price: float,
+    scale_in_threshold: float = 0.02,
+    slippage_rate: float = 0.0,
+    stop_loss: float = None,
+    take_profit: float = None,
+    entry_time = None,
+    trade_type: str = "scale_in",
+    base_multiplier: float = 1.0
+):
+    if position is None or position.is_empty():
+        return
+    while position.executed_splits < position.total_splits:
+        next_split = position.executed_splits
+        target_price = position.initial_price * (base_multiplier + scale_in_threshold * next_split)
+        if current_price < target_price:
+            break
+        if next_split < len(position.allocation_plan):
+            portion = position.allocation_plan[next_split]
+        else:
+            break
+        chunk_size = position.maximum_size * portion
+        executed_price = current_price * (1.0 + slippage_rate)
+        position.add_execution(
+            entry_price=executed_price,
+            size=chunk_size,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            entry_time=entry_time,
+            trade_type=trade_type
+        )
+        position.executed_splits += 1
+
+---
+
+# trading/signals.py
+import pandas as pd
+from trading.indicators import compute_sma, compute_macd, compute_rsi, compute_bollinger_bands
+
+def generate_breakout_signals(
+    data: pd.DataFrame,
+    lookback_window: int = 20,
+    volume_factor: float = 1.5,
+    confirmation_bars: int = 2,
+    use_high_price: bool = False,
+    breakout_buffer: float = 0.0,
+    high_max_prefix: str = "highest_",
+    breakout_flag_col: str = "breakout_signal",
+    vol_ma_prefix: str = "vol_ma_",
+    confirmed_breakout_flag_col: str = "confirmed_breakout",
+    high_col: str = "high",
+    close_col: str = "close",
+    volume_col: str = "volume",
+    volume_condition_col: str = "volume_condition"
+) -> pd.DataFrame:
+    data[f'{high_max_prefix}{lookback_window}'] = data[high_col].shift(1).rolling(lookback_window).max()
+    price_source = data[high_col] if use_high_price else data[close_col]
+    data[breakout_flag_col] = price_source > (data[f'{high_max_prefix}{lookback_window}'] * (1 + breakout_buffer))
+    data[f'{vol_ma_prefix}{lookback_window}'] = data[volume_col].shift(1).rolling(lookback_window).mean()
+    data[volume_condition_col] = data[volume_col] > (volume_factor * data[f'{vol_ma_prefix}{lookback_window}'])
+    data[breakout_flag_col] = data[breakout_flag_col] & data[volume_condition_col]
+    data[confirmed_breakout_flag_col] = (data[breakout_flag_col].rolling(confirmation_bars).sum() == confirmation_bars).fillna(False)
+    return data
+
+def generate_retest_signals(
+    data: pd.DataFrame,
+    retest_threshold: float = 0.005,
+    confirmation_bars: int = 2,
+    breakout_reference_col: str = "highest_20",
+    breakout_signal_col: str = "breakout_signal",
+    retest_signal_col: str = "retest_signal",
+    low_col: str = "low",
+    close_col: str = "close"
+) -> pd.DataFrame:
+    data[retest_signal_col] = False
+    breakout_indices = data.index[data[breakout_signal_col] == True]
+    for br_idx in breakout_indices:
+        breakout_level = data.loc[br_idx, breakout_reference_col]
+        try:
+            pos = data.index.get_loc(br_idx)
+        except Exception:
+            continue
+        for offset in range(1, confirmation_bars + 1):
+            if pos + offset >= len(data):
+                break
+            current_row = data.iloc[pos + offset]
+            if current_row[low_col] <= breakout_level and current_row[low_col] >= breakout_level * (1 - retest_threshold):
+                if pos + offset + 1 < len(data):
+                    next_row = data.iloc[pos + offset + 1]
+                    if next_row[close_col] > breakout_level:
+                        retest_idx = next_row.name
+                        data.at[retest_idx, retest_signal_col] = True
+                        break
+                else:
+                    break
+    return data
+
+def filter_long_trend_relaxed(
+    data: pd.DataFrame,
+    price_column: str = 'close',
+    sma_period: int = 200,
+    macd_slow_period: int = 26,
+    macd_fast_period: int = 12,
+    macd_signal_period: int = 9,
+    rsi_period: int = 14,
+    rsi_threshold: float = 75.0,
+    bb_period: int = 20,
+    bb_std_multiplier: float = 2.0,
+    fillna: bool = False,
+    macd_diff_column: str = 'macd_diff',
+    rsi_column: str = 'rsi',
+    bb_upper_band_column: str = 'bb_hband',
+    use_sma: bool = True,
+    use_macd: bool = True,
+    use_rsi: bool = True,
+    use_bb: bool = True,
+    macd_diff_threshold: float = -0.5
+) -> pd.DataFrame:
+    if use_sma:
+        sma_col = f"sma{sma_period}"
+        data = compute_sma(data, price_column=price_column, period=sma_period, fillna=fillna, output_col=sma_col)
+        sma_condition = data[price_column] >= data[sma_col]
+    else:
+        sma_condition = pd.Series(True, index=data.index)
+    if use_macd:
+        data = compute_macd(data, price_column=price_column, slow_period=macd_slow_period, fast_period=macd_fast_period, signal_period=macd_signal_period, fillna=fillna, prefix='macd_')
+        macd_condition = data[macd_diff_column] > macd_diff_threshold
+    else:
+        macd_condition = pd.Series(False, index=data.index)
+    if use_rsi:
+        data = compute_rsi(data, price_column=price_column, period=rsi_period, fillna=fillna, output_col=rsi_column)
+        rsi_condition = data[rsi_column] < rsi_threshold
+    else:
+        rsi_condition = pd.Series(False, index=data.index)
+    if use_bb:
+        data = compute_bollinger_bands(data, price_column=price_column, period=bb_period, std_multiplier=bb_std_multiplier, fillna=fillna, prefix='bb_')
+        bb_condition = data[bb_upper_band_column] > data[price_column]
+    else:
+        bb_condition = pd.Series(False, index=data.index)
+    optional_pass = macd_condition | rsi_condition | bb_condition
+    data['long_filter_pass'] = sma_condition & optional_pass
+    return data
+
+---
+
+# trading/trade_management.py
+import pandas as pd
+import numpy as np
+import ta
+
+def calculate_atr_stop_loss(
+    data: pd.DataFrame,
+    atr_period: int = 14,
+    atr_multiplier: float = 2.0,
+    dynamic_sl_adjustment: float = 1.0,
+    stop_loss_col: str = 'stop_loss_price',
+    entry_price_col: str = 'entry_price',
+    atr_col: str = 'atr',
+    high_col: str = 'high',
+    low_col: str = 'low',
+    close_col: str = 'close',
+    entry_signal_col: str = 'long_entry'
+) -> pd.DataFrame:
+    if len(data) < atr_period:
+        data[atr_col] = data[high_col] - data[low_col]
+    else:
+        try:
+            atr_indicator = ta.volatility.AverageTrueRange(
+                high=data[high_col],
+                low=data[low_col],
+                close=data[close_col],
+                window=atr_period,
+                fillna=True
+            )
+            data[atr_col] = atr_indicator.average_true_range()
+        except Exception as e:
+            data[atr_col] = data[high_col] - data[low_col]
+    data['close_ma'] = data[close_col].rolling(window=atr_period, min_periods=1).mean()
+    data['close_std'] = data[close_col].rolling(window=atr_period, min_periods=1).std()
+    data['std_ratio'] = data['close_std'] / data['close_ma']
+    data['dynamic_multiplier'] = atr_multiplier * (1 + data['std_ratio'])
+    data[entry_price_col] = np.where(data.get(entry_signal_col, False), data[close_col], np.nan)
+    data[entry_price_col] = data[entry_price_col].ffill()
+    data[stop_loss_col] = data[entry_price_col] - (data[atr_col] * data['dynamic_multiplier'] * dynamic_sl_adjustment)
+    data.drop(columns=['close_ma', 'close_std', 'std_ratio', 'dynamic_multiplier'], inplace=True)
+    return data
+
+def adjust_trailing_stop(
+    current_stop: float,
+    current_price: float,
+    highest_price: float,
+    trailing_percentage: float
+) -> float:
+    new_stop = highest_price * (1.0 - trailing_percentage)
+    return new_stop if new_stop > current_stop and new_stop < current_price else current_stop
+
+def set_fixed_take_profit(
+    data: pd.DataFrame,
+    profit_ratio: float = 0.05,
+    take_profit_col: str = 'take_profit_price',
+    entry_price_col: str = 'entry_price'
+) -> pd.DataFrame:
+    data[take_profit_col] = data[entry_price_col] * (1 + profit_ratio)
+    return data
+
+def should_exit_trend(
+    data: pd.DataFrame,
+    current_time,
+    window_length: int = 20,
+    price_column: str = 'close'
+) -> bool:
+    if current_time not in data.index:
+        data_sub = data.loc[:current_time]
+        if len(data_sub) < window_length:
+            return False
+        window_data = data_sub.iloc[-window_length:]
+    else:
+        idx = data.index.get_loc(current_time)
+        if idx < window_length:
+            return False
+        window_data = data.iloc[idx - window_length + 1: idx + 1]
+    recent_min = window_data[price_column].min()
+    current_price = data.loc[current_time, price_column] if current_time in data.index else data.iloc[-1][price_column]
+    return current_price < recent_min
+
+def calculate_partial_exit_targets(
+    entry_price: float,
+    partial_exit_ratio: float = 0.5,
+    partial_profit_ratio: float = 0.03,
+    final_profit_ratio: float = 0.06,
+    final_exit_ratio: float = 1.0
+):
+    partial_target = entry_price * (1.0 + partial_profit_ratio)
+    final_target = entry_price * (1.0 + final_profit_ratio)
+    return [
+        (partial_target, partial_exit_ratio),
+        (final_target, final_exit_ratio)
+    ]

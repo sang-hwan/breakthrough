@@ -1,8 +1,6 @@
 # 디렉토리
 venv/
 __pycache__/
-walk_forward_results/
-cache/
 
 # 파일
 __init__.py

@@ -11,11 +11,7 @@ def compute_sma(
     fillna: bool = False,
     output_col: str = 'sma'
 ) -> pd.DataFrame:
-    sma = SMAIndicator(
-        close=data[price_column],
-        window=period,
-        fillna=fillna
-    )
+    sma = SMAIndicator(close=data[price_column], window=period, fillna=fillna)
     data[output_col] = sma.sma_indicator()
     return data
 
@@ -28,13 +24,11 @@ def compute_macd(
     fillna: bool = False,
     prefix: str = 'macd_'
 ) -> pd.DataFrame:
-    macd = MACD(
-        close=data[price_column],
-        window_slow=slow_period,
-        window_fast=fast_period,
-        window_sign=signal_period,
-        fillna=fillna
-    )
+    macd = MACD(close=data[price_column],
+                window_slow=slow_period,
+                window_fast=fast_period,
+                window_sign=signal_period,
+                fillna=fillna)
     data[f'{prefix}macd'] = macd.macd()
     data[f'{prefix}signal'] = macd.macd_signal()
     data[f'{prefix}diff'] = macd.macd_diff()
@@ -47,11 +41,7 @@ def compute_rsi(
     fillna: bool = False,
     output_col: str = 'rsi'
 ) -> pd.DataFrame:
-    rsi = RSIIndicator(
-        close=data[price_column],
-        window=period,
-        fillna=fillna
-    )
+    rsi = RSIIndicator(close=data[price_column], window=period, fillna=fillna)
     data[output_col] = rsi.rsi()
     return data
 
@@ -63,12 +53,7 @@ def compute_bollinger_bands(
     fillna: bool = False,
     prefix: str = 'bb_'
 ) -> pd.DataFrame:
-    bb = BollingerBands(
-        close=data[price_column],
-        window=period,
-        window_dev=std_multiplier,
-        fillna=fillna
-    )
+    bb = BollingerBands(close=data[price_column], window=period, window_dev=std_multiplier, fillna=fillna)
     data[f'{prefix}mavg'] = bb.bollinger_mavg()
     data[f'{prefix}hband'] = bb.bollinger_hband()
     data[f'{prefix}lband'] = bb.bollinger_lband()

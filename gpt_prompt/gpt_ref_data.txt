@@ -1,0 +1,170 @@
+[data]
+# config/db_config.py
+DATABASE = {
+    'user': 'postgres',
+    'password': '1234',
+    'host': 'localhost',
+    'port': 5432,
+    'dbname': 'my_trading_db'
+}
+
+---
+
+# data_collection/db_manager.py
+from sqlalchemy import create_engine, text
+import psycopg2
+from psycopg2.extras import execute_values
+import pandas as pd
+from config.db_config import DATABASE
+
+def insert_on_conflict(table, conn, keys, data_iter):
+    values = list(data_iter)
+    placeholders = "(" + ", ".join(["%s"] * len(keys)) + ")"
+    columns = ", ".join(keys)
+    sql = f"INSERT INTO {table.name} ({columns}) VALUES %s ON CONFLICT (timestamp) DO NOTHING"
+    execute_values(conn, sql, values)
+
+def insert_ohlcv_records(df: pd.DataFrame, table_name: str = 'ohlcv_data', conflict_action: str = "DO NOTHING", db_config: dict = None) -> None:
+    if db_config is None:
+        db_config = DATABASE
+    engine = create_engine(
+        f"postgresql://{db_config['user']}:{db_config['password']}@"
+        f"{db_config['host']}:{db_config['port']}/{db_config['dbname']}"
+    )
+    with engine.begin() as conn:
+        conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {table_name} (
+                timestamp TIMESTAMP NOT NULL,
+                open DOUBLE PRECISION,
+                high DOUBLE PRECISION,
+                low DOUBLE PRECISION,
+                close DOUBLE PRECISION,
+                volume DOUBLE PRECISION,
+                PRIMARY KEY (timestamp)
+            );
+            """
+        )
+    df = df.copy()
+    df.reset_index(inplace=True)
+    df.to_sql(
+        table_name,
+        engine,
+        if_exists='append',
+        index=False,
+        method=insert_on_conflict
+    )
+
+def fetch_ohlcv_records(table_name: str = 'ohlcv_data', limit: int = None, start_date: str = None, end_date: str = None, db_config: dict = None) -> pd.DataFrame:
+    if db_config is None:
+        db_config = DATABASE
+    engine = create_engine(
+        f"postgresql://{db_config['user']}:{db_config['password']}@"
+        f"{db_config['host']}:{db_config['port']}/{db_config['dbname']}"
+    )
+    query = f"SELECT * FROM {table_name} WHERE 1=1"
+    params = {}
+    if start_date:
+        query += " AND timestamp >= :start_date"
+        params['start_date'] = start_date
+    if end_date:
+        query += " AND timestamp <= :end_date"
+        params['end_date'] = end_date
+    query += " ORDER BY timestamp"
+    query = text(query)
+    df = pd.read_sql(query, engine, params=params, parse_dates=['timestamp'])
+    df.set_index('timestamp', inplace=True)
+    return df
+
+---
+
+# data_collection/ohlcv_fetcher.py
+import pandas as pd
+import numpy as np
+from datetime import datetime, timedelta
+
+def fetch_historical_ohlcv_data(symbol: str, timeframe: str, start_date: str, limit_per_request: int = 1000, pause_sec: float = 1.0, exchange_id: str = 'binance', time_offset_ms: int = 1) -> pd.DataFrame:
+    """
+    예시: 지정한 시작일부터 현재까지의 OHLCV 데이터를 생성합니다.
+    실제 구현에서는 거래소 API를 호출해야 합니다.
+    """
+    start = pd.to_datetime(start_date)
+    end = datetime.now()
+    date_range = pd.date_range(start, end, freq=timeframe)
+    data = {
+        "open": np.random.random(len(date_range)) * 100,
+        "high": np.random.random(len(date_range)) * 100,
+        "low": np.random.random(len(date_range)) * 100,
+        "close": np.random.random(len(date_range)) * 100,
+        "volume": np.random.random(len(date_range)) * 10
+    }
+    df = pd.DataFrame(data, index=date_range)
+    df.index.name = "timestamp"
+    return df
+
+def fetch_latest_ohlcv_data(symbol: str, timeframe: str, limit: int = 500, exchange_id: str = 'binance') -> pd.DataFrame:
+    """
+    예시: 최신 OHLCV 데이터를 생성합니다.
+    실제 구현에서는 거래소 API를 호출해야 합니다.
+    """
+    end = datetime.now()
+    freq = timeframe  # 간단하게 동일하게 사용 (예: "1h", "4h" 등)
+    date_range = pd.date_range(end - pd.Timedelta(hours=limit), end, freq=freq)
+    data = {
+        "open": np.random.random(len(date_range)) * 100,
+        "high": np.random.random(len(date_range)) * 100,
+        "low": np.random.random(len(date_range)) * 100,
+        "close": np.random.random(len(date_range)) * 100,
+        "volume": np.random.random(len(date_range)) * 10
+    }
+    df = pd.DataFrame(data, index=date_range)
+    df.index.name = "timestamp"
+    return df
+
+---
+
+# data_collection/ohlcv_pipeline.py
+import time
+from typing import List, Optional
+from data_collection.ohlcv_fetcher import fetch_historical_ohlcv_data, fetch_latest_ohlcv_data
+from data_collection.db_manager import insert_ohlcv_records
+
+def collect_and_store_ohlcv_data(
+    symbols: List[str],
+    timeframes: List[str],
+    use_historical: bool = True,
+    start_date: Optional[str] = '2018-01-01 00:00:00',
+    limit_per_request: int = 1000,
+    latest_limit: int = 500,
+    pause_sec: float = 1.0,
+    table_name_format: str = "ohlcv_{symbol}_{timeframe}",
+    exchange_id: str = 'binance',
+    time_offset_ms: int = 1
+) -> None:
+    for symbol in symbols:
+        for tf in timeframes:
+            print(f"\n[*] Fetching {symbol} - {tf} data...")
+            if use_historical:
+                if not start_date:
+                    raise ValueError("start_date는 과거 데이터 수집 시 반드시 필요합니다.")
+                df = fetch_historical_ohlcv_data(
+                    symbol=symbol,
+                    timeframe=tf,
+                    start_date=start_date,
+                    limit_per_request=limit_per_request,
+                    pause_sec=pause_sec,
+                    exchange_id=exchange_id,
+                    time_offset_ms=time_offset_ms
+                )
+            else:
+                df = fetch_latest_ohlcv_data(
+                    symbol=symbol,
+                    timeframe=tf,
+                    limit=latest_limit,
+                    exchange_id=exchange_id
+                )
+            table_name = table_name_format.format(symbol=symbol.replace('/', '').lower(), timeframe=tf)
+            print(f"    -> Total Rows Fetched: {len(df)}")
+            insert_ohlcv_records(df, table_name=table_name)
+            print(f"    -> Saved to table: {table_name}")
+            time.sleep(pause_sec)

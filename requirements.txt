@@ -1,7 +1,0 @@
-ccxt
-pandas
-ta
-psycopg2
-sqlalchemy
-matplotlib
-optuna
