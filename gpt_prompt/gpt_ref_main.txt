@@ -15,7 +15,6 @@ def main():
     backtester = Backtester(symbol="BTC/USDT", account_size=10000)
     backtester.load_data("ohlcv_{symbol}_{timeframe}", "ohlcv_{symbol}_{timeframe}", "4h", "1d", "2018-01-01", "2021-01-01")
     
-    # 예시 시장 상황 데이터
     market_data = {"volatility": 0.07, "trend_strength": 0.5}
     dynamic_params = backtester.dynamic_param_manager.update_dynamic_params(market_data)
     dynamic_params.update(best_trial.params)
@@ -23,7 +22,7 @@ def main():
     trades, trade_logs = backtester.run_backtest(dynamic_params)
     print(f"총 거래 횟수: {len(trades)}")
     
-    # 결과를 CSV 파일로 저장
+    # 거래 결과가 있다면 DataFrame으로 변환 후 CSV 저장
     if trades:
         trades_df = pd.DataFrame(trades)
         trades_df.to_csv("backtest_trades.csv", index=False)
@@ -33,68 +32,12 @@ def main():
         logs_df.to_csv("trade_logs.csv", index=False)
         print("체결 기록이 trade_logs.csv에 저장되었습니다.")
     
-    # 콘솔에 성과 리포트 출력
-    print_performance_report(trades, initial_balance=10000)
+    # 성과 리포트를 출력할 때 DataFrame 형태로 전달
+    if trades:
+        trades_df = pd.DataFrame(trades)  # 또는 위에서 저장한 trades_df 사용
+        print_performance_report(trades_df, initial_balance=10000)
+    else:
+        print("No trades to report.")
 
 if __name__ == "__main__":
     main()
-
-[로그 및 결과]
-[로그]
-(venv) PS C:\Users\user\OneDrive\바탕 화면\PRV\REC\개인\breakthrough> python .\main.py
-[I 2025-02-03 17:40:11,529] A new study created in memory with name: no-name-c0977629-432e-4d2b-a4fa-1a7a43160705
-[I 2025-02-03 17:40:12,088] Trial 0 finished with value: 1000000.0 and parameters: {'lookback_window': 21, 'volume_factor': 1.8668191802150476, 'confirmation_bars': 3, 'breakout_buffer': 0.0008846743525920254}. Best is trial 0 with value: 1000000.0.
-[I 2025-02-03 17:40:12,620] Trial 1 finished with value: 1000000.0 and parameters: {'lookback_window': 24, 'volume_factor': 1.3853320795250754, 'confirmation_bars': 1, 'breakout_buffer': 0.0027468245665017333}. Best is trial 0 with value: 1000000.0.
-[I 2025-02-03 17:40:13,213] Trial 2 finished with value: 1000000.0 and parameters: {'lookback_window': 30, 'volume_factor': 1.8592270247332534, 'confirmation_bars': 3, 'breakout_buffer': 0.004528913068817186}. Best is trial 0 with value: 1000000.0.
-[I 2025-02-03 17:40:13,710] Trial 3 finished with value: 1000000.0 and parameters: {'lookback_window': 15, 'volume_factor': 1.8871264764365305, 'confirmation_bars': 2, 'breakout_buffer': 0.004263110624343253}. Best is trial 0 with value: 1000000.0.
-[I 2025-02-03 17:40:14,274] Trial 4 finished with value: 1000000.0 and parameters: {'lookback_window': 12, 'volume_factor': 1.321950854322423, 'confirmation_bars': 3, 'breakout_buffer': 0.004183175413746965}. Best is trial 0 with value: 1000000.0.
-[I 2025-02-03 17:40:14,746] Trial 5 finished with value: 1000000.0 and parameters: {'lookback_window': 21, 'volume_factor': 1.7661240862740797, 'confirmation_bars': 3, 'breakout_buffer': 0.003465531663936424}. Best is trial 0 with value: 1000000.0.
-[I 2025-02-03 17:40:15,280] Trial 6 finished with value: 1000000.0 and parameters: {'lookback_window': 22, 'volume_factor': 1.6842920830641257, 'confirmation_bars': 3, 'breakout_buffer': 0.0001819138231356554}. Best is trial 0 with value: 1000000.0.
-[I 2025-02-03 17:40:15,780] Trial 7 finished with value: 1000000.0 and parameters: {'lookback_window': 27, 'volume_factor': 1.3719091518772677, 'confirmation_bars': 2, 'breakout_buffer': 0.002096101506154986}. Best is trial 0 with value: 1000000.0.
-[I 2025-02-03 17:40:16,361] Trial 8 finished with value: 1000000.0 and parameters: {'lookback_window': 20, 'volume_factor': 1.2210087363613553, 'confirmation_bars': 3, 'breakout_buffer': 0.003154657375463423}. Best is trial 0 with value: 1000000.0.
-[I 2025-02-03 17:40:16,874] Trial 9 finished with value: 1000000.0 and parameters: {'lookback_window': 15, 'volume_factor': 1.5089178213363357, 'confirmation_bars': 3, 'breakout_buffer': 0.0009614694433972743}. Best is trial 0 with value: 1000000.0.
-[I 2025-02-03 17:40:17,493] Trial 10 finished with value: 1000000.0 and parameters: {'lookback_window': 17, 'volume_factor': 1.5844606317903778, 'confirmation_bars': 1, 'breakout_buffer': 0.0016810943513685247}. Best is trial 0 with value: 1000000.0.
-[I 2025-02-03 17:40:18,017] Trial 11 finished with value: 1000000.0 and parameters: {'lookback_window': 25, 'volume_factor': 1.470970402386279, 'confirmation_bars': 1, 'breakout_buffer': 0.00259710223986157}. Best is trial 0 with value: 1000000.0.
-[I 2025-02-03 17:40:18,557] Trial 12 finished with value: 1000000.0 and parameters: {'lookback_window': 24, 'volume_factor': 1.9533110611812556, 'confirmation_bars': 1, 'breakout_buffer': 0.0012450145495726695}. Best is trial 0 with value: 1000000.0.
-[I 2025-02-03 17:40:19,074] Trial 13 finished with value: 1000000.0 and parameters: {'lookback_window': 28, 'volume_factor': 1.6895003048714012, 'confirmation_bars': 2, 'breakout_buffer': 8.831898733606056e-05}. Best is trial 0 with value: 1000000.0.
-[I 2025-02-03 17:40:19,625] Trial 14 finished with value: 1000000.0 and parameters: {'lookback_window': 18, 'volume_factor': 1.4270703269931753, 'confirmation_bars': 1, 'breakout_buffer': 0.0026652312270364}. Best is trial 0 with value: 1000000.0.
-[I 2025-02-03 17:40:20,168] Trial 15 finished with value: 1000000.0 and parameters: {'lookback_window': 24, 'volume_factor': 1.2234747084009205, 'confirmation_bars': 2, 'breakout_buffer': 0.0009320115966603309}. Best is trial 0 with value: 1000000.0.
-[I 2025-02-03 17:40:20,741] Trial 16 finished with value: 1000000.0 and parameters: {'lookback_window': 22, 'volume_factor': 1.595006987751865, 'confirmation_bars': 2, 'breakout_buffer': 0.0033775419469794206}. Best is trial 0 with value: 1000000.0.
-[I 2025-02-03 17:40:21,266] Trial 17 finished with value: 1000000.0 and parameters: {'lookback_window': 18, 'volume_factor': 1.9902934867359487, 'confirmation_bars': 1, 'breakout_buffer': 0.0019615948713742693}. Best is trial 0 with value: 1000000.0.
-[I 2025-02-03 17:40:21,820] Trial 18 finished with value: 1000000.0 and parameters: {'lookback_window': 26, 'volume_factor': 1.7682989259973498, 'confirmation_bars': 2, 'breakout_buffer': 0.0015091980793834673}. Best is trial 0 with value: 1000000.0.
-[I 2025-02-03 17:40:22,353] Trial 19 finished with value: 1000000.0 and parameters: {'lookback_window': 10, 'volume_factor': 1.3214532608245926, 'confirmation_bars': 2, 'breakout_buffer': 0.0037575715521022935}. Best is trial 0 with value: 1000000.0.
-[I 2025-02-03 17:40:22,944] Trial 20 finished with value: 1000000.0 and parameters: {'lookback_window': 30, 'volume_factor': 1.6776783845084673, 'confirmation_bars': 1, 'breakout_buffer': 0.000579028481298616}. Best is trial 0 with value: 1000000.0.
-[I 2025-02-03 17:40:23,470] Trial 21 finished with value: 1000000.0 and parameters: {'lookback_window': 30, 'volume_factor': 1.8602678623754452, 'confirmation_bars': 3, 'breakout_buffer': 0.004987120230768399}. Best is trial 0 with value: 1000000.0.
-[I 2025-02-03 17:40:24,019] Trial 22 finished with value: 1000000.0 and parameters: {'lookback_window': 28, 'volume_factor': 1.774524955860886, 'confirmation_bars': 3, 'breakout_buffer': 0.004990747040638282}. Best is trial 0 with value: 1000000.0.
-[I 2025-02-03 17:40:24,518] Trial 23 finished with value: 1000000.0 and parameters: {'lookback_window': 23, 'volume_factor': 1.8800058477703534, 'confirmation_bars': 3, 'breakout_buffer': 0.0028999507719752174}. Best is trial 0 with value: 1000000.0.
-[I 2025-02-03 17:40:25,059] Trial 24 finished with value: 1000000.0 and parameters: {'lookback_window': 20, 'volume_factor': 1.8129675720288032, 'confirmation_bars': 3, 'breakout_buffer': 0.0021644405230450596}. Best is trial 0 with value: 1000000.0.
-[I 2025-02-03 17:40:25,570] Trial 25 finished with value: 1000000.0 and parameters: {'lookback_window': 26, 'volume_factor': 1.9355599662423673, 'confirmation_bars': 3, 'breakout_buffer': 0.004372430752813326}. Best is trial 0 with value: 1000000.0.
-[I 2025-02-03 17:40:26,110] Trial 26 finished with value: 1000000.0 and parameters: {'lookback_window': 30, 'volume_factor': 1.6399009210165805, 'confirmation_bars': 2, 'breakout_buffer': 0.0037322767084306974}. Best is trial 0 with value: 1000000.0.
-[I 2025-02-03 17:40:26,615] Trial 27 finished with value: 1000000.0 and parameters: {'lookback_window': 28, 'volume_factor': 1.535588186197502, 'confirmation_bars': 2, 'breakout_buffer': 0.004496517259104054}. Best is trial 0 with value: 1000000.0.
-[I 2025-02-03 17:40:27,151] Trial 28 finished with value: 1000000.0 and parameters: {'lookback_window': 19, 'volume_factor': 1.8372185876520137, 'confirmation_bars': 3, 'breakout_buffer': 0.002403031349030985}. Best is trial 0 with value: 1000000.0.
-[I 2025-02-03 17:40:27,641] Trial 29 finished with value: 1000000.0 and parameters: {'lookback_window': 23, 'volume_factor': 1.9249391396588782, 'confirmation_bars': 2, 'breakout_buffer': 0.0007156496029283813}. Best is trial 0 with value: 1000000.0.
-[I 2025-02-03 17:40:28,218] Trial 30 finished with value: 1000000.0 and parameters: {'lookback_window': 16, 'volume_factor': 1.7337853332752324, 'confirmation_bars': 1, 'breakout_buffer': 0.0038858143089562374}. Best is trial 0 with value: 1000000.0.
-[I 2025-02-03 17:40:28,757] Trial 31 finished with value: 1000000.0 and parameters: {'lookback_window': 14, 'volume_factor': 1.8988689844007929, 'confirmation_bars': 3, 'breakout_buffer': 0.0046529420700948156}. Best is trial 0 with value: 1000000.0.
-[I 2025-02-03 17:40:29,401] Trial 32 finished with value: 1000000.0 and parameters: {'lookback_window': 13, 'volume_factor': 1.8186937278001654, 'confirmation_bars': 3, 'breakout_buffer': 0.004063630512791019}. Best is trial 0 with value: 1000000.0.
-[I 2025-02-03 17:40:29,968] Trial 33 finished with value: 1000000.0 and parameters: {'lookback_window': 10, 'volume_factor': 1.991735232984054, 'confirmation_bars': 3, 'breakout_buffer': 0.004257096900178809}. Best is trial 0 with value: 1000000.0.
-[I 2025-02-03 17:40:30,558] Trial 34 finished with value: 1000000.0 and parameters: {'lookback_window': 21, 'volume_factor': 1.3123088939006347, 'confirmation_bars': 2, 'breakout_buffer': 0.0034929433372044424}. Best is trial 0 with value: 1000000.0.
-[I 2025-02-03 17:40:31,089] Trial 35 finished with value: 1000000.0 and parameters: {'lookback_window': 12, 'volume_factor': 1.7372989552917721, 'confirmation_bars': 2, 'breakout_buffer': 0.004643849389533074}. Best is trial 0 with value: 1000000.0.
-[I 2025-02-03 17:40:31,658] Trial 36 finished with value: 1000000.0 and parameters: {'lookback_window': 22, 'volume_factor': 1.885290188389983, 'confirmation_bars': 3, 'breakout_buffer': 0.0030236141733749654}. Best is trial 0 with value: 1000000.0.
-[I 2025-02-03 17:40:32,219] Trial 37 finished with value: 1000000.0 and parameters: {'lookback_window': 16, 'volume_factor': 1.2729077205657018, 'confirmation_bars': 1, 'breakout_buffer': 0.0033750798062254905}. Best is trial 0 with value: 1000000.0.
-[I 2025-02-03 17:40:32,812] Trial 38 finished with value: 1000000.0 and parameters: {'lookback_window': 20, 'volume_factor': 1.4363082953520883, 'confirmation_bars': 3, 'breakout_buffer': 0.00041445820912638107}. Best is trial 0 with value: 1000000.0.
-[I 2025-02-03 17:40:33,367] Trial 39 finished with value: 1000000.0 and parameters: {'lookback_window': 18, 'volume_factor': 1.5360265460415736, 'confirmation_bars': 2, 'breakout_buffer': 0.004053736418575854}. Best is trial 0 with value: 1000000.0.
-[I 2025-02-03 17:40:33,970] Trial 40 finished with value: 1000000.0 and parameters: {'lookback_window': 25, 'volume_factor': 1.7872954892092099, 'confirmation_bars': 1, 'breakout_buffer': 0.0017306837489159581}. Best is trial 0 with value: 1000000.0.
-[I 2025-02-03 17:40:34,571] Trial 41 finished with value: 1000000.0 and parameters: {'lookback_window': 11, 'volume_factor': 1.371279137366337, 'confirmation_bars': 3, 'breakout_buffer': 0.004196971900781854}. Best is trial 0 with value: 1000000.0.
-[I 2025-02-03 17:40:35,248] Trial 42 finished with value: 1000000.0 and parameters: {'lookback_window': 14, 'volume_factor': 1.3884035427059538, 'confirmation_bars': 3, 'breakout_buffer': 0.004710240718890872}. Best is trial 0 with value: 1000000.0.
-[I 2025-02-03 17:40:35,837] Trial 43 finished with value: 1000000.0 and parameters: {'lookback_window': 13, 'volume_factor': 1.2835727041944018, 'confirmation_bars': 3, 'breakout_buffer': 0.0012849454473906291}. Best is trial 0 with value: 1000000.0.
-[I 2025-02-03 17:40:36,538] Trial 44 finished with value: 1000000.0 and parameters: {'lookback_window': 15, 'volume_factor': 1.3485206718614204, 'confirmation_bars': 3, 'breakout_buffer': 0.002812304618418003}. Best is trial 0 with value: 1000000.0.
-[I 2025-02-03 17:40:37,138] Trial 45 finished with value: 1000000.0 and parameters: {'lookback_window': 21, 'volume_factor': 1.2104502469367335, 'confirmation_bars': 3, 'breakout_buffer': 0.0032531804676866833}. Best is trial 0 with value: 1000000.0.
-[I 2025-02-03 17:40:37,785] Trial 46 finished with value: 1000000.0 and parameters: {'lookback_window': 12, 'volume_factor': 1.4755621647956463, 'confirmation_bars': 2, 'breakout_buffer': 0.0037341943473212973}. Best is trial 0 with value: 1000000.0.
-[I 2025-02-03 17:40:38,424] Trial 47 finished with value: 1000000.0 and parameters: {'lookback_window': 19, 'volume_factor': 1.9512314034163292, 'confirmation_bars': 1, 'breakout_buffer': 0.0021954256797639257}. Best is trial 0 with value: 1000000.0.
-[I 2025-02-03 17:40:39,080] Trial 48 finished with value: 1000000.0 and parameters: {'lookback_window': 27, 'volume_factor': 1.2409107788738138, 'confirmation_bars': 3, 'breakout_buffer': 0.004442886797753342}. Best is trial 0 with value: 1000000.0.
-[I 2025-02-03 17:40:39,637] Trial 49 finished with value: 1000000.0 and parameters: {'lookback_window': 17, 'volume_factor': 1.8486615193385707, 'confirmation_bars': 1, 'breakout_buffer': 0.0035673526869821684}. Best is trial 0 with value: 1000000.0.
-최적 동적 파라미터: {'lookback_window': 21, 'volume_factor': 1.8668191802150476, 'confirmation_bars': 3, 'breakout_buffer': 0.0008846743525920254}
-총 거래 횟수: 0
-거래 내역이 없습니다.
-체결 기록이 없습니다.
-No trades to report.

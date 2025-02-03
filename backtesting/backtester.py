@@ -25,7 +25,7 @@ class Backtester:
         self.trades = []
         self.trade_logs = []
         self.logger = logging.getLogger(self.__class__.__name__)
-        # 동적 파라미터 관리를 위한 매니저 생성
+        # 동적 파라미터 관리 매니저
         self.dynamic_param_manager = DynamicParamManager()
 
     def load_data(self, short_table_format, long_table_format, short_tf, long_tf, start_date=None, end_date=None):
@@ -41,11 +41,10 @@ class Backtester:
         self.df_long.sort_index(inplace=True)
     
     def run_backtest(self, dynamic_params=None):
-        # 동적 파라미터 미전달 시 기본값 사용
         if dynamic_params is None:
             dynamic_params = self.dynamic_param_manager.get_default_params()
         
-        # 1. 신호 생성: 돌파, 리테스트, 장기 추세 필터 적용
+        # 1. 매매 신호 생성 (돌파 및 리테스트) 및 신호 충돌 방지
         self.df_short = generate_breakout_signals(
             data=self.df_short,
             lookback_window=dynamic_params['lookback_window'],
@@ -63,6 +62,9 @@ class Backtester:
             breakout_signal_col="breakout_signal",
             retest_signal_col="retest_signal"
         )
+        # 신호 충돌 해결: 리테스트 신호가 있으면 돌파 신호는 무시
+        self.df_short["final_entry_signal"] = self.df_short["confirmed_breakout"] & (~self.df_short["retest_signal"])
+        
         self.df_long = filter_long_trend_relaxed(
             data=self.df_long,
             sma_period=dynamic_params['sma_period'],
@@ -77,16 +79,16 @@ class Backtester:
         )
         self.df_long = self.df_long.reindex(self.df_short.index, method='ffill')
         
-        # 2. 신호 결합 (예: AND / OR 모드)
+        # 2. 신호 결합 – entry_signal_mode ("AND" 또는 "OR")에 따라 결합
         entry_signal_mode = dynamic_params.get("entry_signal_mode", "AND")
         if entry_signal_mode == "AND":
-            self.df_short['combined_entry'] = self.df_short["confirmed_breakout"] & self.df_long['long_filter_pass']
+            self.df_short['combined_entry'] = self.df_short["final_entry_signal"] & self.df_long['long_filter_pass']
         elif entry_signal_mode == "OR":
-            self.df_short['combined_entry'] = self.df_short["confirmed_breakout"] | self.df_long['long_filter_pass']
+            self.df_short['combined_entry'] = self.df_short["final_entry_signal"] | self.df_long['long_filter_pass']
         else:
-            self.df_short['combined_entry'] = self.df_short["confirmed_breakout"]
+            self.df_short['combined_entry'] = self.df_short["final_entry_signal"]
         
-        # 3. 리스크 관리: ATR 기반 손절 및 고정 익절 설정
+        # 3. 리스크 관리 – ATR 기반 손절과 고정 익절 (동적 조정 포함)
         self.df_short = calculate_atr_stop_loss(
             data=self.df_short,
             atr_period=dynamic_params['atr_period'],
@@ -103,18 +105,18 @@ class Backtester:
             entry_price_col="entry_price"
         )
         
-        # 4. 백테스트 메인 루프: 시간별 체결/청산 처리
+        # 4. 백테스트 메인 루프 – 시간별 체결/청산 처리 (우선순위: 손절 > 익절 > 추세청산 > 부분청산)
         for current_time, row in self.df_short.iterrows():
             self.process_time_step(current_time, row, dynamic_params)
         
-        # 5. 최종 미청산 포지션 강제 청산
+        # 5. 최종 미청산 포지션 강제 청산 (최종 슬리피지와 수수료 적용)
         final_time = self.df_short.index[-1]
         final_close = self.df_short.iloc[-1]["close"]
         adjusted_final_close = final_close * (1 - self.final_exit_slippage) if self.final_exit_slippage else final_close
         for pos in self.positions:
             for exec_record in pos.executions:
                 if not exec_record.get("closed", False):
-                    exit_price = adjusted_final_close
+                    exit_price = adjusted_final_close * (1 - self.slippage_rate)
                     fee = exit_price * exec_record["size"] * self.fee_rate
                     pnl = (exit_price - exec_record["entry_price"]) * exec_record["size"] - fee
                     exec_record["closed"] = True
@@ -141,23 +143,10 @@ class Backtester:
         computed_stop_loss = row["stop_loss_price"]
         computed_take_profit = row["take_profit_price"]
 
-        # 기존 포지션 청산 및 조정 처리
+        # 우선순위: 1) 손절, 2) 익절, 3) 추세 청산, 4) 부분 청산
         positions_to_remove = []
         for pos in self.positions:
             executions_to_close = []
-            if params.get("use_trailing_stop", False):
-                for execution in pos.executions:
-                    if not execution.get("closed", False):
-                        prev_high = execution.get("highest_price_since_entry", execution["entry_price"])
-                        if high_price > prev_high:
-                            execution["highest_price_since_entry"] = high_price
-                        new_sl = adjust_trailing_stop(
-                            current_stop=execution["stop_loss"],
-                            current_price=close_price,
-                            highest_price=execution["highest_price_since_entry"],
-                            trailing_percentage=params.get("trailing_percent", 0.0)
-                        )
-                        execution["stop_loss"] = new_sl
             for i, exec_record in enumerate(pos.executions):
                 if exec_record.get("closed", False):
                     continue
@@ -166,10 +155,23 @@ class Backtester:
                 exit_triggered = False
                 exit_price = None
                 exit_reason = None
+
+                # (1) 손절 조건 – 슬리피지 적용
                 if low_price <= computed_stop_loss:
                     exit_triggered = True
-                    exit_price = computed_stop_loss
+                    exit_price = computed_stop_loss * (1 - self.slippage_rate)
                     exit_reason = "stop_loss"
+                # (2) 익절 조건 – 유리한 슬리피지 모형
+                elif computed_take_profit and high_price >= computed_take_profit:
+                    exit_triggered = True
+                    exit_price = computed_take_profit * (1 + self.slippage_rate)
+                    exit_reason = "take_profit"
+                # (3) 추세 청산 조건
+                elif params.get("use_trend_exit", False) and should_exit_trend(self.df_long, current_time):
+                    exit_triggered = True
+                    exit_price = close_price * (1 - self.slippage_rate)
+                    exit_reason = "trend_exit"
+                # (4) 부분 청산 조건 (우선순위 최하)
                 elif params.get("use_partial_take_profit", False) and "exit_targets" in exec_record:
                     for target in exec_record["exit_targets"]:
                         if not target.get("hit", False) and high_price >= target["price"]:
@@ -195,14 +197,7 @@ class Backtester:
                             if exec_record["size"] < 1e-8:
                                 exec_record["closed"] = True
                             break
-                elif computed_take_profit and high_price >= computed_take_profit:
-                    exit_triggered = True
-                    exit_price = computed_take_profit
-                    exit_reason = "take_profit"
-                elif params.get("use_trend_exit", False) and should_exit_trend(self.df_long, current_time):
-                    exit_triggered = True
-                    exit_price = close_price
-                    exit_reason = "trend_exit"
+
                 if exit_triggered:
                     exec_record["closed"] = True
                     fee = exit_price * size * self.fee_rate
@@ -228,7 +223,7 @@ class Backtester:
         for pos in positions_to_remove:
             self.positions.remove(pos)
         
-        # 신규 진입 또는 스케일 인 (분할 매수)
+        # 신규 진입 또는 스케일인 – 만약 기존 포지션이 없으면 신규 포지션 생성, 있다면 scale‑in 시도
         if row.get("combined_entry", False):
             scaled_in = False
             for pos in self.positions:
@@ -274,8 +269,10 @@ class Backtester:
                     partial_exit_ratio=params.get("partial_tp_factor", 0.03),
                     final_profit_ratio=params.get("final_tp_factor", 0.06)
                 )
+                # 진입 시 슬리피지 적용
+                executed_price = close_price * (1 + self.slippage_rate)
                 new_position.add_execution(
-                    entry_price=close_price,
+                    entry_price=executed_price,
                     size=buy_size,
                     stop_loss=computed_stop_loss,
                     take_profit=computed_take_profit,

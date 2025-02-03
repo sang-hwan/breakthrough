@@ -1,7 +1,6 @@
 # dynamic_parameters/dynamic_param_manager.py
 class DynamicParamManager:
     def __init__(self):
-        # 기본 파라미터 (예: 기존 best_params.json 기반)
         self.default_params = {
             "lookback_window": 17,
             "volume_factor": 1.38,
@@ -39,11 +38,6 @@ class DynamicParamManager:
         return self.default_params.copy()
     
     def update_dynamic_params(self, market_data):
-        """
-        시장 데이터(예: 변동성, 추세 강도)에 따라 파라미터를 동적으로 조정.
-          - 변동성이 높으면 ATR multiplier를 높게,
-          - 추세가 약하면 RSI 임계값을 낮추도록 조정.
-        """
         dynamic_params = self.get_default_params()
         volatility = market_data.get("volatility", 0.0)
         trend_strength = market_data.get("trend_strength", 0.0)

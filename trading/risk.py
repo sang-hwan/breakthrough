@@ -47,13 +47,15 @@ def attempt_scale_in_position(
     take_profit: float = None,
     entry_time = None,
     trade_type: str = "scale_in",
-    base_multiplier: float = 1.0
+    base_multiplier: float = 1.0,
+    dynamic_volatility: float = 1.0  # 추가: 시장 변동성에 따른 동적 조정
 ):
     if position is None or position.is_empty():
         return
+    # 가격이 충분히 상승하고 동적 변동성 조건 만족 시 scale‑in 시도
     while position.executed_splits < position.total_splits:
         next_split = position.executed_splits
-        target_price = position.initial_price * (base_multiplier + scale_in_threshold * next_split)
+        target_price = position.initial_price * (1.0 + scale_in_threshold * (next_split + 1)) * dynamic_volatility
         if current_price < target_price:
             break
         if next_split < len(position.allocation_plan):

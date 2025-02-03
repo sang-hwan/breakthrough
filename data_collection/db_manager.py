@@ -6,11 +6,13 @@ import pandas as pd
 from config.db_config import DATABASE
 
 def insert_on_conflict(table, conn, keys, data_iter):
+    raw_conn = conn.connection
+    cur = raw_conn.cursor()
     values = list(data_iter)
-    placeholders = "(" + ", ".join(["%s"] * len(keys)) + ")"
     columns = ", ".join(keys)
     sql = f"INSERT INTO {table.name} ({columns}) VALUES %s ON CONFLICT (timestamp) DO NOTHING"
-    execute_values(conn, sql, values)
+    execute_values(cur, sql, values)
+    cur.close()
 
 def insert_ohlcv_records(df: pd.DataFrame, table_name: str = 'ohlcv_data', conflict_action: str = "DO NOTHING", db_config: dict = None) -> None:
     if db_config is None:
@@ -19,9 +21,7 @@ def insert_ohlcv_records(df: pd.DataFrame, table_name: str = 'ohlcv_data', confl
         f"postgresql://{db_config['user']}:{db_config['password']}@"
         f"{db_config['host']}:{db_config['port']}/{db_config['dbname']}"
     )
-    with engine.begin() as conn:
-        conn.execute(
-            f"""
+    create_table_sql = text(f"""
             CREATE TABLE IF NOT EXISTS {table_name} (
                 timestamp TIMESTAMP NOT NULL,
                 open DOUBLE PRECISION,
@@ -31,8 +31,9 @@ def insert_ohlcv_records(df: pd.DataFrame, table_name: str = 'ohlcv_data', confl
                 volume DOUBLE PRECISION,
                 PRIMARY KEY (timestamp)
             );
-            """
-        )
+            """)
+    with engine.begin() as conn:
+        conn.execute(create_table_sql)
     df = df.copy()
     df.reset_index(inplace=True)
     df.to_sql(
@@ -43,7 +44,7 @@ def insert_ohlcv_records(df: pd.DataFrame, table_name: str = 'ohlcv_data', confl
         method=insert_on_conflict
     )
 
-def fetch_ohlcv_records(table_name: str = 'ohlcv_data', limit: int = None, start_date: str = None, end_date: str = None, db_config: dict = None) -> pd.DataFrame:
+def fetch_ohlcv_records(table_name: str = 'ohlcv_data', start_date: str = None, end_date: str = None, db_config: dict = None) -> pd.DataFrame:
     if db_config is None:
         db_config = DATABASE
     engine = create_engine(

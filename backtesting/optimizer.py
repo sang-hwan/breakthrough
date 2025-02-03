@@ -2,6 +2,7 @@
 import optuna
 from backtesting.backtester import Backtester
 from dynamic_parameters.dynamic_param_manager import DynamicParamManager
+import pandas as pd
 
 class DynamicParameterOptimizer:
     def __init__(self, n_trials=50):
@@ -10,34 +11,69 @@ class DynamicParameterOptimizer:
         self.dynamic_param_manager = DynamicParamManager()
     
     def objective(self, trial):
-        # trial를 통해 최적화할 파라미터 범위 지정 (예시)
+        # 기본 파라미터에 trial 제안 값 적용
         params = self.dynamic_param_manager.get_default_params()
         params["lookback_window"] = trial.suggest_int("lookback_window", 10, 30)
         params["volume_factor"] = trial.suggest_float("volume_factor", 1.2, 2.0)
         params["confirmation_bars"] = trial.suggest_int("confirmation_bars", 1, 3)
         params["breakout_buffer"] = trial.suggest_float("breakout_buffer", 0.0, 0.005)
-        # 추가 파라미터도 trial.suggest_... 로 지정 가능
+        params["atr_multiplier"] = trial.suggest_float("atr_multiplier", 1.5, 3.0)
+        params["profit_ratio"] = trial.suggest_float("profit_ratio", 0.05, 0.15)
+        params["risk_per_trade"] = trial.suggest_float("risk_per_trade", 0.005, 0.02)
+        params["scale_in_threshold"] = trial.suggest_float("scale_in_threshold", 0.01, 0.03)
+        params["use_trend_exit"] = trial.suggest_categorical("use_trend_exit", [True, False])
+        params["use_partial_take_profit"] = trial.suggest_categorical("use_partial_take_profit", [True, False])
+        params["entry_signal_mode"] = trial.suggest_categorical("entry_signal_mode", ["AND", "OR"])
         
-        # 백테스터 생성 및 데이터 로드 (예시: 2018~2020)
+        # 워크-포워드 테스트: 데이터의 70%는 학습(백테스트)용, 30%는 검증용으로 분리
         backtester = Backtester(symbol="BTC/USDT", account_size=10000)
+        # 예시 기간 (2018-01-01 ~ 2020-01-01)
         backtester.load_data("ohlcv_{symbol}_{timeframe}", "ohlcv_{symbol}_{timeframe}", "4h", "1d", "2018-01-01", "2020-01-01")
         
-        # 예시 시장 데이터 (동적 파라미터 조정을 위한 값)
-        market_data = {"volatility": 0.06, "trend_strength": 0.4}
-        dynamic_params = self.dynamic_param_manager.update_dynamic_params(market_data)
-        dynamic_params.update(params)  # trial에서 제시한 값 적용
+        total_index = backtester.df_short.index
+        split_point = int(len(total_index) * 0.7)
+        train_index = total_index[:split_point]
+        # 학습 데이터에 대해 백테스트 수행
+        backtester.df_short = backtester.df_short.loc[train_index]
+        backtester.df_long = backtester.df_long.reindex(train_index, method='ffill')
+        market_data_train = {"volatility": 0.06, "trend_strength": 0.4}
+        dynamic_params_train = self.dynamic_param_manager.update_dynamic_params(market_data_train)
+        dynamic_params_train.update(params)
         
         try:
-            trades, _ = backtester.run_backtest(dynamic_params)
+            trades_train, _ = backtester.run_backtest(dynamic_params_train)
         except Exception:
-            return 1e6  # 실패 시 큰 페널티
-        
-        if not trades:
             return 1e6
-        total_pnl = sum(trade["pnl"] for trade in trades)
-        final_balance = 10000 + total_pnl
-        roi = (final_balance - 10000) / 10000 * 100
-        return -roi  # 최소화를 위해 음수 ROI 반환
+        
+        if not trades_train:
+            return 1e6
+        
+        total_pnl_train = sum(trade["pnl"] for trade in trades_train)
+        final_balance_train = 10000 + total_pnl_train
+        roi_train = (final_balance_train - 10000) / 10000 * 100
+        
+        # 검증 데이터에 대해 백테스트 수행
+        # 검증용 데이터의 시작일은 원본 인덱스의 split_point번째 값을 사용합니다.
+        val_start = total_index[split_point].strftime("%Y-%m-%d")
+        backtester.load_data("ohlcv_{symbol}_{timeframe}", "ohlcv_{symbol}_{timeframe}", "4h", "1d", val_start, "2020-01-01")
+        market_data_val = {"volatility": 0.07, "trend_strength": 0.5}
+        dynamic_params_val = self.dynamic_param_manager.update_dynamic_params(market_data_val)
+        dynamic_params_val.update(params)
+        try:
+            trades_val, _ = backtester.run_backtest(dynamic_params_val)
+        except Exception:
+            return 1e6
+
+        if not trades_val:
+            return 1e6
+        total_pnl_val = sum(trade["pnl"] for trade in trades_val)
+        final_balance_val = 10000 + total_pnl_val
+        roi_val = (final_balance_val - 10000) / 10000 * 100
+        
+        # 목표: 검증 ROI를 최대화하되, 학습/검증 간 차이가 클 경우 패널티 부여
+        overfit_penalty = abs(roi_train - roi_val)
+        score = -roi_val + 0.5 * overfit_penalty
+        return score
 
     def optimize(self):
         self.study = optuna.create_study(direction="minimize")

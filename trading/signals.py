@@ -55,6 +55,8 @@ def generate_retest_signals(
                     if next_row[close_col] > breakout_level:
                         retest_idx = next_row.name
                         data.at[retest_idx, retest_signal_col] = True
+                        # 신호 충돌 방지: 해당 바에서는 confirmed_breakout 무효화
+                        data.at[retest_idx, "confirmed_breakout"] = False
                         break
                 else:
                     break
