@@ -11,8 +11,8 @@ def main():
     print("최적 동적 파라미터:", best_trial.params)
     
     # 최적 파라미터를 적용하여 백테스트 실행 (예: 2018-01-01 ~ 2025-01-01)
-    backtester = Backtester(symbol="BNB/USDT", account_size=10000)
-    backtester.load_data("ohlcv_{symbol}_{timeframe}", "ohlcv_{symbol}_{timeframe}", "4h", "1d", "2018-01-01", "2025-01-01")
+    backtester = Backtester(symbol="BTC/USDT", account_size=10000)
+    backtester.load_data("ohlcv_{symbol}_{timeframe}", "ohlcv_{symbol}_{timeframe}", "4h", "1d", "2018-06-01", "2025-02-01")
     
     market_data = {"volatility": 0.07, "trend_strength": 0.5}
     dynamic_params = backtester.dynamic_param_manager.update_dynamic_params(market_data)

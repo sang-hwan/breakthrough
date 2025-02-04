@@ -8,7 +8,7 @@ from data_collection.db_manager import fetch_ohlcv_records, insert_ohlcv_records
 from data_collection.ohlcv_fetcher import fetch_historical_ohlcv_data
 
 # 업데이트할 심볼 및 시간 프레임 (이전에 시총 상위 3종, 예: BTC/USDT, ETH/USDT, BNB/USDT)
-symbols = ["BTC/USDT", "ETH/USDT", "BNB/USDT"]
+symbols = ["ETH/USDT", "BTC/USDT", "XRP/USDT"]
 # 시간 프레임: 1일, 4시간, 1시간, 15분
 timeframes = ["1d", "4h", "1h", "15min"]
 

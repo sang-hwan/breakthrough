@@ -1,0 +1,331 @@
+[data]
+# config/db_config.py
+DATABASE = {
+    'user': 'postgres',
+    'password': '1234',
+    'host': 'localhost',
+    'port': 5432,
+    'dbname': 'my_trading_db'
+}
+
+---
+
+# data_collection/db_manager.py
+from sqlalchemy import create_engine, text
+import psycopg2
+from psycopg2.extras import execute_values
+import pandas as pd
+from config.db_config import DATABASE
+
+def insert_on_conflict(table, conn, keys, data_iter):
+    raw_conn = conn.connection
+    cur = raw_conn.cursor()
+    values = list(data_iter)
+    columns = ", ".join(keys)
+    sql = f"INSERT INTO {table.name} ({columns}) VALUES %s ON CONFLICT (timestamp) DO NOTHING"
+    execute_values(cur, sql, values)
+    cur.close()
+
+def insert_ohlcv_records(df: pd.DataFrame, table_name: str = 'ohlcv_data', conflict_action: str = "DO NOTHING", db_config: dict = None) -> None:
+    if db_config is None:
+        db_config = DATABASE
+    engine = create_engine(
+        f"postgresql://{db_config['user']}:{db_config['password']}@"
+        f"{db_config['host']}:{db_config['port']}/{db_config['dbname']}"
+    )
+    create_table_sql = text(f"""
+            CREATE TABLE IF NOT EXISTS {table_name} (
+                timestamp TIMESTAMP NOT NULL,
+                open DOUBLE PRECISION,
+                high DOUBLE PRECISION,
+                low DOUBLE PRECISION,
+                close DOUBLE PRECISION,
+                volume DOUBLE PRECISION,
+                PRIMARY KEY (timestamp)
+            );
+            """)
+    with engine.begin() as conn:
+        conn.execute(create_table_sql)
+    df = df.copy()
+    df.reset_index(inplace=True)
+    df.to_sql(
+        table_name,
+        engine,
+        if_exists='append',
+        index=False,
+        method=insert_on_conflict
+    )
+
+def fetch_ohlcv_records(table_name: str = 'ohlcv_data', start_date: str = None, end_date: str = None, db_config: dict = None) -> pd.DataFrame:
+    if db_config is None:
+        db_config = DATABASE
+    engine = create_engine(
+        f"postgresql://{db_config['user']}:{db_config['password']}@"
+        f"{db_config['host']}:{db_config['port']}/{db_config['dbname']}"
+    )
+    query = f"SELECT * FROM {table_name} WHERE 1=1"
+    params = {}
+    if start_date:
+        query += " AND timestamp >= :start_date"
+        params['start_date'] = start_date
+    if end_date:
+        query += " AND timestamp <= :end_date"
+        params['end_date'] = end_date
+    query += " ORDER BY timestamp"
+    query = text(query)
+    df = pd.read_sql(query, engine, params=params, parse_dates=['timestamp'])
+    df.set_index('timestamp', inplace=True)
+    return df
+
+---
+
+# data_collection/ohlcv_fetcher.py
+
+import ccxt
+import pandas as pd
+from datetime import datetime
+import time
+
+def fetch_historical_ohlcv_data(symbol: str, timeframe: str, start_date: str, 
+                                limit_per_request: int = 1000, pause_sec: float = 1.0, 
+                                exchange_id: str = 'binance', single_fetch: bool = False):
+    """
+    ccxt를 이용해 지정한 심볼, 타임프레임, 시작일로부터 OHLCV 데이터를 수집합니다.
+    만약 single_fetch=True이면, 한 번의 요청만 수행합니다.
+    
+    반환된 DataFrame은 'open', 'high', 'low', 'close', 'volume' 컬럼을 가지며, 
+    인덱스는 timestamp입니다.
+    """
+    try:
+        exchange_class = getattr(ccxt, exchange_id)
+        exchange = exchange_class({
+            'enableRateLimit': True,
+        })
+        exchange.load_markets()
+    except Exception as e:
+        print(f"Exchange '{exchange_id}' 초기화 에러: {e}")
+        return pd.DataFrame()
+
+    try:
+        since = exchange.parse8601(datetime.strptime(start_date, "%Y-%m-%d").isoformat())
+    except Exception as e:
+        print(f"start_date ({start_date}) 파싱 에러: {e}")
+        return pd.DataFrame()
+
+    ohlcv_list = []
+    while True:
+        try:
+            ohlcvs = exchange.fetch_ohlcv(symbol, timeframe, since=since, limit=limit_per_request)
+        except Exception as e:
+            print(f"{symbol}의 {timeframe} 데이터 수집 에러: {e}")
+            break
+
+        if not ohlcvs:
+            break
+
+        ohlcv_list.extend(ohlcvs)
+        
+        # single_fetch 옵션이 True면 한 번의 요청 후 종료
+        if single_fetch:
+            break
+
+        last_timestamp = ohlcvs[-1][0]
+        since = last_timestamp + 1  # 중복 방지를 위해 마지막 timestamp + 1로 갱신
+
+        # 현재 시간보다 과거 데이터가 모두 수집되었으면 종료
+        if last_timestamp >= exchange.milliseconds():
+            break
+
+        time.sleep(pause_sec)
+
+    if ohlcv_list:
+        df = pd.DataFrame(ohlcv_list, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        df.set_index('timestamp', inplace=True)
+        return df
+    else:
+        return pd.DataFrame()
+
+def fetch_latest_ohlcv_data(symbol: str, timeframe: str, limit: int = 500, exchange_id: str = 'binance'):
+    """
+    ccxt를 이용해 지정한 심볼과 타임프레임의 최신 OHLCV 데이터를 수집합니다.
+    """
+    try:
+        exchange_class = getattr(ccxt, exchange_id)
+        exchange = exchange_class({
+            'enableRateLimit': True,
+        })
+        exchange.load_markets()
+    except Exception as e:
+        print(f"Exchange '{exchange_id}' 초기화 에러: {e}")
+        return pd.DataFrame()
+    
+    try:
+        ohlcvs = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+    except Exception as e:
+        print(f"{symbol}의 {timeframe} 최신 데이터 수집 에러: {e}")
+        return pd.DataFrame()
+    
+    if ohlcvs:
+        df = pd.DataFrame(ohlcvs, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        df.set_index('timestamp', inplace=True)
+        return df
+    else:
+        return pd.DataFrame()
+
+def get_top_market_cap_symbols(exchange_id: str = 'binance', quote_currency: str = 'USDT', 
+                               required_start_date: str = "2018-01-01", count: int = 5, 
+                               pause_sec: float = 1.0):
+    """
+    ccxt를 이용해 quote_currency 기준 거래되는 심볼들 중 티커의 quoteVolume(대용으로 시장 규모를 판단)
+    기준으로 정렬하여, 2018-01-01 이전 데이터가 존재하는 심볼을 count개 반환합니다.
+    """
+    try:
+        exchange_class = getattr(ccxt, exchange_id)
+        exchange = exchange_class({
+            'enableRateLimit': True,
+        })
+        markets = exchange.load_markets()
+    except Exception as e:
+        print(f"{exchange_id}에서 마켓 로드 에러: {e}")
+        return []
+
+    # 예: 'BTC/USDT'와 같이 quote_currency가 포함된 심볼 필터링
+    usdt_symbols = [symbol for symbol in markets if symbol.endswith('/' + quote_currency)]
+    
+    # 티커 데이터를 가져와 quoteVolume을 대용 시장 규모로 사용
+    try:
+        tickers = exchange.fetch_tickers()
+    except Exception as e:
+        print(f"티커 수집 에러: {e}")
+        tickers = {}
+
+    symbol_volumes = []
+    for symbol in usdt_symbols:
+        ticker = tickers.get(symbol, {})
+        volume = ticker.get('quoteVolume', 0)
+        symbol_volumes.append((symbol, volume))
+    
+    # quoteVolume 기준 내림차순 정렬
+    symbol_volumes.sort(key=lambda x: x[1] if x[1] is not None else 0, reverse=True)
+    
+    valid_symbols = []
+    for symbol, volume in symbol_volumes:
+        print(f"심볼 {symbol}의 데이터 가용성 확인 중 (시작일: {required_start_date})...")
+        # 1일 타임프레임으로 1건만 수집하여 2018-01-01 이전 데이터가 있는지 확인 (single_fetch 사용)
+        df = fetch_historical_ohlcv_data(symbol, '1d', required_start_date, 
+                                         limit_per_request=1, pause_sec=pause_sec, 
+                                         exchange_id=exchange_id, single_fetch=True)
+        if df.empty:
+            print(f"  → {symbol}은(는) {required_start_date} 이후 데이터만 존재하거나 데이터가 없음. 스킵합니다.")
+            continue
+        first_timestamp = df.index.min()
+        if first_timestamp > pd.to_datetime(required_start_date):
+            print(f"  → {symbol}은(는) {required_start_date} 이후 상장됨 (최초 데이터: {first_timestamp}). 스킵합니다.")
+            continue
+        valid_symbols.append(symbol)
+        if len(valid_symbols) >= count:
+            break
+
+    if len(valid_symbols) < count:
+        print(f"경고: {required_start_date} 이전 데이터가 있는 유효 심볼이 {len(valid_symbols)}개 밖에 없습니다.")
+    return valid_symbols
+
+---
+
+# data_collection/ohlcv_pipeline.py
+import time
+from typing import List, Optional
+from data_collection.ohlcv_fetcher import fetch_historical_ohlcv_data, fetch_latest_ohlcv_data
+from data_collection.db_manager import insert_ohlcv_records
+
+def collect_and_store_ohlcv_data(
+    symbols: List[str],
+    timeframes: List[str],
+    use_historical: bool = True,
+    start_date: Optional[str] = '2018-01-01 00:00:00',
+    limit_per_request: int = 1000,
+    latest_limit: int = 500,
+    pause_sec: float = 1.0,
+    table_name_format: str = "ohlcv_{symbol}_{timeframe}",
+    exchange_id: str = 'binance',
+    time_offset_ms: int = 1
+) -> None:
+    for symbol in symbols:
+        for tf in timeframes:
+            print(f"\n[*] Fetching {symbol} - {tf} data...")
+            if use_historical:
+                if not start_date:
+                    raise ValueError("start_date는 과거 데이터 수집 시 반드시 필요합니다.")
+                df = fetch_historical_ohlcv_data(
+                    symbol=symbol,
+                    timeframe=tf,
+                    start_date=start_date,
+                    limit_per_request=limit_per_request,
+                    pause_sec=pause_sec,
+                    exchange_id=exchange_id,
+                    time_offset_ms=time_offset_ms
+                )
+            else:
+                df = fetch_latest_ohlcv_data(
+                    symbol=symbol,
+                    timeframe=tf,
+                    limit=latest_limit,
+                    exchange_id=exchange_id
+                )
+            table_name = table_name_format.format(symbol=symbol.replace('/', '').lower(), timeframe=tf)
+            print(f"    -> Total Rows Fetched: {len(df)}")
+            insert_ohlcv_records(df, table_name=table_name)
+            print(f"    -> Saved to table: {table_name}")
+            time.sleep(pause_sec)
+
+---
+
+# insert_ohlcv.py
+
+import time
+from datetime import datetime
+import pandas as pd
+from data_collection.db_manager import insert_ohlcv_records
+from data_collection.ohlcv_fetcher import fetch_historical_ohlcv_data, get_top_market_cap_symbols
+
+# 수집할 타임프레임 목록 (Binance의 경우, 올바른 인터벌은 "15m"임)
+TIMEFRAMES = ["1d", "4h", "1h", "15m"]
+START_DATE = "2018-06-01"
+
+def insert_ohlcv_for_symbol(symbol: str, timeframes: list, start_date: str, pause_sec: float = 1.0, exchange_id: str = 'binance'):
+    for tf in timeframes:
+        # 데이터 수집 시, Binance에서는 "15m" 그대로 사용해야 함.
+        fetch_tf = tf  
+        print(f"\n{symbol}의 {tf} 데이터 수집 시작 (시작일: {start_date})...")
+        df = fetch_historical_ohlcv_data(symbol, fetch_tf, start_date, exchange_id=exchange_id, pause_sec=pause_sec)
+        if df.empty:
+            print(f"{symbol}의 {tf} 데이터가 없습니다. 해당 타임프레임은 스킵합니다.")
+            continue
+        # 테이블명은 원래 타임프레임 값("15m")을 사용
+        table_name = f"ohlcv_{symbol.replace('/', '').lower()}_{tf}"
+        try:
+            insert_ohlcv_records(df, table_name=table_name)
+            print(f"{symbol}의 {tf} 데이터가 '{table_name}' 테이블에 저장되었습니다.")
+        except Exception as e:
+            print(f"{symbol}의 {tf} 데이터를 '{table_name}'에 저장하는 중 에러 발생: {e}")
+        time.sleep(pause_sec)
+
+def main():
+    print("시가총액(대용: 거래량 기준) 상위 심볼 중 2018-06-01 이전 데이터가 있는 심볼을 찾습니다...")
+    valid_symbols = get_top_market_cap_symbols(required_start_date=START_DATE, count=3)
+    
+    if not valid_symbols or len(valid_symbols) < 3:
+        print(f"{START_DATE} 이전 데이터가 있는 유효한 심볼이 5개 미만입니다. 수집을 중단합니다.")
+        return
+    
+    print("최종 유효 심볼:", valid_symbols)
+    
+    for symbol in valid_symbols:
+        insert_ohlcv_for_symbol(symbol, TIMEFRAMES, START_DATE)
+    
+    print("\n모든 심볼의 OHLCV 데이터 삽입 작업이 완료되었습니다.")
+
+if __name__ == "__main__":
+    main()
