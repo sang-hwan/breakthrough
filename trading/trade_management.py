@@ -46,6 +46,9 @@ def adjust_trailing_stop(
     highest_price: float,
     trailing_percentage: float
 ) -> float:
+    # 만약 current_stop이 None이면, 기본값을 highest_price * (1 - trailing_percentage)로 설정
+    if current_stop is None:
+        current_stop = highest_price * (1 - trailing_percentage)
     new_stop = highest_price * (1.0 - trailing_percentage)
     return new_stop if new_stop > current_stop and new_stop < current_price else current_stop
 
@@ -91,3 +94,31 @@ def calculate_partial_exit_targets(
         (partial_target, partial_exit_ratio),
         (final_target, final_exit_ratio)
     ]
+    
+def compute_atr(data: pd.DataFrame, period: int = 14) -> pd.DataFrame:
+    """
+    주어진 데이터프레임에 ATR 컬럼을 추가합니다.
+    """
+    try:
+        atr_indicator = ta.volatility.AverageTrueRange(
+            high=data['high'],
+            low=data['low'],
+            close=data['close'],
+            window=period,
+            fillna=True
+        )
+        data['atr'] = atr_indicator.average_true_range()
+    except Exception as e:
+        data['atr'] = data['high'] - data['low']
+    return data
+
+def calculate_dynamic_stop_and_take(entry_price: float, atr: float, risk_params: dict):
+    """
+    동적 리스크 관리: 시장 레짐에 따라 stop_loss와 take_profit 가격을 계산합니다.
+    risk_params에는 'atr_multiplier'와 'profit_ratio'가 포함되어 있다고 가정합니다.
+    """
+    atr_multiplier = risk_params.get("atr_multiplier", 2.0)
+    profit_ratio = risk_params.get("profit_ratio", 0.05)
+    stop_loss_price = entry_price - (atr * atr_multiplier)
+    take_profit_price = entry_price * (1 + profit_ratio)
+    return stop_loss_price, take_profit_price

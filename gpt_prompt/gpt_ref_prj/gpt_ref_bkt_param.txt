@@ -1,3 +1,4 @@
+[backtesting & param]
 # backtesting/backtester.py
 import pandas as pd
 import numpy as np
@@ -411,3 +412,284 @@ class Backtester:
                     self.trade_logs.append(trade_detail)
                     self.trades.append(trade_detail)
         return self.trades, self.trade_logs
+
+---
+
+# backtesting/optimizer.py
+import optuna
+import pandas as pd
+from logs.logger_config import setup_logger
+from backtesting.backtester import Backtester
+from dynamic_parameters.dynamic_param_manager import DynamicParamManager
+
+logger = setup_logger(__name__)
+
+class DynamicParameterOptimizer:
+    def __init__(self, n_trials=50):
+        self.n_trials = n_trials
+        self.study = None
+        self.dynamic_param_manager = DynamicParamManager()
+    
+    def objective(self, trial):
+        # 기본 파라미터 가져오기 및 최적화 대상 파라미터 제안 (불필요한 추세 관련 파라미터 제거)
+        base_params = self.dynamic_param_manager.get_default_params()
+        params = {
+            "hmm_confidence_threshold": trial.suggest_float("hmm_confidence_threshold", 0.7, 0.95),
+            "liquidity_info": trial.suggest_categorical("liquidity_info", ["high", "low"]),
+            "atr_multiplier": trial.suggest_float("atr_multiplier", 1.5, 3.0),
+            "profit_ratio": trial.suggest_float("profit_ratio", 0.05, 0.15),
+            "risk_per_trade": trial.suggest_float("risk_per_trade", 0.005, 0.02),
+            "scale_in_threshold": trial.suggest_float("scale_in_threshold", 0.01, 0.03),
+            "partial_exit_ratio": trial.suggest_float("partial_exit_ratio", 0.4, 0.6),
+            "partial_profit_ratio": trial.suggest_float("partial_profit_ratio", 0.02, 0.04),
+            "final_profit_ratio": trial.suggest_float("final_profit_ratio", 0.05, 0.1)
+        }
+        # 최종 동적 파라미터
+        dynamic_params = {**base_params, **params}
+        
+        # Walk-Forward 구간 정의
+        splits = [
+            {"train_start": "2018-06-01", "train_end": "2020-12-31", "test_start": "2021-01-01", "test_end": "2021-12-31"},
+            {"train_start": "2019-06-01", "train_end": "2021-12-31", "test_start": "2022-01-01", "test_end": "2022-12-31"},
+            {"train_start": "2020-06-01", "train_end": "2022-12-31", "test_start": "2023-01-01", "test_end": "2023-12-31"},
+            {"train_start": "2021-06-01", "train_end": "2023-12-31", "test_start": "2024-01-01", "test_end": "2024-12-31"},
+            {"train_start": "2022-06-01", "train_end": "2024-12-31", "test_start": "2025-01-01", "test_end": "2025-02-01"},
+        ]
+        
+        total_score = 0.0
+        for split in splits:
+            # 학습 구간 백테스트
+            backtester = Backtester(symbol="BTC/USDT", account_size=10000)
+            backtester.load_data(
+                "ohlcv_{symbol}_{timeframe}",
+                "ohlcv_{symbol}_{timeframe}",
+                "4h", "1d",
+                split["train_start"], split["train_end"]
+            )
+            try:
+                trades_train, _ = backtester.run_backtest(dynamic_params)
+            except Exception as e:
+                logger.error(f"Training backtest failed: {e}")
+                return 1e6
+            total_pnl_train = sum(trade["pnl"] for trade in trades_train)
+            roi_train = total_pnl_train / 10000 * 100
+
+            # 테스트 구간 백테스트
+            backtester.load_data(
+                "ohlcv_{symbol}_{timeframe}",
+                "ohlcv_{symbol}_{timeframe}",
+                "4h", "1d",
+                split["test_start"], split["test_end"]
+            )
+            try:
+                trades_test, _ = backtester.run_backtest(dynamic_params)
+            except Exception as e:
+                logger.error(f"Test backtest failed: {e}")
+                return 1e6
+            total_pnl_test = sum(trade["pnl"] for trade in trades_test)
+            roi_test = total_pnl_test / 10000 * 100
+
+            # 과적합 패널티 및 점수 산출: 테스트 ROI와 학습 ROI의 차이를 고려
+            overfit_penalty = abs(roi_train - roi_test)
+            score = -roi_test + 0.5 * overfit_penalty
+            total_score += score
+
+        avg_score = total_score / len(splits)
+        return avg_score
+
+    def optimize(self):
+        sampler = optuna.samplers.TPESampler(seed=42)
+        self.study = optuna.create_study(direction="minimize", sampler=sampler)
+        self.study.optimize(self.objective, n_trials=self.n_trials)
+        
+        trials_df = self.study.trials_dataframe()
+        logger.info("Trial 결과:\n" + trials_df.to_string())
+        
+        return self.study.best_trial
+
+---
+
+# backtesting/performance.py
+import pandas as pd
+import numpy as np
+
+def calculate_monthly_performance(
+    trades_df: pd.DataFrame,
+    exit_time_col: str = "exit_time",
+    pnl_col: str = "pnl",
+    period_freq: str = 'M',
+    period_col: str = "year_month"
+) -> pd.DataFrame:
+    if exit_time_col not in trades_df.columns:
+        return pd.DataFrame()
+    trades_df[period_col] = trades_df[exit_time_col].dt.to_period(period_freq)
+    grouped = trades_df.groupby(period_col)
+    results = []
+    for period_val, grp in grouped:
+        total_pnl = grp[pnl_col].sum()
+        num_trades = len(grp)
+        win_trades = (grp[pnl_col] > 0).sum()
+        win_rate = (win_trades / num_trades * 100.0) if num_trades > 0 else 0.0
+        results.append({
+            period_col: str(period_val),
+            'total_pnl': total_pnl,
+            'num_trades': num_trades,
+            'win_rate(%)': win_rate
+        })
+    return pd.DataFrame(results)
+
+def calculate_yearly_performance(
+    trades_df: pd.DataFrame,
+    exit_time_col: str = "exit_time",
+    pnl_col: str = "pnl",
+    year_col: str = "year"
+) -> pd.DataFrame:
+    if exit_time_col not in trades_df.columns:
+        return pd.DataFrame()
+    trades_df[year_col] = trades_df[exit_time_col].dt.year
+    grouped = trades_df.groupby(year_col)
+    results = []
+    for yr, grp in grouped:
+        total_pnl = grp[pnl_col].sum()
+        num_trades = len(grp)
+        win_trades = (grp[pnl_col] > 0).sum()
+        win_rate = (win_trades / num_trades * 100.0) if num_trades > 0 else 0.0
+        results.append({
+            year_col: yr,
+            'total_pnl': total_pnl,
+            'num_trades': num_trades,
+            'win_rate(%)': win_rate
+        })
+    return pd.DataFrame(results)
+
+def calculate_mdd(
+    trades_df: pd.DataFrame,
+    initial_balance: float,
+    exit_time_col: str = "exit_time",
+    pnl_col: str = "pnl",
+    mdd_factor: float = 100.0
+) -> float:
+    if exit_time_col not in trades_df.columns:
+        return 0.0
+    trades_df = trades_df.sort_values(by=exit_time_col)
+    equity_list = []
+    current_balance = initial_balance
+    for _, row in trades_df.iterrows():
+        current_balance += row[pnl_col]
+        equity_list.append(current_balance)
+    equity_arr = np.array(equity_list)
+    peak_arr = np.maximum.accumulate(equity_arr)
+    drawdown_arr = (equity_arr - peak_arr) / peak_arr
+    mdd = drawdown_arr.min() * mdd_factor
+    return mdd
+
+def calculate_sharpe_ratio(
+    trades_df: pd.DataFrame,
+    initial_balance: float,
+    risk_free_rate: float = 0.0,
+    exit_time_col: str = "exit_time",
+    pnl_col: str = "pnl"
+) -> float:
+    if trades_df.empty or len(trades_df) < 2:
+        return 0.0
+    trades_df = trades_df.sort_values(by=exit_time_col)
+    current_balance = initial_balance
+    returns_list = []
+    for _, row in trades_df.iterrows():
+        pnl = row[pnl_col]
+        ret = pnl / current_balance
+        returns_list.append(ret)
+        current_balance += pnl
+    returns_arr = np.array(returns_list)
+    if len(returns_arr) < 2:
+        return 0.0
+    mean_return = returns_arr.mean()
+    std_return = returns_arr.std(ddof=1)
+    if std_return == 0:
+        return 0.0
+    sharpe = (mean_return - risk_free_rate) / std_return
+    return sharpe
+
+def print_performance_report(
+    trades_df: pd.DataFrame,
+    initial_balance: float,
+    exit_time_col: str = "exit_time",
+    pnl_col: str = "pnl",
+    monthly_header: str = "=== (A) 월별 성과 ===",
+    yearly_header: str = "=== (B) 연도별 성과 ===",
+    overall_header: str = "=== (C) 전체 성과 ===",
+    no_trades_message: str = "No trades to report."
+) -> None:
+    if trades_df.empty:
+        print(no_trades_message)
+        return
+    monthly_df = calculate_monthly_performance(trades_df, exit_time_col, pnl_col)
+    yearly_df = calculate_yearly_performance(trades_df, exit_time_col, pnl_col)
+    total_pnl = trades_df[pnl_col].sum()
+    final_balance = initial_balance + total_pnl
+    mdd = calculate_mdd(trades_df, initial_balance=initial_balance, exit_time_col=exit_time_col, pnl_col=pnl_col)
+    sharpe = calculate_sharpe_ratio(trades_df, initial_balance=initial_balance, exit_time_col=exit_time_col, pnl_col=pnl_col)
+    print(monthly_header)
+    print(monthly_df)
+    print("\n" + yearly_header)
+    print(yearly_df)
+    print("\n" + overall_header)
+    print(f"  - 초기 잔고       : {initial_balance:.2f}")
+    print(f"  - 최종 잔고       : {final_balance:.2f}")
+    print(f"  - 총 손익         : {total_pnl:.2f}")
+    print(f"  - ROI(%)          : {(final_balance - initial_balance) / initial_balance * 100:.2f}%")
+    print(f"  - 최대낙폭(MDD)   : {mdd:.2f}%")
+    print(f"  - 샤프 지수(단순) : {sharpe:.3f}")
+    num_trades = len(trades_df)
+    wins = (trades_df[pnl_col] > 0).sum()
+    win_rate = (wins / num_trades * 100.0) if num_trades > 0 else 0.0
+    print(f"  - 총 매매 횟수    : {num_trades}")
+    print(f"  - 승률(%)         : {win_rate:.2f}%")
+
+---
+
+# dynamic_parameters/dynamic_param_manager.py
+from logs.logger_config import setup_logger
+
+class DynamicParamManager:
+    def __init__(self):
+        # 기본 동적 파라미터: 불필요한 추세 관련 파라미터 제거 및 레짐 기반 파라미터 추가
+        self.default_params = {
+            "sma_period": 200,
+            "atr_period": 14,
+            "atr_multiplier": 2.07,
+            "dynamic_sl_adjustment": 1.18,
+            "profit_ratio": 0.098,
+            "use_trailing_stop": True,
+            "trailing_percent": 0.045,
+            "partial_exit_ratio": 0.5,
+            "partial_profit_ratio": 0.03,
+            "final_profit_ratio": 0.06,
+            "risk_per_trade": 0.0162,
+            "total_splits": 3,
+            "allocation_mode": "equal",
+            "scale_in_threshold": 0.0153,
+            "hmm_confidence_threshold": 0.8,
+            "liquidity_info": "high"
+        }
+
+        self.logger = setup_logger(__name__)
+        self.logger.info("DynamicParamManager 초기화 완료 (레짐 기반 전략 적용).")
+
+    def get_default_params(self):
+        return self.default_params.copy()
+    
+    def update_dynamic_params(self, market_data):
+        dynamic_params = self.get_default_params()
+        volatility = market_data.get("volatility", 0.0)
+        
+        if volatility > 0.05:
+            dynamic_params["atr_multiplier"] *= 1.1
+        else:
+            dynamic_params["atr_multiplier"] *= 0.9
+        
+        # 기존 trend_strength 기반 조정 로직은 제거됨 (레짐 기반 전략 적용)
+        self.logger.info(f"Market data: {market_data}")
+        self.logger.info(f"Updated dynamic parameters: {dynamic_params}")
+        
+        return dynamic_params

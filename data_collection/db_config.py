@@ -1,4 +1,4 @@
-# config/db_config.py
+# data_collection/db_config.py
 DATABASE = {
     'user': 'postgres',
     'password': '1234',

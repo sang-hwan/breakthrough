@@ -1,8 +1,11 @@
 # data_collection/ohlcv_pipeline.py
 import time
 from typing import List, Optional
+from logs.logger_config import setup_logger
 from data_collection.ohlcv_fetcher import fetch_historical_ohlcv_data, fetch_latest_ohlcv_data
 from data_collection.db_manager import insert_ohlcv_records
+
+logger = setup_logger(__name__)
 
 def collect_and_store_ohlcv_data(
     symbols: List[str],
@@ -18,7 +21,7 @@ def collect_and_store_ohlcv_data(
 ) -> None:
     for symbol in symbols:
         for tf in timeframes:
-            print(f"\n[*] Fetching {symbol} - {tf} data...")
+            logger.info(f"[*] Fetching {symbol} - {tf} data...")
             if use_historical:
                 if not start_date:
                     raise ValueError("start_date는 과거 데이터 수집 시 반드시 필요합니다.")
@@ -29,6 +32,7 @@ def collect_and_store_ohlcv_data(
                     limit_per_request=limit_per_request,
                     pause_sec=pause_sec,
                     exchange_id=exchange_id,
+                    single_fetch=False,
                     time_offset_ms=time_offset_ms
                 )
             else:
@@ -39,7 +43,7 @@ def collect_and_store_ohlcv_data(
                     exchange_id=exchange_id
                 )
             table_name = table_name_format.format(symbol=symbol.replace('/', '').lower(), timeframe=tf)
-            print(f"    -> Total Rows Fetched: {len(df)}")
+            logger.info(f"    -> Total Rows Fetched: {len(df)}")
             insert_ohlcv_records(df, table_name=table_name)
-            print(f"    -> Saved to table: {table_name}")
+            logger.info(f"    -> Saved to table: {table_name}")
             time.sleep(pause_sec)

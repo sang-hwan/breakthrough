@@ -1,7 +1,7 @@
 # db_cleanup.py
 
 from sqlalchemy import create_engine, MetaData
-from config.db_config import DATABASE
+from data_collection.db_config import DATABASE
 
 def drop_all_tables():
     db_config = DATABASE

@@ -1,9 +1,8 @@
 # data_collection/db_manager.py
 from sqlalchemy import create_engine, text
-import psycopg2
 from psycopg2.extras import execute_values
 import pandas as pd
-from config.db_config import DATABASE
+from data_collection.db_config import DATABASE
 
 def insert_on_conflict(table, conn, keys, data_iter):
     raw_conn = conn.connection
