@@ -38,3 +38,22 @@ def adjust_regime(prediction, technical_indicators):
         return tech_trend
     else:
         return hmm_regime
+    
+def get_regime_intervals(regime_series):
+    """
+    regime_series: pandas Series, 인덱스는 날짜, 값은 레짐 (예: bullish, bearish, sideways)
+    반환: 각 레짐별 (레짐, 시작일, 종료일) 리스트
+    """
+    intervals = []
+    if regime_series.empty:
+        return intervals
+    current_regime = regime_series.iloc[0]
+    start_date = regime_series.index[0]
+    for dt, regime in regime_series.iteritems():
+        if regime != current_regime:
+            end_date = dt
+            intervals.append((current_regime, start_date, end_date))
+            current_regime = regime
+            start_date = dt
+    intervals.append((current_regime, start_date, regime_series.index[-1]))
+    return intervals

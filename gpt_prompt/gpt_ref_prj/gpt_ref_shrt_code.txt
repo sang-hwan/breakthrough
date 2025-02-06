@@ -1,4 +1,4 @@
-[data & log & regime]
+[data & param & log & regime & monitor]
 # data_collection/db_config.py
 DATABASE = {
     'user': 'postgres',
@@ -281,52 +281,52 @@ def collect_and_store_ohlcv_data(
 
 ---
 
-# insert_ohlcv.py
-import time
-from datetime import datetime
-import pandas as pd
+# dynamic_parameters/dynamic_param_manager.py
 from logs.logger_config import setup_logger
-from data_collection.db_manager import insert_ohlcv_records
-from data_collection.ohlcv_fetcher import fetch_historical_ohlcv_data, get_top_market_cap_symbols
 
-logger = setup_logger(__name__)
+class DynamicParamManager:
+    def __init__(self):
+        self.default_params = {
+            "sma_period": 200,
+            "atr_period": 14,
+            "atr_multiplier": 2.07,
+            "dynamic_sl_adjustment": 1.18,
+            "profit_ratio": 0.098,
+            "use_trailing_stop": True,
+            "trailing_percent": 0.045,
+            "partial_exit_ratio": 0.5,
+            "partial_profit_ratio": 0.03,
+            "final_profit_ratio": 0.06,
+            "risk_per_trade": 0.0162,
+            "total_splits": 3,
+            "allocation_mode": "equal",
+            "scale_in_threshold": 0.0153,
+            "hmm_confidence_threshold": 0.8,
+            "liquidity_info": "high",
+            "volatility_multiplier": 1.0,  # 신규 파라미터: 변동성에 따른 리스크 조정
+            "use_candle_pattern": True   # 신규 파라미터: 캔들 패턴 활용 여부
+        }
+        self.logger = setup_logger(__name__)
+        self.logger.info("DynamicParamManager 초기화 완료 (레짐 기반 전략 적용).")
 
-# 수집할 타임프레임 목록
-TIMEFRAMES = ["1d", "4h", "1h", "15m"]
-START_DATE = "2018-06-01"
-
-def insert_ohlcv_for_symbol(symbol: str, timeframes: list, start_date: str, pause_sec: float = 1.0, exchange_id: str = 'binance'):
-    for tf in timeframes:
-        logger.info(f"{symbol}의 {tf} 데이터 수집 시작 (시작일: {start_date})...")
-        df = fetch_historical_ohlcv_data(symbol, tf, start_date, exchange_id=exchange_id, pause_sec=pause_sec)
-        if df.empty:
-            logger.info(f"{symbol}의 {tf} 데이터가 없습니다. 해당 타임프레임은 스킵합니다.")
-            continue
-        table_name = f"ohlcv_{symbol.replace('/', '').lower()}_{tf}"
-        try:
-            insert_ohlcv_records(df, table_name=table_name)
-            logger.info(f"{symbol}의 {tf} 데이터가 '{table_name}' 테이블에 저장되었습니다.")
-        except Exception as e:
-            logger.error(f"{symbol}의 {tf} 데이터를 '{table_name}'에 저장하는 중 에러 발생: {e}")
-        time.sleep(pause_sec)
-
-def main():
-    logger.info("시가총액(대용: 거래량 기준) 상위 심볼 중 2018-06-01 이전 데이터가 있는 심볼을 찾습니다...")
-    valid_symbols = get_top_market_cap_symbols(required_start_date=START_DATE, count=3)
+    def get_default_params(self):
+        return self.default_params.copy()
     
-    if not valid_symbols or len(valid_symbols) < 3:
-        logger.error(f"{START_DATE} 이전 데이터가 있는 유효한 심볼이 5개 미만입니다. 수집을 중단합니다.")
-        return
-    
-    logger.info(f"최종 유효 심볼: {valid_symbols}")
-    
-    for symbol in valid_symbols:
-        insert_ohlcv_for_symbol(symbol, TIMEFRAMES, START_DATE)
-    
-    logger.info("모든 심볼의 OHLCV 데이터 삽입 작업이 완료되었습니다.")
-
-if __name__ == "__main__":
-    main()
+    def update_dynamic_params(self, market_data):
+        dynamic_params = self.get_default_params()
+        volatility = market_data.get("volatility", 0.0)
+        
+        if volatility > 0.05:
+            dynamic_params["atr_multiplier"] *= 1.1
+            dynamic_params["volatility_multiplier"] = 1.2
+        else:
+            dynamic_params["atr_multiplier"] *= 0.9
+            dynamic_params["volatility_multiplier"] = 1.0
+        
+        self.logger.info(f"Market data: {market_data}")
+        self.logger.info(f"Updated dynamic parameters: {dynamic_params}")
+        
+        return dynamic_params
 
 ---
 
@@ -455,3 +455,49 @@ def adjust_regime(prediction, technical_indicators):
         return tech_trend
     else:
         return hmm_regime
+    
+def get_regime_intervals(regime_series):
+    """
+    regime_series: pandas Series, 인덱스는 날짜, 값은 레짐 (예: bullish, bearish, sideways)
+    반환: 각 레짐별 (레짐, 시작일, 종료일) 리스트
+    """
+    intervals = []
+    if regime_series.empty:
+        return intervals
+    current_regime = regime_series.iloc[0]
+    start_date = regime_series.index[0]
+    for dt, regime in regime_series.iteritems():
+        if regime != current_regime:
+            end_date = dt
+            intervals.append((current_regime, start_date, end_date))
+            current_regime = regime
+            start_date = dt
+    intervals.append((current_regime, start_date, regime_series.index[-1]))
+    return intervals
+
+---
+
+# monitoring/real_time_monitor.py
+from logs.logger_config import setup_logger
+
+class RealTimeMonitor:
+    def __init__(self):
+        self.logger = setup_logger(__name__)
+
+    def monitor_trade_activity(self, positions, current_market_price):
+        """
+        보유 포지션, 체결 내역, 슬리피지 및 거래 비용을 모니터링하여 이상 징후 발생 시 알람.
+        """
+        for pos in positions:
+            for exec_record in pos.executions:
+                if not exec_record.get("closed", False):
+                    entry_price = exec_record.get("entry_price")
+                    if entry_price is None:
+                        continue
+                    price_change = abs(current_market_price - entry_price) / entry_price
+                    if price_change > 0.1:  # 예: 10% 이상 변동 시 경고
+                        self.logger.warning(f"RealTimeMonitor: Position {pos.position_id} has moved by {price_change*100:.2f}% from entry price.")
+
+    def send_alert(self, message):
+        # 이메일, SMS, 슬랙 등 연동 가능 (여기서는 로그 기록으로 대체)
+        self.logger.info(f"ALERT: {message}")

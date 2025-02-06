@@ -1,6 +1,9 @@
 # backtesting/performance.py
 import pandas as pd
 import numpy as np
+from logs.logger_config import setup_logger
+
+logger = setup_logger("performance")
 
 def calculate_monthly_performance(
     trades_df: pd.DataFrame,
@@ -102,6 +105,7 @@ def calculate_sharpe_ratio(
 def print_performance_report(
     trades_df: pd.DataFrame,
     initial_balance: float,
+    symbol: str = "",  # 신규 파라미터: 종목 이름
     exit_time_col: str = "exit_time",
     pnl_col: str = "pnl",
     monthly_header: str = "=== (A) 월별 성과 ===",
@@ -110,7 +114,7 @@ def print_performance_report(
     no_trades_message: str = "No trades to report."
 ) -> None:
     if trades_df.empty:
-        print(no_trades_message)
+        logger.info(no_trades_message)
         return
     monthly_df = calculate_monthly_performance(trades_df, exit_time_col, pnl_col)
     yearly_df = calculate_yearly_performance(trades_df, exit_time_col, pnl_col)
@@ -118,19 +122,52 @@ def print_performance_report(
     final_balance = initial_balance + total_pnl
     mdd = calculate_mdd(trades_df, initial_balance=initial_balance, exit_time_col=exit_time_col, pnl_col=pnl_col)
     sharpe = calculate_sharpe_ratio(trades_df, initial_balance=initial_balance, exit_time_col=exit_time_col, pnl_col=pnl_col)
-    print(monthly_header)
-    print(monthly_df)
-    print("\n" + yearly_header)
-    print(yearly_df)
-    print("\n" + overall_header)
-    print(f"  - 초기 잔고       : {initial_balance:.2f}")
-    print(f"  - 최종 잔고       : {final_balance:.2f}")
-    print(f"  - 총 손익         : {total_pnl:.2f}")
-    print(f"  - ROI(%)          : {(final_balance - initial_balance) / initial_balance * 100:.2f}%")
-    print(f"  - 최대낙폭(MDD)   : {mdd:.2f}%")
-    print(f"  - 샤프 지수(단순) : {sharpe:.3f}")
+    
+    report_lines = []
+    if symbol:
+        report_lines.append(f"종목: {symbol}")
+    report_lines.append(monthly_header)
+    report_lines.append(str(monthly_df))
+    report_lines.append("\n" + yearly_header)
+    report_lines.append(str(yearly_df))
+    report_lines.append("\n" + overall_header)
+    report_lines.append(f"  - 초기 잔고       : {initial_balance:.2f}")
+    report_lines.append(f"  - 최종 잔고       : {final_balance:.2f}")
+    report_lines.append(f"  - 총 손익         : {total_pnl:.2f}")
+    report_lines.append(f"  - ROI(%)          : {(final_balance - initial_balance) / initial_balance * 100:.2f}%")
+    report_lines.append(f"  - 최대낙폭(MDD)   : {mdd:.2f}%")
+    report_lines.append(f"  - 샤프 지수(단순) : {sharpe:.3f}")
     num_trades = len(trades_df)
     wins = (trades_df[pnl_col] > 0).sum()
     win_rate = (wins / num_trades * 100.0) if num_trades > 0 else 0.0
-    print(f"  - 총 매매 횟수    : {num_trades}")
-    print(f"  - 승률(%)         : {win_rate:.2f}%")
+    report_lines.append(f"  - 총 매매 횟수    : {num_trades}")
+    report_lines.append(f"  - 승률(%)         : {win_rate:.2f}%")
+    
+    report = "\n".join(report_lines)
+    logger.info("백테스트 성과 보고:\n" + report)
+
+def monte_carlo_simulation(trades_df: pd.DataFrame, initial_balance: float, n_simulations: int = 1000, perturbation_std: float = 0.002):
+    """
+    거래 내역에 무작위 슬리피지 및 거래 비용 변동을 적용하여 Monte Carlo 시뮬레이션을 수행.
+    perturbation_std: 각 거래의 pnl에 적용할 노이즈 표준편차.
+    반환: ROI 분포, MDD 분포 등의 통계.
+    """
+    rois = []
+    mdds = []
+    for _ in range(n_simulations):
+        simulated_trades = trades_df.copy()
+        # 각 trade의 pnl에 랜덤 노이즈 적용 (정규분포)
+        noise = np.random.normal(loc=0, scale=perturbation_std, size=len(simulated_trades))
+        simulated_trades["pnl"] = simulated_trades["pnl"] * (1 + noise)
+        total_pnl = simulated_trades["pnl"].sum()
+        final_balance = initial_balance + total_pnl
+        roi = (final_balance - initial_balance) / initial_balance * 100
+        mdd = calculate_mdd(simulated_trades, initial_balance)
+        rois.append(roi)
+        mdds.append(mdd)
+    return {
+        "roi_mean": np.mean(rois),
+        "roi_std": np.std(rois),
+        "mdd_mean": np.mean(mdds),
+        "mdd_std": np.std(mdds)
+    }

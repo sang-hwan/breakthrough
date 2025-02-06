@@ -3,7 +3,6 @@ from logs.logger_config import setup_logger
 
 class DynamicParamManager:
     def __init__(self):
-        # 기본 동적 파라미터: 불필요한 추세 관련 파라미터 제거 및 레짐 기반 파라미터 추가
         self.default_params = {
             "sma_period": 200,
             "atr_period": 14,
@@ -20,9 +19,10 @@ class DynamicParamManager:
             "allocation_mode": "equal",
             "scale_in_threshold": 0.0153,
             "hmm_confidence_threshold": 0.8,
-            "liquidity_info": "high"
+            "liquidity_info": "high",
+            "volatility_multiplier": 1.0,  # 신규 파라미터: 변동성에 따른 리스크 조정
+            "use_candle_pattern": True   # 신규 파라미터: 캔들 패턴 활용 여부
         }
-
         self.logger = setup_logger(__name__)
         self.logger.info("DynamicParamManager 초기화 완료 (레짐 기반 전략 적용).")
 
@@ -35,10 +35,11 @@ class DynamicParamManager:
         
         if volatility > 0.05:
             dynamic_params["atr_multiplier"] *= 1.1
+            dynamic_params["volatility_multiplier"] = 1.2
         else:
             dynamic_params["atr_multiplier"] *= 0.9
+            dynamic_params["volatility_multiplier"] = 1.0
         
-        # 기존 trend_strength 기반 조정 로직은 제거됨 (레짐 기반 전략 적용)
         self.logger.info(f"Market data: {market_data}")
         self.logger.info(f"Updated dynamic parameters: {dynamic_params}")
         

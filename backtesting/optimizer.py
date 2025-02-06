@@ -14,7 +14,7 @@ class DynamicParameterOptimizer:
         self.dynamic_param_manager = DynamicParamManager()
     
     def objective(self, trial):
-        # 기본 파라미터 가져오기 및 최적화 대상 파라미터 제안 (불필요한 추세 관련 파라미터 제거)
+        # 기본 파라미터 및 최적화 대상 파라미터 제안
         base_params = self.dynamic_param_manager.get_default_params()
         params = {
             "hmm_confidence_threshold": trial.suggest_float("hmm_confidence_threshold", 0.7, 0.95),
@@ -27,59 +27,96 @@ class DynamicParameterOptimizer:
             "partial_profit_ratio": trial.suggest_float("partial_profit_ratio", 0.02, 0.04),
             "final_profit_ratio": trial.suggest_float("final_profit_ratio", 0.05, 0.1)
         }
-        # 최종 동적 파라미터
         dynamic_params = {**base_params, **params}
         
-        # Walk-Forward 구간 정의
+        assets = ["BTC/USDT", "ETH/USDT", "XRP/USDT"]
+        
+        # 워크-포워드 검증: training 및 test split
         splits = [
-            {"train_start": "2018-06-01", "train_end": "2020-12-31", "test_start": "2021-01-01", "test_end": "2021-12-31"},
-            {"train_start": "2019-06-01", "train_end": "2021-12-31", "test_start": "2022-01-01", "test_end": "2022-12-31"},
-            {"train_start": "2020-06-01", "train_end": "2022-12-31", "test_start": "2023-01-01", "test_end": "2023-12-31"},
-            {"train_start": "2021-06-01", "train_end": "2023-12-31", "test_start": "2024-01-01", "test_end": "2024-12-31"},
-            {"train_start": "2022-06-01", "train_end": "2024-12-31", "test_start": "2025-01-01", "test_end": "2025-02-01"},
+            {
+                "train_start": "2018-06-01",
+                "train_end":   "2020-12-31",
+                "test_start":  "2021-01-01",
+                "test_end":    "2023-12-31"
+            }
         ]
+        # 홀드아웃 구간 (최종 검증 전용)
+        holdout = {"holdout_start": "2024-01-01", "holdout_end": "2025-02-01"}
         
         total_score = 0.0
+        num_evaluations = 0
         for split in splits:
-            # 학습 구간 백테스트
-            backtester = Backtester(symbol="BTC/USDT", account_size=10000)
-            backtester.load_data(
-                "ohlcv_{symbol}_{timeframe}",
-                "ohlcv_{symbol}_{timeframe}",
-                "4h", "1d",
-                split["train_start"], split["train_end"]
-            )
-            try:
-                trades_train, _ = backtester.run_backtest(dynamic_params)
-            except Exception as e:
-                logger.error(f"Training backtest failed: {e}")
-                return 1e6
-            total_pnl_train = sum(trade["pnl"] for trade in trades_train)
-            roi_train = total_pnl_train / 10000 * 100
+            for asset in assets:
+                # Training backtest
+                backtester_train = Backtester(symbol=asset, account_size=10000)
+                backtester_train.load_data(
+                    "ohlcv_{symbol}_{timeframe}",
+                    "ohlcv_{symbol}_{timeframe}",
+                    "4h", "1d",
+                    split["train_start"], split["train_end"]
+                )
+                try:
+                    trades_train, _ = backtester_train.run_backtest(dynamic_params)
+                except Exception as e:
+                    logger.error(f"Training backtest failed for {asset} on split {split}: {e}")
+                    return 1e6
+                total_pnl_train = sum(trade["pnl"] for trade in trades_train)
+                roi_train = total_pnl_train / 10000 * 100
 
-            # 테스트 구간 백테스트
-            backtester.load_data(
-                "ohlcv_{symbol}_{timeframe}",
-                "ohlcv_{symbol}_{timeframe}",
-                "4h", "1d",
-                split["test_start"], split["test_end"]
-            )
-            try:
-                trades_test, _ = backtester.run_backtest(dynamic_params)
-            except Exception as e:
-                logger.error(f"Test backtest failed: {e}")
-                return 1e6
-            total_pnl_test = sum(trade["pnl"] for trade in trades_test)
-            roi_test = total_pnl_test / 10000 * 100
+                # Test backtest
+                backtester_test = Backtester(symbol=asset, account_size=10000)
+                backtester_test.load_data(
+                    "ohlcv_{symbol}_{timeframe}",
+                    "ohlcv_{symbol}_{timeframe}",
+                    "4h", "1d",
+                    split["test_start"], split["test_end"]
+                )
+                try:
+                    trades_test, _ = backtester_test.run_backtest(dynamic_params)
+                except Exception as e:
+                    logger.error(f"Test backtest failed for {asset} on split {split}: {e}")
+                    return 1e6
+                total_pnl_test = sum(trade["pnl"] for trade in trades_test)
+                roi_test = total_pnl_test / 10000 * 100
 
-            # 과적합 패널티 및 점수 산출: 테스트 ROI와 학습 ROI의 차이를 고려
-            overfit_penalty = abs(roi_train - roi_test)
-            score = -roi_test + 0.5 * overfit_penalty
-            total_score += score
+                # 홀드아웃 구간 backtest
+                backtester_holdout = Backtester(symbol=asset, account_size=10000)
+                backtester_holdout.load_data(
+                    "ohlcv_{symbol}_{timeframe}",
+                    "ohlcv_{symbol}_{timeframe}",
+                    "4h", "1d",
+                    holdout["holdout_start"], holdout["holdout_end"]
+                )
+                try:
+                    trades_holdout, _ = backtester_holdout.run_backtest(dynamic_params)
+                except Exception as e:
+                    logger.error(f"Holdout backtest failed for {asset}: {e}")
+                    return 1e6
+                total_pnl_holdout = sum(trade["pnl"] for trade in trades_holdout)
+                roi_holdout = total_pnl_holdout / 10000 * 100
 
-        avg_score = total_score / len(splits)
-        return avg_score
+                overfit_penalty = abs(roi_train - roi_test)
+                # 홀드아웃 성과가 월간 ROI 2% 미만이면 페널티 부과
+                holdout_penalty = 0 if roi_holdout >= 2.0 else (2.0 - roi_holdout) * 10
 
+                score = -roi_test + overfit_penalty + holdout_penalty
+                total_score += score
+                num_evaluations += 1
+        
+        avg_score = total_score / num_evaluations if num_evaluations > 0 else total_score
+        
+        # 정규화 항 (Regularization penalty)
+        reg_penalty = 0.0
+        regularization_keys = ["atr_multiplier", "profit_ratio", "risk_per_trade", "scale_in_threshold"]
+        for key in regularization_keys:
+            default_value = base_params.get(key, 1.0)
+            diff = dynamic_params.get(key, default_value) - default_value
+            reg_penalty += (diff ** 2)
+        reg_penalty *= 0.1
+        
+        final_score = avg_score + reg_penalty
+        return final_score
+  
     def optimize(self):
         sampler = optuna.samplers.TPESampler(seed=42)
         self.study = optuna.create_study(direction="minimize", sampler=sampler)
