@@ -13,14 +13,16 @@ import os
 import glob
 import logging
 import pandas as pd
+
 from backtesting.optimizer import DynamicParameterOptimizer
 from backtesting.backtester import Backtester
 from backtesting.performance import print_performance_report
 from logs.logger_config import setup_logger
+from dynamic_parameters.dynamic_param_manager import DynamicParamManager
 
 def clear_logs():
     """
-    실행 전에 logs 디렉토리 내 .log 확장자를 가진 파일들만 삭제합니다.
+    실행 전에 logs 디렉토리 내 .log 확장자를 가진 파일들을 삭제합니다.
     """
     log_dir = "logs"
     pattern = os.path.join(log_dir, "*.log")
@@ -32,17 +34,21 @@ def clear_logs():
             print(f"로그 파일 {log_file} 삭제 중 오류 발생: {e}")
 
 def main():
-    # 먼저 모든 로거 핸들러를 종료한 후 로그 삭제
+    # 모든 로거 핸들러 종료 후 로그 삭제
     logging.shutdown()
     clear_logs()
     
     logger = setup_logger("test_strategy_performance")
+    logger.info("테스트 실행을 시작합니다.")
     
     # 1. 파라미터 최적화 (Walk-Forward 방식)
     logger.info("Walk-Forward 방식의 파라미터 최적화를 시작합니다...")
     optimizer = DynamicParameterOptimizer(n_trials=10)
     best_trial = optimizer.optimize()
-    best_params = best_trial.params
+    
+    # 기본 파라미터와 최적화된 파라미터 병합 (DynamicParamManager의 merge_params 사용)
+    dynamic_manager = DynamicParamManager()
+    best_params = dynamic_manager.merge_params(best_trial.params)
     logger.info("최적의 파라미터: %s", best_params)
     
     # 2. 각 종목별 백테스트 진행 및 개별 성과 리포트 생성
@@ -53,8 +59,8 @@ def main():
     
     for symbol in symbols:
         logger.info("심볼 %s에 대한 백테스트를 진행합니다.", symbol)
-        backtester = Backtester(symbol=symbol, account_size=10000)
         try:
+            backtester = Backtester(symbol=symbol, account_size=10000)
             backtester.load_data(
                 short_table_format="ohlcv_{symbol}_{timeframe}",
                 long_table_format="ohlcv_{symbol}_{timeframe}",
@@ -74,7 +80,6 @@ def main():
             logger.error("심볼 %s 백테스트 실행 중 에러: %s", symbol, e)
             continue
         
-        # 종목별 거래 내역이 있으면 개별 성과 리포트 생성
         if trades:
             symbol_trades_df = pd.DataFrame(trades)
             if 'exit_time' in symbol_trades_df.columns:

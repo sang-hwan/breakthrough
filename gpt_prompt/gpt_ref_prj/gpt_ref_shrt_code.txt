@@ -11,57 +11,97 @@ DATABASE = {
 ---
 
 # data_collection/db_manager.py
+import logging
 from sqlalchemy import create_engine, text
 from psycopg2.extras import execute_values
 import pandas as pd
 from data_collection.db_config import DATABASE
+from logs.logger_config import setup_logger
+
+logger = setup_logger(__name__)
 
 def insert_on_conflict(table, conn, keys, data_iter):
-    raw_conn = conn.connection
-    cur = raw_conn.cursor()
-    values = list(data_iter)
-    columns = ", ".join(keys)
-    sql = f"INSERT INTO {table.name} ({columns}) VALUES %s ON CONFLICT (timestamp) DO NOTHING"
-    execute_values(cur, sql, values)
-    cur.close()
+    """
+    데이터를 삽입할 때, timestamp 컬럼을 기준으로 중복 발생 시 삽입하지 않습니다.
+    """
+    try:
+        raw_conn = conn.connection
+        cur = raw_conn.cursor()
+        values = list(data_iter)
+        columns = ", ".join(keys)
+        sql = f"INSERT INTO {table.name} ({columns}) VALUES %s ON CONFLICT (timestamp) DO NOTHING"
+        execute_values(cur, sql, values)
+        cur.close()
+    except Exception as e:
+        logger.error(f"insert_on_conflict 에러: {e}")
 
-def insert_ohlcv_records(df: pd.DataFrame, table_name: str = 'ohlcv_data', conflict_action: str = "DO NOTHING", db_config: dict = None) -> None:
+def insert_ohlcv_records(df: pd.DataFrame, table_name: str = 'ohlcv_data', conflict_action: str = "DO NOTHING", db_config: dict = None, chunk_size: int = 10000) -> None:
+    """
+    OHLCV 데이터를 지정된 테이블에 저장합니다.
+    - 대용량 데이터 처리를 위해 chunk_size 단위로 나누어 저장합니다.
+    - 에러 발생 시 로그에 기록합니다.
+    """
     if db_config is None:
         db_config = DATABASE
+
     engine = create_engine(
         f"postgresql://{db_config['user']}:{db_config['password']}@"
-        f"{db_config['host']}:{db_config['port']}/{db_config['dbname']}"
+        f"{db_config['host']}:{db_config['port']}/{db_config['dbname']}",
+        pool_pre_ping=True  # 연결 유효성 확인
     )
+
     create_table_sql = text(f"""
-            CREATE TABLE IF NOT EXISTS {table_name} (
-                timestamp TIMESTAMP NOT NULL,
-                open DOUBLE PRECISION,
-                high DOUBLE PRECISION,
-                low DOUBLE PRECISION,
-                close DOUBLE PRECISION,
-                volume DOUBLE PRECISION,
-                PRIMARY KEY (timestamp)
-            );
-            """)
-    with engine.begin() as conn:
-        conn.execute(create_table_sql)
-    df = df.copy()
-    df.reset_index(inplace=True)
-    df.to_sql(
-        table_name,
-        engine,
-        if_exists='append',
-        index=False,
-        method=insert_on_conflict
-    )
+        CREATE TABLE IF NOT EXISTS {table_name} (
+            timestamp TIMESTAMP NOT NULL,
+            open DOUBLE PRECISION,
+            high DOUBLE PRECISION,
+            low DOUBLE PRECISION,
+            close DOUBLE PRECISION,
+            volume DOUBLE PRECISION,
+            PRIMARY KEY (timestamp)
+        );
+    """)
+    try:
+        with engine.begin() as conn:
+            conn.execute(create_table_sql)
+    except Exception as e:
+        logger.error(f"테이블 생성 에러 ({table_name}): {e}")
+        return
+
+    try:
+        df = df.copy()
+        df.reset_index(inplace=True)
+        # 대용량 데이터를 chunk 단위로 저장
+        df.to_sql(
+            table_name,
+            engine,
+            if_exists='append',
+            index=False,
+            method=insert_on_conflict,
+            chunksize=chunk_size
+        )
+        logger.info(f"데이터 저장 완료: {table_name} (총 {len(df)} 행)")
+    except Exception as e:
+        logger.error(f"데이터 저장 에러 ({table_name}): {e}")
 
 def fetch_ohlcv_records(table_name: str = 'ohlcv_data', start_date: str = None, end_date: str = None, db_config: dict = None) -> pd.DataFrame:
+    """
+    지정된 테이블에서 OHLCV 데이터를 읽어옵니다.
+    - 에러 발생 시 빈 DataFrame을 반환하며, 로그에 에러를 기록합니다.
+    """
     if db_config is None:
         db_config = DATABASE
-    engine = create_engine(
-        f"postgresql://{db_config['user']}:{db_config['password']}@"
-        f"{db_config['host']}:{db_config['port']}/{db_config['dbname']}"
-    )
+
+    try:
+        engine = create_engine(
+            f"postgresql://{db_config['user']}:{db_config['password']}@"
+            f"{db_config['host']}:{db_config['port']}/{db_config['dbname']}",
+            pool_pre_ping=True
+        )
+    except Exception as e:
+        logger.error(f"DB 엔진 생성 에러: {e}")
+        return pd.DataFrame()
+
     query = f"SELECT * FROM {table_name} WHERE 1=1"
     params = {}
     if start_date:
@@ -72,9 +112,14 @@ def fetch_ohlcv_records(table_name: str = 'ohlcv_data', start_date: str = None, 
         params['end_date'] = end_date
     query += " ORDER BY timestamp"
     query = text(query)
-    df = pd.read_sql(query, engine, params=params, parse_dates=['timestamp'])
-    df.set_index('timestamp', inplace=True)
-    return df
+    try:
+        df = pd.read_sql(query, engine, params=params, parse_dates=['timestamp'])
+        df.set_index('timestamp', inplace=True)
+        logger.info(f"데이터 로드 완료: {table_name} (총 {len(df)} 행)")
+        return df
+    except Exception as e:
+        logger.error(f"데이터 로드 에러 ({table_name}): {e}")
+        return pd.DataFrame()
 
 ---
 
@@ -90,17 +135,12 @@ logger = setup_logger(__name__)
 def fetch_historical_ohlcv_data(symbol: str, timeframe: str, start_date: str, 
                                 limit_per_request: int = 1000, pause_sec: float = 1.0, 
                                 exchange_id: str = 'binance', single_fetch: bool = False,
-                                time_offset_ms: int = 1):
+                                time_offset_ms: int = 1, max_retries: int = 3):
     """
     ccxt를 이용해 지정한 심볼, 타임프레임, 시작일로부터 OHLCV 데이터를 수집합니다.
-    만약 single_fetch=True이면, 한 번의 요청만 수행합니다.
+    single_fetch=True이면 한 번의 요청만 수행합니다.
     
-    반환된 DataFrame은 'open', 'high', 'low', 'close', 'volume' 컬럼을 가지며, 
-    인덱스는 timestamp입니다.
-    
-    [time_offset_ms 설명]
-    → 마지막으로 수집한 타임스탬프에 time_offset_ms(밀리초 단위)를 더하여,
-       중복된 데이터 수집을 방지하기 위해 사용됩니다.
+    반환 DataFrame: 'open', 'high', 'low', 'close', 'volume' 컬럼을 가지며, 인덱스는 timestamp.
     """
     try:
         exchange_class = getattr(ccxt, exchange_id)
@@ -119,12 +159,18 @@ def fetch_historical_ohlcv_data(symbol: str, timeframe: str, start_date: str,
         return pd.DataFrame()
 
     ohlcv_list = []
+    retry_count = 0
     while True:
         try:
             ohlcvs = exchange.fetch_ohlcv(symbol, timeframe, since=since, limit=limit_per_request)
         except Exception as e:
             logger.error(f"{symbol}의 {timeframe} 데이터 수집 에러: {e}")
-            break
+            retry_count += 1
+            if retry_count >= max_retries:
+                logger.error(f"최대 재시도({max_retries}) 횟수 초과로 {symbol} {timeframe} 데이터 수집 중단")
+                break
+            time.sleep(pause_sec)
+            continue
 
         if not ohlcvs:
             break
@@ -145,14 +191,23 @@ def fetch_historical_ohlcv_data(symbol: str, timeframe: str, start_date: str,
         time.sleep(pause_sec)
 
     if ohlcv_list:
-        df = pd.DataFrame(ohlcv_list, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        df.set_index('timestamp', inplace=True)
-        return df
+        try:
+            df = pd.DataFrame(ohlcv_list, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df.set_index('timestamp', inplace=True)
+            logger.info(f"{symbol} {timeframe} historical data 수집 완료 (총 {len(df)} 행)")
+            return df
+        except Exception as e:
+            logger.error(f"DataFrame 변환 에러: {e}")
+            return pd.DataFrame()
     else:
+        logger.warning(f"{symbol} {timeframe}에 대한 데이터가 없습니다.")
         return pd.DataFrame()
     
 def fetch_latest_ohlcv_data(symbol: str, timeframe: str, limit: int = 500, exchange_id: str = 'binance'):
+    """
+    최신 OHLCV 데이터를 수집합니다.
+    """
     try:
         exchange_class = getattr(ccxt, exchange_id)
         exchange = exchange_class({
@@ -170,16 +225,26 @@ def fetch_latest_ohlcv_data(symbol: str, timeframe: str, limit: int = 500, excha
         return pd.DataFrame()
     
     if ohlcvs:
-        df = pd.DataFrame(ohlcvs, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        df.set_index('timestamp', inplace=True)
-        return df
+        try:
+            df = pd.DataFrame(ohlcvs, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df.set_index('timestamp', inplace=True)
+            logger.info(f"{symbol} {timeframe} 최신 데이터 수집 완료 (총 {len(df)} 행)")
+            return df
+        except Exception as e:
+            logger.error(f"DataFrame 변환 에러: {e}")
+            return pd.DataFrame()
     else:
+        logger.warning(f"{symbol} {timeframe}에 대한 최신 데이터가 없습니다.")
         return pd.DataFrame()
     
 def get_top_market_cap_symbols(exchange_id: str = 'binance', quote_currency: str = 'USDT', 
                                required_start_date: str = "2018-01-01", count: int = 5, 
                                pause_sec: float = 1.0):
+    """
+    거래량(quoteVolume)을 기준으로 상위 심볼들을 선정합니다.
+    데이터 가용성을 확인하여, 지정된 시작일 이전 데이터가 존재하는 심볼만 반환합니다.
+    """
     try:
         exchange_class = getattr(ccxt, exchange_id)
         exchange = exchange_class({
@@ -250,33 +315,49 @@ def collect_and_store_ohlcv_data(
     exchange_id: str = 'binance',
     time_offset_ms: int = 1
 ) -> None:
+    """
+    심볼과 타임프레임에 따라 OHLCV 데이터를 수집한 후, DB에 저장합니다.
+    - 수집 시 에러 및 빈 데이터 처리, DB 저장 시 chunk 단위 저장으로 대용량 데이터 처리를 최적화합니다.
+    """
     for symbol in symbols:
         for tf in timeframes:
             logger.info(f"[*] Fetching {symbol} - {tf} data...")
-            if use_historical:
-                if not start_date:
-                    raise ValueError("start_date는 과거 데이터 수집 시 반드시 필요합니다.")
-                df = fetch_historical_ohlcv_data(
-                    symbol=symbol,
-                    timeframe=tf,
-                    start_date=start_date,
-                    limit_per_request=limit_per_request,
-                    pause_sec=pause_sec,
-                    exchange_id=exchange_id,
-                    single_fetch=False,
-                    time_offset_ms=time_offset_ms
-                )
-            else:
-                df = fetch_latest_ohlcv_data(
-                    symbol=symbol,
-                    timeframe=tf,
-                    limit=latest_limit,
-                    exchange_id=exchange_id
-                )
-            table_name = table_name_format.format(symbol=symbol.replace('/', '').lower(), timeframe=tf)
+            try:
+                if use_historical:
+                    if not start_date:
+                        raise ValueError("start_date는 과거 데이터 수집 시 반드시 필요합니다.")
+                    df = fetch_historical_ohlcv_data(
+                        symbol=symbol,
+                        timeframe=tf,
+                        start_date=start_date,
+                        limit_per_request=limit_per_request,
+                        pause_sec=pause_sec,
+                        exchange_id=exchange_id,
+                        single_fetch=False,
+                        time_offset_ms=time_offset_ms
+                    )
+                else:
+                    df = fetch_latest_ohlcv_data(
+                        symbol=symbol,
+                        timeframe=tf,
+                        limit=latest_limit,
+                        exchange_id=exchange_id
+                    )
+            except Exception as e:
+                logger.error(f"데이터 수집 에러 ({symbol} - {tf}): {e}")
+                continue
+
             logger.info(f"    -> Total Rows Fetched: {len(df)}")
-            insert_ohlcv_records(df, table_name=table_name)
-            logger.info(f"    -> Saved to table: {table_name}")
+            if df.empty:
+                logger.warning(f"    -> {symbol} - {tf} 데이터가 없습니다. 저장 건너뜁니다.")
+                continue
+
+            table_name = table_name_format.format(symbol=symbol.replace('/', '').lower(), timeframe=tf)
+            try:
+                insert_ohlcv_records(df, table_name=table_name)
+                logger.info(f"    -> Saved to table: {table_name}")
+            except Exception as e:
+                logger.error(f"데이터 저장 에러 ({table_name}): {e}")
             time.sleep(pause_sec)
 
 ---
@@ -285,7 +366,19 @@ def collect_and_store_ohlcv_data(
 from logs.logger_config import setup_logger
 
 class DynamicParamManager:
+    _instance = None  # 싱글턴 인스턴스 저장
+
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            cls._instance = super(DynamicParamManager, cls).__new__(cls)
+        return cls._instance
+
     def __init__(self):
+        # 이미 초기화된 경우 재초기화 방지
+        if hasattr(self, '_initialized') and self._initialized:
+            return
+
+        # 기본 파라미터 설정 (다른 모듈과 연계되는 주요 값들)
         self.default_params = {
             "sma_period": 200,
             "atr_period": 14,
@@ -303,56 +396,131 @@ class DynamicParamManager:
             "scale_in_threshold": 0.0153,
             "hmm_confidence_threshold": 0.8,
             "liquidity_info": "high",
-            "volatility_multiplier": 1.0,  # 신규 파라미터: 변동성에 따른 리스크 조정
-            "use_candle_pattern": True   # 신규 파라미터: 캔들 패턴 활용 여부
+            "volatility_multiplier": 1.0,  # 변동성 반영 인자
+            "use_candle_pattern": True
         }
         self.logger = setup_logger(__name__)
         self.logger.info("DynamicParamManager 초기화 완료 (레짐 기반 전략 적용).")
+        self._initialized = True
 
-    def get_default_params(self):
+    def get_default_params(self) -> dict:
+        """
+        기본 파라미터 사전을 복사하여 반환합니다.
+        """
         return self.default_params.copy()
-    
-    def update_dynamic_params(self, market_data):
+
+    def update_dynamic_params(self, market_data: dict) -> dict:
+        """
+        시장 데이터(예: 변동성, 추세, 거래량 등)에 따라 파라미터를 동적으로 업데이트합니다.
+        
+        예시:
+          - 변동성이 높으면 atr_multiplier 및 volatility_multiplier를 상향 조정.
+          - bullish 추세이면 profit_ratio를 소폭 상향, bearish 추세이면 하향.
+          - 거래량(volume)이 낮으면 risk_per_trade를 축소하는 방식 적용.
+        """
         dynamic_params = self.get_default_params()
         volatility = market_data.get("volatility", 0.0)
-        
+        trend = market_data.get("trend", "neutral")
+        volume = market_data.get("volume", None)
+
+        # 변동성에 따른 조정
         if volatility > 0.05:
             dynamic_params["atr_multiplier"] *= 1.1
             dynamic_params["volatility_multiplier"] = 1.2
+            self.logger.debug("높은 변동성 감지: atr_multiplier 및 volatility_multiplier 상향 조정.")
         else:
-            dynamic_params["atr_multiplier"] *= 0.9
+            dynamic_params["atr_multiplier"] *= 0.95
             dynamic_params["volatility_multiplier"] = 1.0
-        
-        self.logger.info(f"Market data: {market_data}")
-        self.logger.info(f"Updated dynamic parameters: {dynamic_params}")
-        
+            self.logger.debug("낮거나 보통의 변동성: atr_multiplier 소폭 하향 조정.")
+
+        # 추세에 따른 profit_ratio 조정
+        if trend == "bullish":
+            dynamic_params["profit_ratio"] *= 1.05
+            self.logger.debug("Bullish 추세 감지: profit_ratio 상향 조정.")
+        elif trend == "bearish":
+            dynamic_params["profit_ratio"] *= 0.95
+            self.logger.debug("Bearish 추세 감지: profit_ratio 하향 조정.")
+        else:
+            self.logger.debug("중립 추세: profit_ratio 변경 없음.")
+
+        # 거래량(volume)에 따른 risk_per_trade 조정 (옵션)
+        if volume is not None:
+            if volume < 1000:
+                dynamic_params["risk_per_trade"] *= 0.9
+                self.logger.debug("낮은 거래량 감지: risk_per_trade 하향 조정.")
+            else:
+                dynamic_params["risk_per_trade"] *= 1.05
+                self.logger.debug("높은 거래량 감지: risk_per_trade 소폭 상향 조정.")
+
+        self.logger.debug(f"Market data: {market_data}")
+        self.logger.debug(f"업데이트된 동적 파라미터: {dynamic_params}")
         return dynamic_params
+
+    def merge_params(self, optimized_params: dict) -> dict:
+        """
+        최적화 결과로 도출된 파라미터와 기본 파라미터를 병합하여 반환합니다.
+        숫자형 값의 경우 기본값과 최적화값의 가중 평균(여기서는 단순 평균, 50:50)을 사용하고,
+        그 외의 타입은 최적화값을 우선 적용합니다.
+        """
+        merged = self.get_default_params()
+        for key, opt_value in optimized_params.items():
+            default_value = merged.get(key)
+            if isinstance(default_value, (int, float)) and isinstance(opt_value, (int, float)):
+                merged[key] = (default_value + opt_value) / 2
+            else:
+                merged[key] = opt_value
+        self.logger.debug(f"병합된 동적 파라미터: {merged}")
+        return merged
 
 ---
 
 # logs/logger_config.py
 import logging
 import os
+from logging.handlers import TimedRotatingFileHandler
 
 def setup_logger(module_name: str) -> logging.Logger:
-    # logs 디렉토리가 없으면 생성
-    if not os.path.exists('logs'):
-        os.makedirs('logs')
+    """
+    - 기본 로그 레벨을 INFO로 설정하여 핵심 이벤트, 오류, 경고 등의 정보만 출력하도록 합니다.
+    - 개발 단계에서는 환경변수 LOG_LEVEL을 통해 필요 시 DEBUG 레벨로 전환할 수 있습니다.
+    - TimedRotatingFileHandler를 사용해 매일(또는 지정 시간마다) 새 로그 파일로 분리하며, 최대 7일 분량만 보관합니다.
+    - 로그 메시지 생략 기능은 제거되어, 모든 로그 메시지가 온전히 출력됩니다.
+    """
+    # 환경변수를 통해 로그 레벨 설정 (기본은 INFO)
+    log_level_str = os.getenv("LOG_LEVEL", "INFO")
+    log_level = getattr(logging, log_level_str.upper(), logging.INFO)
+    
+    # 로그 저장 폴더 생성 (존재하지 않을 경우)
+    os.makedirs('logs', exist_ok=True)
+    
     logger = logging.getLogger(module_name)
-    logger.setLevel(logging.INFO)
-    # 이미 핸들러가 있으면 그대로 반환
-    if logger.handlers:
-        return logger
-    # 파일 핸들러: 파일명에 모듈명을 포함, 인코딩을 utf-8로 설정
-    file_handler = logging.FileHandler(f"logs/{module_name}.log", encoding='utf-8')
-    file_handler.setLevel(logging.INFO)
+    logger.setLevel(log_level)
+    
+    # 기존 핸들러가 있다면 제거 (중복 로그 방지)
+    if logger.hasHandlers():
+        logger.handlers.clear()
+    
+    # 파일 핸들러 설정: 매일 자정마다 로그 파일 롤링, 최대 7일 보관
+    file_handler = TimedRotatingFileHandler(
+        filename=f"logs/{module_name}.log",
+        when="midnight",
+        interval=1,
+        backupCount=7,
+        encoding="utf-8"
+    )
+    file_handler.setLevel(log_level)
     formatter = logging.Formatter('[%(asctime)s] %(levelname)s:%(name)s:%(funcName)s: %(message)s')
     file_handler.setFormatter(formatter)
+    # 메시지 생략 필터 제거: 별도의 필터를 추가하지 않습니다.
     logger.addHandler(file_handler)
-    # 콘솔 핸들러도 추가 (인코딩은 시스템에 따라 자동 처리됨)
+    
+    # 콘솔 핸들러 설정 (개발 중 필요 시)
     console_handler = logging.StreamHandler()
+    console_handler.setLevel(log_level)
     console_handler.setFormatter(formatter)
+    # 메시지 생략 필터 제거: 별도의 필터를 추가하지 않습니다.
     logger.addHandler(console_handler)
+    
     return logger
 
 ---
@@ -362,35 +530,86 @@ import numpy as np
 import pandas as pd
 from hmmlearn.hmm import GaussianHMM
 from logs.logger_config import setup_logger
+from datetime import timedelta
 
 class MarketRegimeHMM:
-    def __init__(self, n_components=3, covariance_type='full', n_iter=1000, random_state=42):
+    def __init__(self, n_components=3, covariance_type='full', n_iter=1000, random_state=42, retrain_interval_minutes=60):
+        """
+        HMM 모델 초기화.
+        retrain_interval_minutes: 마지막 재학습 시각 이후 최소 재학습 간격(분)
+        """
         self.n_components = n_components
         self.covariance_type = covariance_type
         self.n_iter = n_iter
         self.random_state = random_state
-        self.model = GaussianHMM(n_components=self.n_components,
-                                 covariance_type=self.covariance_type,
-                                 n_iter=self.n_iter,
-                                 random_state=self.random_state)
-        # setup_logger를 통해 로거를 설정 (모듈명과 함수명 등이 로그에 포함됨)
+        self.model = GaussianHMM(
+            n_components=self.n_components,
+            covariance_type=self.covariance_type,
+            n_iter=self.n_iter,
+            random_state=self.random_state
+        )
         self.logger = setup_logger(__name__)
         self.trained = False
+        self.last_train_time = None  # 마지막 학습 데이터의 마지막 타임스탬프
+        self.retrain_interval_minutes = retrain_interval_minutes
+        self.last_feature_stats = None  # 이전 학습 시 사용된 피처들의 평균값 저장
+        self.retrain_feature_threshold = 0.01  # 피처 평균 변화의 임계값 (예: 1% 미만이면 재학습하지 않음)
 
-    def train(self, historical_data: pd.DataFrame, feature_columns: list = None):
+    def train(self, historical_data: pd.DataFrame, feature_columns: list = None, max_train_samples: int = None):
+        """
+        HMM 모델 학습:
+         - historical_data: 학습에 사용할 데이터프레임 (인덱스는 datetime)
+         - feature_columns: 사용할 피처 목록 (None이면 전체 컬럼 사용)
+         - max_train_samples: 최신 샘플 수만 사용할 경우 지정
+
+         마지막 학습 시각 및 피처 평균 값의 변화가 작으면 재학습을 건너뜁니다.
+        """
         if historical_data.empty:
             self.logger.error("Historical data is empty. Training aborted.")
             raise ValueError("Historical data is empty.")
         if feature_columns is None:
             feature_columns = historical_data.columns.tolist()
-        
-        X = historical_data[feature_columns].values
+
+        # 최대 샘플 수 지정 시 최신 데이터만 사용
+        if max_train_samples is not None and len(historical_data) > max_train_samples:
+            training_data = historical_data.iloc[-max_train_samples:]
+        else:
+            training_data = historical_data
+
+        current_last_time = training_data.index.max()
+
+        # 시간 기반 재학습 조건 확인
+        if self.last_train_time is not None:
+            elapsed = current_last_time - self.last_train_time
+            if elapsed < timedelta(minutes=self.retrain_interval_minutes):
+                self.logger.info(f"Skipping HMM retraining: only {elapsed.total_seconds()/60:.2f} minutes elapsed since last training.")
+                return
+
+            # 피처 변화 기반 조건: 이전 학습 시의 피처 평균과 현재 피처 평균의 차이가 작으면 재학습 건너뜀
+            if self.last_feature_stats is not None:
+                current_means = training_data[feature_columns].mean()
+                diff = np.abs(current_means - self.last_feature_stats).mean()
+                if diff < self.retrain_feature_threshold:
+                    self.logger.info(f"Skipping HMM retraining: average feature mean difference {diff:.6f} below threshold {self.retrain_feature_threshold}.")
+                    return
+
+        # 학습 데이터 준비 및 모델 학습
+        X = training_data[feature_columns].values
         self.logger.info(f"Training HMM model with {X.shape[0]} samples and {X.shape[1]} features.")
-        self.model.fit(X)
+        try:
+            self.model.fit(X)
+        except Exception as e:
+            self.logger.error(f"HMM 모델 학습 에러: {e}")
+            raise
         self.trained = True
+        self.last_train_time = current_last_time
+        self.last_feature_stats = training_data[feature_columns].mean()
         self.logger.info("HMM training completed.")
 
     def predict(self, data: pd.DataFrame, feature_columns: list = None):
+        """
+        주어진 데이터에 대해 HMM 모델로 상태 예측.
+        """
         if not self.trained:
             self.logger.error("Model is not trained. Prediction aborted.")
             raise ValueError("Model is not trained.")
@@ -399,24 +618,30 @@ class MarketRegimeHMM:
             raise ValueError("Input data is empty.")
         if feature_columns is None:
             feature_columns = data.columns.tolist()
-        
         X = data[feature_columns].values
-        predicted_states = self.model.predict(X)
+        try:
+            predicted_states = self.model.predict(X)
+        except Exception as e:
+            self.logger.error(f"HMM 예측 에러: {e}")
+            raise
         self.logger.info(f"Predicted states for {X.shape[0]} samples.")
         return predicted_states
 
-    def update(self, new_data: pd.DataFrame, feature_columns: list = None):
+    def update(self, new_data: pd.DataFrame, feature_columns: list = None, max_train_samples: int = None):
+        """
+        새 데이터가 들어올 때, 학습 조건에 따라 HMM 모델을 재학습합니다.
+        """
         self.logger.info("Updating HMM model with new data.")
-        if feature_columns is None:
-            feature_columns = new_data.columns.tolist()
-        X_new = new_data[feature_columns].values
-        self.model.fit(X_new)
+        self.train(new_data, feature_columns, max_train_samples)
         self.logger.info("HMM model update completed.")
 
 ---
 
 # markets_analysis/regime_filter.py
 import numpy as np
+from logs.logger_config import setup_logger
+
+logger = setup_logger(__name__)
 
 def filter_by_confidence(hmm_model, data, feature_columns, threshold=0.8):
     """
@@ -424,15 +649,21 @@ def filter_by_confidence(hmm_model, data, feature_columns, threshold=0.8):
     
     :param hmm_model: MarketRegimeHMM 객체
     :param data: 예측에 사용할 pandas DataFrame
-    :param feature_columns: 예측에 사용할 피처 컬럼 리스트 (예: ["returns", "volatility"])
+    :param feature_columns: 예측에 사용할 피처 컬럼 리스트 (예: ["returns", "volatility", ...])
     :param threshold: 신뢰도 임계치 (0.0 ~ 1.0)
     :return: numpy array (각 샘플이 threshold 이상이면 True, 아니면 False)
     """
-    X = data[feature_columns].values
-    # score_samples()를 사용해 각 샘플의 posterior 확률 분포를 구합니다.
-    logprob, posteriors = hmm_model.model.score_samples(X)
-    max_probs = posteriors.max(axis=1)
-    return max_probs >= threshold
+    try:
+        X = data[feature_columns].values
+        # score_samples()를 사용해 각 샘플의 posterior 확률 분포를 구합니다.
+        logprob, posteriors = hmm_model.model.score_samples(X)
+        max_probs = posteriors.max(axis=1)
+        confidence_flags = max_probs >= threshold
+        logger.info(f"Filter by confidence applied on {len(confidence_flags)} samples with threshold {threshold}.")
+        return confidence_flags
+    except Exception as e:
+        logger.error(f"filter_by_confidence 에러: {e}")
+        return np.array([])
 
 def adjust_regime(prediction, technical_indicators):
     """
@@ -442,27 +673,30 @@ def adjust_regime(prediction, technical_indicators):
     :param technical_indicators: dict, 보조 지표 분석 결과 (예: {"trend": "bullish"})
     :return: 최종 조정된 시장 레짐 (문자열)
     """
-    # HMM의 상태를 미리 정의된 매핑으로 변환합니다.
+    # HMM 상태를 미리 정의된 매핑으로 변환합니다.
     state_mapping = {0: "bullish", 1: "bearish", 2: "sideways"}
     hmm_regime = state_mapping.get(prediction, "unknown") if isinstance(prediction, int) else prediction
     
     # 보조 지표에서 분석한 추세(trend) 값을 가져옵니다.
     tech_trend = technical_indicators.get("trend", None)
     
-    # 간단한 조정 로직:
-    # 보조 지표가 유효한 경우, 그 값을 우선적으로 사용합니다.
+    # 보조 지표가 유효하면 우선 적용합니다.
     if tech_trend in ["bullish", "bearish", "sideways"]:
-        return tech_trend
+        adjusted_regime = tech_trend
     else:
-        return hmm_regime
-    
+        adjusted_regime = hmm_regime
+
+    logger.info(f"Adjusted regime: HMM prediction={hmm_regime}, technical trend={tech_trend} -> final regime={adjusted_regime}")
+    return adjusted_regime
+
 def get_regime_intervals(regime_series):
     """
     regime_series: pandas Series, 인덱스는 날짜, 값은 레짐 (예: bullish, bearish, sideways)
-    반환: 각 레짐별 (레짐, 시작일, 종료일) 리스트
+    반환: 각 레짐별 (레짐, 시작일, 종료일) 튜플 리스트
     """
     intervals = []
     if regime_series.empty:
+        logger.warning("get_regime_intervals: Empty regime series provided.")
         return intervals
     current_regime = regime_series.iloc[0]
     start_date = regime_series.index[0]
@@ -473,6 +707,7 @@ def get_regime_intervals(regime_series):
             current_regime = regime
             start_date = dt
     intervals.append((current_regime, start_date, regime_series.index[-1]))
+    logger.info(f"Calculated {len(intervals)} regime intervals.")
     return intervals
 
 ---
@@ -481,23 +716,53 @@ def get_regime_intervals(regime_series):
 from logs.logger_config import setup_logger
 
 class RealTimeMonitor:
-    def __init__(self):
-        self.logger = setup_logger(__name__)
-
-    def monitor_trade_activity(self, positions, current_market_price):
+    def __init__(self, price_change_threshold: float = 0.1, slippage_threshold: float = 0.02):
         """
-        보유 포지션, 체결 내역, 슬리피지 및 거래 비용을 모니터링하여 이상 징후 발생 시 알람.
+        Args:
+            price_change_threshold (float): 가격 변동 임계치 (예: 0.1 = 10% 이상 변동 시 경고)
+            slippage_threshold (float): 슬리피지 임계치 (예: 0.02 = 2% 이상 가격 차이 발생 시 경고)
+        """
+        self.logger = setup_logger(__name__)
+        self.price_change_threshold = price_change_threshold
+        self.slippage_threshold = slippage_threshold
+
+    def monitor_trade_activity(self, positions, current_market_price: float):
+        """
+        보유 포지션의 실행 내역과 현재 시장 가격을 비교하여,
+        가격 변동 및 슬리피지 발생을 감지하고 경고 로그를 남깁니다.
+        
+        개선사항:
+          - 각 포지션의 entry_price와 현재 시장 가격의 상대적 변화율(price_change)을 계산하여 임계치를 초과하면 경고.
+          - 주문 체결 시점의 가격과 현재 가격의 차이가 슬리피지 임계치를 초과하면 별도로 경고.
         """
         for pos in positions:
             for exec_record in pos.executions:
                 if not exec_record.get("closed", False):
                     entry_price = exec_record.get("entry_price")
-                    if entry_price is None:
+                    if entry_price is None or entry_price <= 0:
                         continue
-                    price_change = abs(current_market_price - entry_price) / entry_price
-                    if price_change > 0.1:  # 예: 10% 이상 변동 시 경고
-                        self.logger.warning(f"RealTimeMonitor: Position {pos.position_id} has moved by {price_change*100:.2f}% from entry price.")
 
-    def send_alert(self, message):
-        # 이메일, SMS, 슬랙 등 연동 가능 (여기서는 로그 기록으로 대체)
+                    # 가격 변동 감지
+                    price_change = abs(current_market_price - entry_price) / entry_price
+                    if price_change > self.price_change_threshold:
+                        self.logger.warning(
+                            f"RealTimeMonitor: Position {pos.position_id} price changed by {price_change*100:.2f}% "
+                            f"(Entry: {entry_price:.2f}, Current: {current_market_price:.2f})."
+                        )
+
+                    # 슬리피지 감지 (실제 체결 가격과 현재 시장 가격 차이)
+                    executed_price = exec_record.get("entry_price")  # 체결 당시 가격
+                    if executed_price is not None and executed_price > 0:
+                        slippage = abs(current_market_price - executed_price) / executed_price
+                        if slippage > self.slippage_threshold:
+                            self.logger.warning(
+                                f"RealTimeMonitor: Position {pos.position_id} slippage detected: {slippage*100:.2f}% "
+                                f"(Executed: {executed_price:.2f}, Current: {current_market_price:.2f})."
+                            )
+
+    def send_alert(self, message: str):
+        """
+        알림 메시지를 로그에 기록합니다.
+        추후 이메일, SMS, 슬랙 등과 연동할 수 있도록 확장 가능합니다.
+        """
         self.logger.info(f"ALERT: {message}")

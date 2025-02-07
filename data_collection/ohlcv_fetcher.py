@@ -10,17 +10,12 @@ logger = setup_logger(__name__)
 def fetch_historical_ohlcv_data(symbol: str, timeframe: str, start_date: str, 
                                 limit_per_request: int = 1000, pause_sec: float = 1.0, 
                                 exchange_id: str = 'binance', single_fetch: bool = False,
-                                time_offset_ms: int = 1):
+                                time_offset_ms: int = 1, max_retries: int = 3):
     """
     ccxt를 이용해 지정한 심볼, 타임프레임, 시작일로부터 OHLCV 데이터를 수집합니다.
-    만약 single_fetch=True이면, 한 번의 요청만 수행합니다.
+    single_fetch=True이면 한 번의 요청만 수행합니다.
     
-    반환된 DataFrame은 'open', 'high', 'low', 'close', 'volume' 컬럼을 가지며, 
-    인덱스는 timestamp입니다.
-    
-    [time_offset_ms 설명]
-    → 마지막으로 수집한 타임스탬프에 time_offset_ms(밀리초 단위)를 더하여,
-       중복된 데이터 수집을 방지하기 위해 사용됩니다.
+    반환 DataFrame: 'open', 'high', 'low', 'close', 'volume' 컬럼을 가지며, 인덱스는 timestamp.
     """
     try:
         exchange_class = getattr(ccxt, exchange_id)
@@ -39,12 +34,18 @@ def fetch_historical_ohlcv_data(symbol: str, timeframe: str, start_date: str,
         return pd.DataFrame()
 
     ohlcv_list = []
+    retry_count = 0
     while True:
         try:
             ohlcvs = exchange.fetch_ohlcv(symbol, timeframe, since=since, limit=limit_per_request)
         except Exception as e:
             logger.error(f"{symbol}의 {timeframe} 데이터 수집 에러: {e}")
-            break
+            retry_count += 1
+            if retry_count >= max_retries:
+                logger.error(f"최대 재시도({max_retries}) 횟수 초과로 {symbol} {timeframe} 데이터 수집 중단")
+                break
+            time.sleep(pause_sec)
+            continue
 
         if not ohlcvs:
             break
@@ -65,14 +66,23 @@ def fetch_historical_ohlcv_data(symbol: str, timeframe: str, start_date: str,
         time.sleep(pause_sec)
 
     if ohlcv_list:
-        df = pd.DataFrame(ohlcv_list, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        df.set_index('timestamp', inplace=True)
-        return df
+        try:
+            df = pd.DataFrame(ohlcv_list, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df.set_index('timestamp', inplace=True)
+            logger.info(f"{symbol} {timeframe} historical data 수집 완료 (총 {len(df)} 행)")
+            return df
+        except Exception as e:
+            logger.error(f"DataFrame 변환 에러: {e}")
+            return pd.DataFrame()
     else:
+        logger.warning(f"{symbol} {timeframe}에 대한 데이터가 없습니다.")
         return pd.DataFrame()
     
 def fetch_latest_ohlcv_data(symbol: str, timeframe: str, limit: int = 500, exchange_id: str = 'binance'):
+    """
+    최신 OHLCV 데이터를 수집합니다.
+    """
     try:
         exchange_class = getattr(ccxt, exchange_id)
         exchange = exchange_class({
@@ -90,16 +100,26 @@ def fetch_latest_ohlcv_data(symbol: str, timeframe: str, limit: int = 500, excha
         return pd.DataFrame()
     
     if ohlcvs:
-        df = pd.DataFrame(ohlcvs, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        df.set_index('timestamp', inplace=True)
-        return df
+        try:
+            df = pd.DataFrame(ohlcvs, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df.set_index('timestamp', inplace=True)
+            logger.info(f"{symbol} {timeframe} 최신 데이터 수집 완료 (총 {len(df)} 행)")
+            return df
+        except Exception as e:
+            logger.error(f"DataFrame 변환 에러: {e}")
+            return pd.DataFrame()
     else:
+        logger.warning(f"{symbol} {timeframe}에 대한 최신 데이터가 없습니다.")
         return pd.DataFrame()
     
 def get_top_market_cap_symbols(exchange_id: str = 'binance', quote_currency: str = 'USDT', 
                                required_start_date: str = "2018-01-01", count: int = 5, 
                                pause_sec: float = 1.0):
+    """
+    거래량(quoteVolume)을 기준으로 상위 심볼들을 선정합니다.
+    데이터 가용성을 확인하여, 지정된 시작일 이전 데이터가 존재하는 심볼만 반환합니다.
+    """
     try:
         exchange_class = getattr(ccxt, exchange_id)
         exchange = exchange_class({

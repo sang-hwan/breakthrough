@@ -3,35 +3,86 @@ import numpy as np
 import pandas as pd
 from hmmlearn.hmm import GaussianHMM
 from logs.logger_config import setup_logger
+from datetime import timedelta
 
 class MarketRegimeHMM:
-    def __init__(self, n_components=3, covariance_type='full', n_iter=1000, random_state=42):
+    def __init__(self, n_components=3, covariance_type='full', n_iter=1000, random_state=42, retrain_interval_minutes=60):
+        """
+        HMM 모델 초기화.
+        retrain_interval_minutes: 마지막 재학습 시각 이후 최소 재학습 간격(분)
+        """
         self.n_components = n_components
         self.covariance_type = covariance_type
         self.n_iter = n_iter
         self.random_state = random_state
-        self.model = GaussianHMM(n_components=self.n_components,
-                                 covariance_type=self.covariance_type,
-                                 n_iter=self.n_iter,
-                                 random_state=self.random_state)
-        # setup_logger를 통해 로거를 설정 (모듈명과 함수명 등이 로그에 포함됨)
+        self.model = GaussianHMM(
+            n_components=self.n_components,
+            covariance_type=self.covariance_type,
+            n_iter=self.n_iter,
+            random_state=self.random_state
+        )
         self.logger = setup_logger(__name__)
         self.trained = False
+        self.last_train_time = None  # 마지막 학습 데이터의 마지막 타임스탬프
+        self.retrain_interval_minutes = retrain_interval_minutes
+        self.last_feature_stats = None  # 이전 학습 시 사용된 피처들의 평균값 저장
+        self.retrain_feature_threshold = 0.01  # 피처 평균 변화의 임계값 (예: 1% 미만이면 재학습하지 않음)
 
-    def train(self, historical_data: pd.DataFrame, feature_columns: list = None):
+    def train(self, historical_data: pd.DataFrame, feature_columns: list = None, max_train_samples: int = None):
+        """
+        HMM 모델 학습:
+         - historical_data: 학습에 사용할 데이터프레임 (인덱스는 datetime)
+         - feature_columns: 사용할 피처 목록 (None이면 전체 컬럼 사용)
+         - max_train_samples: 최신 샘플 수만 사용할 경우 지정
+
+         마지막 학습 시각 및 피처 평균 값의 변화가 작으면 재학습을 건너뜁니다.
+        """
         if historical_data.empty:
             self.logger.error("Historical data is empty. Training aborted.")
             raise ValueError("Historical data is empty.")
         if feature_columns is None:
             feature_columns = historical_data.columns.tolist()
-        
-        X = historical_data[feature_columns].values
+
+        # 최대 샘플 수 지정 시 최신 데이터만 사용
+        if max_train_samples is not None and len(historical_data) > max_train_samples:
+            training_data = historical_data.iloc[-max_train_samples:]
+        else:
+            training_data = historical_data
+
+        current_last_time = training_data.index.max()
+
+        # 시간 기반 재학습 조건 확인
+        if self.last_train_time is not None:
+            elapsed = current_last_time - self.last_train_time
+            if elapsed < timedelta(minutes=self.retrain_interval_minutes):
+                self.logger.info(f"Skipping HMM retraining: only {elapsed.total_seconds()/60:.2f} minutes elapsed since last training.")
+                return
+
+            # 피처 변화 기반 조건: 이전 학습 시의 피처 평균과 현재 피처 평균의 차이가 작으면 재학습 건너뜀
+            if self.last_feature_stats is not None:
+                current_means = training_data[feature_columns].mean()
+                diff = np.abs(current_means - self.last_feature_stats).mean()
+                if diff < self.retrain_feature_threshold:
+                    self.logger.info(f"Skipping HMM retraining: average feature mean difference {diff:.6f} below threshold {self.retrain_feature_threshold}.")
+                    return
+
+        # 학습 데이터 준비 및 모델 학습
+        X = training_data[feature_columns].values
         self.logger.info(f"Training HMM model with {X.shape[0]} samples and {X.shape[1]} features.")
-        self.model.fit(X)
+        try:
+            self.model.fit(X)
+        except Exception as e:
+            self.logger.error(f"HMM 모델 학습 에러: {e}")
+            raise
         self.trained = True
+        self.last_train_time = current_last_time
+        self.last_feature_stats = training_data[feature_columns].mean()
         self.logger.info("HMM training completed.")
 
     def predict(self, data: pd.DataFrame, feature_columns: list = None):
+        """
+        주어진 데이터에 대해 HMM 모델로 상태 예측.
+        """
         if not self.trained:
             self.logger.error("Model is not trained. Prediction aborted.")
             raise ValueError("Model is not trained.")
@@ -40,16 +91,19 @@ class MarketRegimeHMM:
             raise ValueError("Input data is empty.")
         if feature_columns is None:
             feature_columns = data.columns.tolist()
-        
         X = data[feature_columns].values
-        predicted_states = self.model.predict(X)
+        try:
+            predicted_states = self.model.predict(X)
+        except Exception as e:
+            self.logger.error(f"HMM 예측 에러: {e}")
+            raise
         self.logger.info(f"Predicted states for {X.shape[0]} samples.")
         return predicted_states
 
-    def update(self, new_data: pd.DataFrame, feature_columns: list = None):
+    def update(self, new_data: pd.DataFrame, feature_columns: list = None, max_train_samples: int = None):
+        """
+        새 데이터가 들어올 때, 학습 조건에 따라 HMM 모델을 재학습합니다.
+        """
         self.logger.info("Updating HMM model with new data.")
-        if feature_columns is None:
-            feature_columns = new_data.columns.tolist()
-        X_new = new_data[feature_columns].values
-        self.model.fit(X_new)
+        self.train(new_data, feature_columns, max_train_samples)
         self.logger.info("HMM model update completed.")
