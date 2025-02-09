@@ -1,3 +1,52 @@
+[logs]
+# logs/final_report.py
+from logs.logger_config import setup_logger
+
+logger = setup_logger(__name__)
+
+def generate_final_report(performance_data, symbol=None):
+    """
+    종목별 성과 리포트를 생성합니다.
+    symbol 인자가 전달되면 헤더에 심볼명을 포함합니다.
+    """
+    report_lines = []
+    header = f"=== FINAL BACKTEST PERFORMANCE REPORT for {symbol} ===" if symbol else "=== FINAL BACKTEST PERFORMANCE REPORT ==="
+    report_lines.append(header)
+    report_lines.append(f"Overall ROI: {performance_data.get('roi', 0):.2f}%")
+    report_lines.append(f"Cumulative Return: {performance_data.get('cumulative_return', 0):.2f}")
+    report_lines.append(f"Total PnL: {performance_data.get('total_pnl', 0):.2f}")
+    report_lines.append(f"Trade Count: {performance_data.get('trade_count', 0)}")
+    report_lines.append("")
+    report_lines.append("Performance Overview:")
+    report_lines.append(f"  Annualized Return: {performance_data.get('annualized_return', 0):.2f}%")
+    report_lines.append(f"  Annualized Volatility: {performance_data.get('annualized_volatility', 0):.2f}%")
+    report_lines.append(f"  Sharpe Ratio: {performance_data.get('sharpe_ratio', 0):.2f}")
+    report_lines.append(f"  Sortino Ratio: {performance_data.get('sortino_ratio', 0):.2f}")
+    report_lines.append(f"  Calmar Ratio: {performance_data.get('calmar_ratio', 0):.2f}")
+    report_lines.append(f"  Maximum Drawdown: {performance_data.get('max_drawdown', 0):.2f}")
+    report_lines.append("")
+    report_lines.append("Trading Stats:")
+    report_lines.append(f"  Win Rate: {performance_data.get('win_rate', 0):.2f}%")
+    report_lines.append(f"  Average Win: {performance_data.get('avg_win', 0):.2f}")
+    report_lines.append(f"  Average Loss: {performance_data.get('avg_loss', 0):.2f}")
+    report_lines.append(f"  Profit Factor: {performance_data.get('profit_factor', 0):.2f}")
+    report_lines.append(f"  Trades per Year: {performance_data.get('trades_per_year', 0):.2f}")
+    report_lines.append(f"  Max Consecutive Wins: {performance_data.get('max_consecutive_wins', 0)}")
+    report_lines.append(f"  Max Consecutive Losses: {performance_data.get('max_consecutive_losses', 0)}")
+    report_lines.append("")
+    report_lines.append("Monthly Performance:")
+    monthly = performance_data.get("monthly_performance", {})
+    for month in sorted(monthly.keys()):
+        data = monthly[month]
+        status = "TARGET MET" if data["roi"] >= 2.0 else "TARGET NOT MET"
+        report_lines.append(f"  {month}: ROI {data['roi']:.2f}% (Trades: {data['trade_count']}) --> {status}")
+    report_lines.append("=========================================")
+    
+    report_str = "\n".join(report_lines)
+    logger.info(report_str)
+
+---
+
 # logs/logger_config.py
 import logging
 import os
@@ -148,3 +197,64 @@ def setup_logger(module_name: str) -> logging.Logger:
         
     logger.propagate = False
     return logger
+
+---
+
+# logs/logging_util.py
+import logging
+import threading
+
+class EventLogger:
+    """
+    모든 모듈에서 공통으로 사용할 이벤트 집계 및 요약 로그 출력 기능을 제공하는 클래스입니다.
+    
+    - 각 모듈별 인스턴스를 생성하여 이벤트 기록 시 사용합니다.
+    - 내부적으로 이벤트 카운터와 이벤트 메시지를 저장하며, 설정된 횟수(기본 2000회)마다 요약 로그를 INFO 레벨로 출력합니다.
+    """
+    def __init__(self, module_name: str, summary_threshold: int = 2000):
+        """
+        :param module_name: 해당 로거가 속한 모듈의 이름 (예: "Account", "AssetManager" 등)
+        :param summary_threshold: 요약 로그를 출력할 이벤트 횟수 (기본값 2000)
+        """
+        self.module_name = module_name
+        self.summary_threshold = summary_threshold
+        self.event_counter = 0
+        self.events = []
+        self.lock = threading.RLock()
+        # 인스턴스용 logger 생성 (이 logger는 외부에서 주입한 logger로 대체될 수 있음)
+        self.logger = logging.getLogger(module_name)
+
+    def log_event(self, event_message: str, level: int = logging.DEBUG) -> None:
+        """
+        단일 이벤트를 기록합니다.
+        이벤트 발생 시마다 호출되며, 내부 카운터를 증가시키고 로그를 출력합니다.
+        설정된 횟수마다 요약 로그도 함께 출력합니다.
+        
+        :param event_message: 기록할 이벤트 메시지
+        :param level: 로그 레벨 (기본: DEBUG)
+        """
+        with self.lock:
+            self.event_counter += 1
+            self.events.append(event_message)
+            # 이제 전역 logging 대신 인스턴스의 logger를 사용합니다.
+            self.logger.log(level, f"[{self.module_name}] Event: {event_message} (Count: {self.event_counter})")
+            
+            # 설정된 횟수마다 요약 로그 출력
+            if self.event_counter % self.summary_threshold == 0:
+                self.log_summary()
+
+    def log_summary(self) -> None:
+        """
+        현재까지 기록된 이벤트들을 요약하여 INFO 레벨로 출력합니다.
+        요약에는 전체 이벤트 횟수와 마지막에 기록된 이벤트 메시지를 포함합니다.
+        """
+        with self.lock:
+            last_event = self.events[-1] if self.events else "No events recorded"
+            summary_message = (
+                f"[{self.module_name}] 요약 로그: {self.event_counter}회 이벤트, 마지막 이벤트: {last_event}"
+            )
+            self.logger.info(summary_message)
+
+# 테스트 코드에서 요구하는 LoggingUtil 클래스가 존재하도록,
+# EventLogger를 LoggingUtil이라는 이름으로 alias 처리합니다.
+LoggingUtil = EventLogger

@@ -16,14 +16,16 @@ def filter_by_confidence(hmm_model, data, feature_columns, threshold=0.8):
     """
     try:
         X = data[feature_columns].values
+        logger.debug(f"Score samples input shape: {X.shape}")
         # score_samples()를 사용해 각 샘플의 posterior 확률 분포를 구합니다.
         logprob, posteriors = hmm_model.model.score_samples(X)
+        logger.debug(f"Posterior sample stats: logprob_mean={np.mean(logprob):.4f}, max_posteriors_mean={np.mean(posteriors.max(axis=1)):.4f}")
         max_probs = posteriors.max(axis=1)
         confidence_flags = max_probs >= threshold
         logger.info(f"Filter by confidence applied on {len(confidence_flags)} samples with threshold {threshold}.")
         return confidence_flags
     except Exception as e:
-        logger.error(f"filter_by_confidence 에러: {e}")
+        logger.error(f"filter_by_confidence 에러: {e}", exc_info=True)
         return np.array([])
 
 def adjust_regime(prediction, technical_indicators):
@@ -48,6 +50,7 @@ def adjust_regime(prediction, technical_indicators):
         adjusted_regime = hmm_regime
 
     logger.info(f"Adjusted regime: HMM prediction={hmm_regime}, technical trend={tech_trend} -> final regime={adjusted_regime}")
+    logger.debug(f"Technical indicators detail: {technical_indicators}")
     return adjusted_regime
 
 def get_regime_intervals(regime_series):
@@ -61,10 +64,12 @@ def get_regime_intervals(regime_series):
         return intervals
     current_regime = regime_series.iloc[0]
     start_date = regime_series.index[0]
+    logger.debug(f"Initial regime: {current_regime} starting at {start_date}")
     for dt, regime in regime_series.iteritems():
         if regime != current_regime:
             end_date = dt
             intervals.append((current_regime, start_date, end_date))
+            logger.debug(f"Regime change detected: {current_regime} from {start_date} to {end_date}")
             current_regime = regime
             start_date = dt
     intervals.append((current_regime, start_date, regime_series.index[-1]))

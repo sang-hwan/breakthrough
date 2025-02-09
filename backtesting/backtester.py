@@ -18,6 +18,9 @@ from trading.asset_manager import AssetManager
 from trading.ensemble_manager import EnsembleManager
 
 class Backtester:
+    # 집계 임계치를 5000건으로 설정
+    BULLISH_ENTRY_AGGREGATION_THRESHOLD = 5000
+
     def __init__(self, symbol="BTC/USDT", account_size=10000.0, fee_rate=0.001, 
                  slippage_rate=0.0005, final_exit_slippage=0.0):
         self.symbol = symbol
@@ -27,17 +30,19 @@ class Backtester:
         self.positions = []
         self.trades = []
         self.trade_logs = []
-        self.logger = setup_logger("backtester")
+        self.logger = setup_logger(__name__)
         self.dynamic_param_manager = DynamicParamManager()
         self.account = Account(initial_balance=account_size, fee_rate=fee_rate)
         self.asset_manager = AssetManager(self.account)
-        self.ensemble_manager = EnsembleManager()  # 신호 집계용
-        self.strategy_manager = TradingStrategies()  # 개별 전략 관리
+        self.ensemble_manager = EnsembleManager()
+        self.strategy_manager = TradingStrategies()
         self.hmm_model = None
         self.last_hmm_training_datetime = None
         self.df_extra = None
         self.last_signal_time = None
         self.last_rebalance_time = None
+        # bullish entry 이벤트 집계를 위한 리스트
+        self.bullish_entry_events = []
 
     def load_data(self, short_table_format, long_table_format, short_tf, long_tf, 
                   start_date=None, end_date=None, extra_tf=None):
@@ -51,6 +56,7 @@ class Backtester:
             raise ValueError("No data loaded")
         self.df_short.sort_index(inplace=True)
         self.df_long.sort_index(inplace=True)
+        self.logger.info(f"데이터 로드 완료: short 데이터 {len(self.df_short)}행, long 데이터 {len(self.df_long)}행")
         
         if extra_tf:
             extra_table = short_table_format.format(symbol=symbol_for_table, timeframe=extra_tf)
@@ -59,20 +65,21 @@ class Backtester:
                 self.df_extra.sort_index(inplace=True)
                 self.df_extra = compute_bollinger_bands(self.df_extra, price_column='close', 
                                                         period=20, std_multiplier=2.0, fillna=True)
+                self.logger.info(f"Extra 데이터 로드 완료: {len(self.df_extra)}행")
 
     def apply_indicators(self):
         self.df_long = compute_sma(self.df_long, price_column='close', period=200, fillna=True, output_col='sma')
         self.df_long = compute_rsi(self.df_long, price_column='close', period=14, fillna=True, output_col='rsi')
         self.df_long = compute_macd(self.df_long, price_column='close', slow_period=26, fast_period=12, 
                                      signal_period=9, fillna=True, prefix='macd_')
+        self.logger.info("인디케이터 적용 완료 (SMA, RSI, MACD)")
 
     def update_hmm_regime(self, dynamic_params):
-        # 사용 피처 목록
+        # HMM 재학습 및 예측 (세부 로그 생략)
         hmm_features = ['returns', 'volatility', 'sma', 'rsi', 'macd_macd', 'macd_signal', 'macd_diff']
         current_dt = self.df_long.index.max()
         retrain_interval = pd.Timedelta(minutes=dynamic_params.get('hmm_retrain_interval_minutes', 60))
         max_samples = dynamic_params.get('max_hmm_train_samples', 1000)
-        # HMM 재학습: 시간 경과 및 데이터 변화(피처 평균 차이)는 이미 hmm_model 내부에서 세밀하게 처리됨
         if (self.hmm_model is None) or (self.last_hmm_training_datetime is None) or ((current_dt - self.last_hmm_training_datetime) >= retrain_interval):
             self.hmm_model = MarketRegimeHMM(n_components=3, retrain_interval_minutes=dynamic_params.get('hmm_retrain_interval_minutes', 60))
             training_data = self.df_long if len(self.df_long) <= max_samples else self.df_long.tail(max_samples)
@@ -92,15 +99,18 @@ class Backtester:
                 regime = regime_map.get(pred, "unknown")
             adjusted_regimes.append(regime)
         regime_series = pd.Series(adjusted_regimes, index=self.df_long.index)
+        self.logger.info("HMM 레짐 업데이트 완료")
         return regime_series
 
     def update_short_dataframe(self, regime_series, dynamic_params):
         self.df_short = self.df_short.join(self.df_long[['sma', 'rsi', 'volatility']], how='left').ffill()
         self.df_short['market_regime'] = regime_series.reindex(self.df_short.index).ffill()
+        # ATR 계산은 TradeManager.compute_atr()에서 요약 로그로 처리됨.
         self.df_short = TradeManager.compute_atr(self.df_short, period=dynamic_params.get("atr_period", 14))
+        self.logger.info("Short 데이터 프레임 업데이트 완료 (인디케이터, 레짐, ATR)")
 
     def handle_walk_forward_window(self, current_time, row):
-        # 워크‑포워드 기간 종료 시 모든 포지션 강제 청산
+        # 모든 포지션 강제 청산 – 각 포지션의 실행 결과를 개별 로그 대신 최종 요약으로 처리
         for pos in self.positions:
             for exec_record in pos.executions:
                 if not exec_record.get("closed", False):
@@ -125,15 +135,14 @@ class Backtester:
                     self.trades.append(trade_detail)
                     self.account.update_after_trade(trade_detail)
         self.positions = []
+        self.logger.debug(f"워크 포워드 종료 처리 완료 at {current_time}")
 
     def process_bullish_entry(self, current_time, row, risk_params, dynamic_params):
         close_price = row["close"]
-        # 신호 쿨다운: 일정 시간 동안 신규 진입 신호 발생 억제
         signal_cooldown = pd.Timedelta(minutes=dynamic_params.get("signal_cooldown_minutes", 5))
         if self.last_signal_time is not None and (current_time - self.last_signal_time) < signal_cooldown:
-            self.logger.debug(f"{current_time} - 신호 쿨다운 중 (최근 신호: {self.last_signal_time})")
             return
-        scaled_in = False
+        executed_event = None  # 개별 이벤트 설명 (예: 신규 진입, 스케일인 등)
         for pos in self.positions:
             if pos.side == "LONG":
                 additional_size = RiskManager.compute_position_size(
@@ -157,11 +166,11 @@ class Backtester:
                         entry_time=current_time,
                         trade_type="scale_in"
                     )
-                    scaled_in = True
+                    executed_event = "스케일인 실행됨"
                     self.last_signal_time = current_time
                 else:
-                    self.logger.info(f"{current_time} - 스케일인 불가: 가용 잔고 부족 (가용: {available_balance:.2f}, 필요: {required_amount:.2f})")
-        if not scaled_in:
+                    executed_event = "스케일인 불가 (가용 잔고 부족)"
+        if executed_event is None:
             total_size = RiskManager.compute_position_size(
                 available_balance=self.account.get_available_balance(),
                 risk_percentage=risk_params["risk_per_trade"],
@@ -214,13 +223,29 @@ class Backtester:
                 new_position.executed_splits = 1
                 self.positions.append(new_position)
                 self.account.add_position(new_position)
+                executed_event = "신규 진입 실행됨"
                 self.last_signal_time = current_time
-                self.logger.info(f"{current_time} - 신규 진입 실행: size={total_size:.4f}, entry_price={close_price:.2f}")
             else:
-                self.logger.info(f"{current_time} - 신규 진입 불가: 가용 잔고 부족 (가용: {available_balance:.2f}, 필요: {required_amount:.2f})")
+                executed_event = "신규 진입 불가 (가용 잔고 부족)"
+        # 개별 이벤트를 바로 기록하는 대신, 집계 리스트에 추가합니다.
+        self.bullish_entry_events.append((current_time, executed_event, close_price))
+        if len(self.bullish_entry_events) >= Backtester.BULLISH_ENTRY_AGGREGATION_THRESHOLD:
+            count = len(self.bullish_entry_events)
+            freq = {}
+            price_sum = 0
+            for evt in self.bullish_entry_events:
+                evt_type = evt[1]
+                freq[evt_type] = freq.get(evt_type, 0) + 1
+                price_sum += evt[2]
+            avg_price = price_sum / count
+            self.logger.info(f"{current_time} - Bullish Entry Summary: {count} events; " +
+                             ", ".join([f"{k}: {v}" for k, v in freq.items()]) +
+                             f"; 평균 진입가: {avg_price:.2f}")
+            self.bullish_entry_events.clear()
 
     def process_bearish_exit(self, current_time, row):
         close_price = row["close"]
+        exit_count = 0
         for pos in self.positions[:]:
             for exec_record in pos.executions:
                 if not exec_record.get("closed", False):
@@ -242,22 +267,22 @@ class Backtester:
                     self.trade_logs.append(trade_detail)
                     self.trades.append(trade_detail)
                     self.account.update_after_trade(trade_detail)
-            if pos.is_empty():
-                self.positions.remove(pos)
-                self.account.remove_position(pos)
+                    exit_count += 1
         self.last_signal_time = current_time
+        self.logger.debug(f"{current_time} - bearish exit 처리 완료: {exit_count} 거래 실행됨")
 
     def process_sideways_trade(self, current_time, row, risk_params, dynamic_params):
         close_price = row["close"]
         liquidity = dynamic_params.get('liquidity_info', 'high').lower()
+        event = None
         if liquidity == "high":
             lower_bound = self.df_short['low'].rolling(window=20, min_periods=1).min().iloc[-1]
             upper_bound = self.df_short['high'].rolling(window=20, min_periods=1).max().iloc[-1]
             if close_price <= lower_bound:
-                self.logger.info(f"{current_time} - Range Trade 진입 (하단 터치): {close_price}")
+                event = "Range Trade 진입 (하단 터치)"
                 self.process_bullish_entry(current_time, row, risk_params, dynamic_params)
             elif close_price >= upper_bound:
-                self.logger.info(f"{current_time} - Range Trade 청산 (상단 터치): {close_price}")
+                event = "Range Trade 청산 (상단 터치)"
                 for pos in self.positions:
                     if pos.side == "LONG":
                         for i, exec_record in enumerate(pos.executions):
@@ -265,33 +290,19 @@ class Backtester:
                                 for target in exec_record["exit_targets"]:
                                     if not target.get("hit", False) and close_price >= target["price"]:
                                         target["hit"] = True
-                                        closed_qty = pos.partial_close_execution(i, target["exit_ratio"])
-                                        fee = close_price * closed_qty * self.fee_rate
-                                        pnl = (close_price - exec_record["entry_price"]) * closed_qty - fee
-                                        trade_detail = {
-                                            "entry_time": exec_record["entry_time"],
-                                            "entry_price": exec_record["entry_price"],
-                                            "exit_time": current_time,
-                                            "exit_price": close_price,
-                                            "size": closed_qty,
-                                            "pnl": pnl,
-                                            "reason": "range_trade_partial_exit",
-                                            "trade_type": exec_record.get("trade_type", "unknown"),
-                                            "position_id": pos.position_id
-                                        }
-                                        self.trade_logs.append(trade_detail)
-                                        self.trades.append(trade_detail)
-                                        self.account.update_after_trade(trade_detail)
+                                        pos.partial_close_execution(i, target["exit_ratio"])
                                         break
         else:
             mean_price = self.df_short['close'].rolling(window=20, min_periods=1).mean().iloc[-1]
             std_price = self.df_short['close'].rolling(window=20, min_periods=1).std().iloc[-1]
             if close_price < mean_price - std_price:
-                self.logger.info(f"{current_time} - Mean Reversion 진입 (저평가): {close_price}")
+                event = "Mean Reversion 진입 (저평가)"
                 self.process_bullish_entry(current_time, row, risk_params, dynamic_params)
             elif close_price > mean_price + std_price:
-                self.logger.info(f"{current_time} - Mean Reversion 청산 (고평가): {close_price}")
+                event = "Mean Reversion 청산 (고평가)"
                 self.process_bearish_exit(current_time, row)
+        if event:
+            self.logger.debug(f"{current_time} - {event}: close_price={close_price:.2f}")
 
     def update_positions(self, current_time, row):
         close_price = row["close"]
@@ -309,6 +320,21 @@ class Backtester:
                         exec_record["stop_loss"] = new_stop
 
     def finalize_all_positions(self):
+        # Flush any remaining bullish entry events before finalizing positions
+        if self.bullish_entry_events:
+            count = len(self.bullish_entry_events)
+            freq = {}
+            price_sum = 0
+            for evt in self.bullish_entry_events:
+                evt_type = evt[1]
+                freq[evt_type] = freq.get(evt_type, 0) + 1
+                price_sum += evt[2]
+            avg_price = price_sum / count
+            self.logger.info(f"{self.df_short.index[-1]} - Bullish Entry Summary (final flush): {count} events; " +
+                             ", ".join([f"{k}: {v}" for k, v in freq.items()]) +
+                             f"; 평균 진입가: {avg_price:.2f}")
+            self.bullish_entry_events.clear()
+
         final_time = self.df_short.index[-1]
         final_close = self.df_short.iloc[-1]["close"]
         adjusted_final_close = final_close * (1 - self.final_exit_slippage) if self.final_exit_slippage else final_close
@@ -333,6 +359,7 @@ class Backtester:
                     self.trade_logs.append(trade_detail)
                     self.trades.append(trade_detail)
                     self.account.update_after_trade(trade_detail)
+        self.logger.info("모든 포지션 최종 청산 완료")
 
     def monitor_orders(self, current_time, row):
         for pos in self.positions:
@@ -341,7 +368,7 @@ class Backtester:
                     entry_price = exec_record.get("entry_price", 0)
                     current_price = row.get("close", entry_price)
                     if abs(current_price - entry_price) / entry_price > 0.05:
-                        self.logger.debug(f"Order monitoring: {current_time} - Significant price move for position {pos.position_id}.")
+                        self.logger.debug(f"{current_time} - Significant price move detected for position {pos.position_id}.")
 
     def run_backtest(self, dynamic_params=None, walk_forward_days: int = None, holdout_period: tuple = None):
         if dynamic_params is None:
@@ -360,7 +387,6 @@ class Backtester:
             df_train = self.df_short
             df_holdout = None
         
-        # 워크‑포워드 윈도우 시작 설정 (walk_forward_days 지정 시)
         if walk_forward_days is not None:
             window_start = df_train.index[0]
             walk_forward_td = pd.Timedelta(days=walk_forward_days)
@@ -370,13 +396,12 @@ class Backtester:
         signal_cooldown = pd.Timedelta(minutes=dynamic_params.get("signal_cooldown_minutes", 5))
         rebalance_interval = pd.Timedelta(minutes=dynamic_params.get("rebalance_interval_minutes", 60))
         
+        self.logger.info("백테스트 시작")
         for current_time, row in df_train.iterrows():
             if walk_forward_days is not None and current_time - window_start >= walk_forward_td:
                 self.handle_walk_forward_window(current_time, row)
                 window_start = current_time
-            if self.last_signal_time is not None and (current_time - self.last_signal_time) < signal_cooldown:
-                self.logger.debug(f"{current_time} - 신호 쿨다운 적용: 최근 신호 시간 {self.last_signal_time}")
-            else:
+            if self.last_signal_time is None or (current_time - self.last_signal_time) >= signal_cooldown:
                 action = self.ensemble_manager.get_final_signal(
                     row['market_regime'], 
                     dynamic_params.get('liquidity_info', 'high'), 
@@ -408,7 +433,6 @@ class Backtester:
                     self.logger.error(f"Asset rebalancing failed: {e}")
                 self.last_rebalance_time = current_time
         
-        # 고빈도 거래 처리 (extra 데이터가 있을 경우)
         if self.df_extra is not None and not self.df_extra.empty:
             for current_time, row in self.df_extra.iterrows():
                 hf_signal = self.strategy_manager.high_frequency_strategy(self.df_extra, current_time)
@@ -430,7 +454,6 @@ class Backtester:
                     self.process_bearish_exit(current_time, row)
                 self.monitor_orders(current_time, row)
         
-        # 홀드아웃 구간 백테스트
         if df_holdout is not None:
             self.logger.info("홀드아웃 구간 백테스트 시작.")
             for current_time, row in df_holdout.iterrows():
@@ -460,4 +483,9 @@ class Backtester:
                 self.update_positions(current_time, row)
         
         self.finalize_all_positions()
+        total_pnl = sum(trade["pnl"] for trade in self.trades)
+        roi = total_pnl / self.account.initial_balance * 100
+        self.logger.info(f"백테스트 완료: 총 PnL={total_pnl:.2f}, ROI={roi:.2f}%")
+        if roi < 2:
+            self.logger.info("ROI 미달: 매월 ROI가 2% 미만입니다. 페이퍼 트레이딩 전환 없이 백테스트만 진행합니다.")
         return self.trades, self.trade_logs

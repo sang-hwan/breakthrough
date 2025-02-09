@@ -19,18 +19,16 @@ def fetch_historical_ohlcv_data(symbol: str, timeframe: str, start_date: str,
     """
     try:
         exchange_class = getattr(ccxt, exchange_id)
-        exchange = exchange_class({
-            'enableRateLimit': True,
-        })
+        exchange = exchange_class({'enableRateLimit': True})
         exchange.load_markets()
     except Exception as e:
-        logger.error(f"Exchange '{exchange_id}' 초기화 에러: {e}")
+        logger.error(f"Exchange '{exchange_id}' 초기화 에러: {e}", exc_info=True)
         return pd.DataFrame()
 
     try:
         since = exchange.parse8601(datetime.strptime(start_date, "%Y-%m-%d").isoformat())
     except Exception as e:
-        logger.error(f"start_date ({start_date}) 파싱 에러: {e}")
+        logger.error(f"start_date ({start_date}) 파싱 에러: {e}", exc_info=True)
         return pd.DataFrame()
 
     ohlcv_list = []
@@ -39,7 +37,7 @@ def fetch_historical_ohlcv_data(symbol: str, timeframe: str, start_date: str,
         try:
             ohlcvs = exchange.fetch_ohlcv(symbol, timeframe, since=since, limit=limit_per_request)
         except Exception as e:
-            logger.error(f"{symbol}의 {timeframe} 데이터 수집 에러: {e}")
+            logger.error(f"{symbol}의 {timeframe} 데이터 수집 에러: {e}", exc_info=True)
             retry_count += 1
             if retry_count >= max_retries:
                 logger.error(f"최대 재시도({max_retries}) 횟수 초과로 {symbol} {timeframe} 데이터 수집 중단")
@@ -73,7 +71,7 @@ def fetch_historical_ohlcv_data(symbol: str, timeframe: str, start_date: str,
             logger.info(f"{symbol} {timeframe} historical data 수집 완료 (총 {len(df)} 행)")
             return df
         except Exception as e:
-            logger.error(f"DataFrame 변환 에러: {e}")
+            logger.error(f"DataFrame 변환 에러: {e}", exc_info=True)
             return pd.DataFrame()
     else:
         logger.warning(f"{symbol} {timeframe}에 대한 데이터가 없습니다.")
@@ -85,18 +83,16 @@ def fetch_latest_ohlcv_data(symbol: str, timeframe: str, limit: int = 500, excha
     """
     try:
         exchange_class = getattr(ccxt, exchange_id)
-        exchange = exchange_class({
-            'enableRateLimit': True,
-        })
+        exchange = exchange_class({'enableRateLimit': True})
         exchange.load_markets()
     except Exception as e:
-        logger.error(f"Exchange '{exchange_id}' 초기화 에러: {e}")
+        logger.error(f"Exchange '{exchange_id}' 초기화 에러: {e}", exc_info=True)
         return pd.DataFrame()
     
     try:
         ohlcvs = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
     except Exception as e:
-        logger.error(f"{symbol}의 {timeframe} 최신 데이터 수집 에러: {e}")
+        logger.error(f"{symbol}의 {timeframe} 최신 데이터 수집 에러: {e}", exc_info=True)
         return pd.DataFrame()
     
     if ohlcvs:
@@ -107,7 +103,7 @@ def fetch_latest_ohlcv_data(symbol: str, timeframe: str, limit: int = 500, excha
             logger.info(f"{symbol} {timeframe} 최신 데이터 수집 완료 (총 {len(df)} 행)")
             return df
         except Exception as e:
-            logger.error(f"DataFrame 변환 에러: {e}")
+            logger.error(f"DataFrame 변환 에러: {e}", exc_info=True)
             return pd.DataFrame()
     else:
         logger.warning(f"{symbol} {timeframe}에 대한 최신 데이터가 없습니다.")
@@ -122,12 +118,10 @@ def get_top_market_cap_symbols(exchange_id: str = 'binance', quote_currency: str
     """
     try:
         exchange_class = getattr(ccxt, exchange_id)
-        exchange = exchange_class({
-            'enableRateLimit': True,
-        })
+        exchange = exchange_class({'enableRateLimit': True})
         markets = exchange.load_markets()
     except Exception as e:
-        logger.error(f"{exchange_id}에서 마켓 로드 에러: {e}")
+        logger.error(f"{exchange_id}에서 마켓 로드 에러: {e}", exc_info=True)
         return []
 
     usdt_symbols = [symbol for symbol in markets if symbol.endswith('/' + quote_currency)]
@@ -135,7 +129,7 @@ def get_top_market_cap_symbols(exchange_id: str = 'binance', quote_currency: str
     try:
         tickers = exchange.fetch_tickers()
     except Exception as e:
-        logger.error(f"티커 수집 에러: {e}")
+        logger.error(f"티커 수집 에러: {e}", exc_info=True)
         tickers = {}
 
     symbol_volumes = []

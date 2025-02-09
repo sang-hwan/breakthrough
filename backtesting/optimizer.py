@@ -128,7 +128,7 @@ class DynamicParameterOptimizer:
         self.study.optimize(self.objective, n_trials=self.n_trials)
         
         trials_df = self.study.trials_dataframe()
-        logger.info(f"[Optimizer] 트라이얼 결과:\n{trials_df.to_string()}")
+        logger.debug(f"[Optimizer] 트라이얼 결과:\n{trials_df.to_string()}")
         
         best_trial = self.study.best_trial
         logger.info(f"[Optimizer] Best trial: {best_trial.number} (Value: {best_trial.value:.2f})")

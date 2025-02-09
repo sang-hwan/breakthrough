@@ -1,9 +1,9 @@
 # 디렉토리
 venv/
 __pycache__/
+.pytest_cache/
 
 # 파일
-__init__.py
 *.zip
 *.csv
 *.log

@@ -21,13 +21,13 @@ def insert_on_conflict(table, conn, keys, data_iter):
         execute_values(cur, sql, values)
         cur.close()
     except Exception as e:
-        logger.error(f"insert_on_conflict 에러: {e}")
+        logger.error(f"insert_on_conflict 에러: {e}", exc_info=True)
 
 def insert_ohlcv_records(df: pd.DataFrame, table_name: str = 'ohlcv_data', conflict_action: str = "DO NOTHING", db_config: dict = None, chunk_size: int = 10000) -> None:
     """
     OHLCV 데이터를 지정된 테이블에 저장합니다.
     - 대용량 데이터 처리를 위해 chunk_size 단위로 나누어 저장합니다.
-    - 에러 발생 시 로그에 기록합니다.
+    - 저장 성공 시 총 행수를 INFO 레벨 로그로 남기며, 에러 발생 시 ERROR 레벨로 기록합니다.
     """
     if db_config is None:
         db_config = DATABASE
@@ -35,7 +35,7 @@ def insert_ohlcv_records(df: pd.DataFrame, table_name: str = 'ohlcv_data', confl
     engine = create_engine(
         f"postgresql://{db_config['user']}:{db_config['password']}@"
         f"{db_config['host']}:{db_config['port']}/{db_config['dbname']}",
-        pool_pre_ping=True  # 연결 유효성 확인
+        pool_pre_ping=True
     )
 
     create_table_sql = text(f"""
@@ -53,7 +53,7 @@ def insert_ohlcv_records(df: pd.DataFrame, table_name: str = 'ohlcv_data', confl
         with engine.begin() as conn:
             conn.execute(create_table_sql)
     except Exception as e:
-        logger.error(f"테이블 생성 에러 ({table_name}): {e}")
+        logger.error(f"테이블 생성 에러 ({table_name}): {e}", exc_info=True)
         return
 
     try:
@@ -70,12 +70,12 @@ def insert_ohlcv_records(df: pd.DataFrame, table_name: str = 'ohlcv_data', confl
         )
         logger.info(f"데이터 저장 완료: {table_name} (총 {len(df)} 행)")
     except Exception as e:
-        logger.error(f"데이터 저장 에러 ({table_name}): {e}")
+        logger.error(f"데이터 저장 에러 ({table_name}): {e}", exc_info=True)
 
 def fetch_ohlcv_records(table_name: str = 'ohlcv_data', start_date: str = None, end_date: str = None, db_config: dict = None) -> pd.DataFrame:
     """
     지정된 테이블에서 OHLCV 데이터를 읽어옵니다.
-    - 에러 발생 시 빈 DataFrame을 반환하며, 로그에 에러를 기록합니다.
+    - 에러 발생 시 빈 DataFrame을 반환하며, 상세 에러 내용을 ERROR 레벨로 기록합니다.
     """
     if db_config is None:
         db_config = DATABASE
@@ -87,7 +87,7 @@ def fetch_ohlcv_records(table_name: str = 'ohlcv_data', start_date: str = None, 
             pool_pre_ping=True
         )
     except Exception as e:
-        logger.error(f"DB 엔진 생성 에러: {e}")
+        logger.error(f"DB 엔진 생성 에러: {e}", exc_info=True)
         return pd.DataFrame()
 
     query = f"SELECT * FROM {table_name} WHERE 1=1"
@@ -106,5 +106,5 @@ def fetch_ohlcv_records(table_name: str = 'ohlcv_data', start_date: str = None, 
         logger.info(f"데이터 로드 완료: {table_name} (총 {len(df)} 행)")
         return df
     except Exception as e:
-        logger.error(f"데이터 로드 에러 ({table_name}): {e}")
+        logger.error(f"데이터 로드 에러 ({table_name}): {e}", exc_info=True)
         return pd.DataFrame()

@@ -1,9 +1,11 @@
 # trading/ensemble_manager.py
 from logs.logger_config import setup_logger
 from trading.strategies import TradingStrategies
-from datetime import timedelta
 
 class EnsembleManager:
+    # 집계 임계치: 신호 변경이 2000회 이상 발생하면 집계 로그 남김
+    SIGNAL_CHANGE_COUNT_THRESHOLD = 2000
+
     def __init__(self):
         self.logger = setup_logger(__name__)
         # 각 전략별 가중치 (필요 시 동적 조정)
@@ -15,17 +17,13 @@ class EnsembleManager:
             "high_frequency": 1.0
         }
         self.strategy_manager = TradingStrategies()
-        # 최소 신호 전환 간격
-        self.min_signal_interval = timedelta(minutes=60)
-        self.last_signal_time = None
-        self.last_final_signal = "hold"
-        self.last_signals = None
+        # 최종 집계 신호의 마지막 값을 저장
+        self.last_final_signal = None
+        # 집계(데바운스)용 내부 카운트
+        self.signal_change_count = 0
 
     def get_final_signal(self, market_regime, liquidity_info, data, current_time):
-        """
-        여러 전략의 신호를 개별로 산출한 후, 가중치 기반 투표 및 추가 필터링을 통해 최종 거래 신호를 결정합니다.
-        최소 신호 간격을 적용하여 잦은 신호 변경을 억제합니다.
-        """
+        # 각 전략의 원시 신호 산출 (세부 정보는 DEBUG 레벨로 기록)
         signals = {
             "base": self.strategy_manager.select_strategy(market_regime, liquidity_info, data, current_time),
             "trend_following": self.strategy_manager.trend_following_strategy(data, current_time),
@@ -33,9 +31,9 @@ class EnsembleManager:
             "counter_trend": self.strategy_manager.counter_trend_strategy(data, current_time),
             "high_frequency": self.strategy_manager.high_frequency_strategy(data, current_time)
         }
+        self.logger.debug(f"각 전략 원시 신호: {signals}")
 
-        self.logger.debug(f"EnsembleManager 원시 신호 ({current_time}): {signals}")
-
+        # 가중치 기반 투표: 'enter_long'와 'exit_all' 신호의 가중치 합산
         vote_enter = sum(self.strategy_weights.get(k, 1.0) for k, sig in signals.items() if sig == "enter_long")
         vote_exit  = sum(self.strategy_weights.get(k, 1.0) for k, sig in signals.items() if sig == "exit_all")
         
@@ -45,28 +43,21 @@ class EnsembleManager:
             final_signal = "enter_long"
         else:
             final_signal = "hold"
-        
-        # 최소 신호 간격 적용
-        if self.last_signal_time is not None:
-            elapsed = current_time - self.last_signal_time
-            if elapsed < self.min_signal_interval:
-                self.logger.debug(f"신호 전환 억제: 마지막 신호 후 {elapsed.total_seconds()/60:.2f}분 경과.")
-                final_signal = self.last_final_signal
-            else:
-                self.last_signal_time = current_time
-                self.last_final_signal = final_signal
-        else:
-            if final_signal != "hold":
-                self.last_signal_time = current_time
-                self.last_final_signal = final_signal
 
-        if self.last_signals == signals:
-            self.logger.debug(f"이전 신호와 동일: 최종 신호 {final_signal} 유지.")
+        # 신호가 이전과 다르면 집계 카운트를 증가시킵니다.
+        if self.last_final_signal != final_signal:
+            self.signal_change_count += 1
+            self.logger.debug(f"신호 변경 발생: 이전 신호={self.last_final_signal}, 새로운 신호={final_signal}, 카운트={self.signal_change_count}")
+            # 집계 임계치에 도달하면 요약 로그를 남기고 카운트를 초기화합니다.
+            if self.signal_change_count >= EnsembleManager.SIGNAL_CHANGE_COUNT_THRESHOLD:
+                self.logger.info(
+                    f"집계 신호 변경 요약: {self.signal_change_count}회 변경, 최종 신호: {final_signal} at {current_time}"
+                )
+                self.signal_change_count = 0
+            self.last_final_signal = final_signal
         else:
-            self.last_signals = signals.copy()
-            self.logger.debug(f"신호 업데이트: {signals}")
+            self.logger.debug(f"신호 유지: '{final_signal}' at {current_time}")
 
-        self.logger.info(f"EnsembleManager 최종 신호 ({current_time}): {final_signal}")
         return final_signal
 
     def update_strategy_weights(self, performance_metrics):

@@ -4,5 +4,7 @@ SQLAlchemy
 psycopg2-binary
 optuna
 ta
-cctx
+ccxt
 hmmlearn
+python-dotenv
+pytest

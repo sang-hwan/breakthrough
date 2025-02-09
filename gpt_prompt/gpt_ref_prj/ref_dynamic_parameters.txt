@@ -1,3 +1,4 @@
+[dynamic_parameters]
 # dynamic_parameters/dynamic_param_manager.py
 from logs.logger_config import setup_logger
 

@@ -15,70 +15,123 @@ class Account:
         self.stablecoin_balance = 0.0
         self.fee_rate = fee_rate
         self.positions = []  # 보유 중인 포지션 리스트
+        logger.info(f"Account 초기화 완료: 초기 잔고 {initial_balance:.2f}")
 
     def add_position(self, position):
+        """
+        포지션을 추가합니다.
+        """
         self.positions.append(position)
-        logger.debug(f"포지션 추가: {position.position_id}")
+        logger.info(f"포지션 추가됨: ID={position.position_id}")
 
     def remove_position(self, position):
+        """
+        포지션을 제거합니다.
+        """
         if position in self.positions:
             self.positions.remove(position)
-            logger.debug(f"포지션 제거: {position.position_id}")
+            logger.info(f"포지션 제거됨: ID={position.position_id}")
+        else:
+            logger.warning(f"포지션 제거 실패: ID={position.position_id} not found")
 
     def get_used_balance(self):
-        """현재 포지션들로 인해 사용된 금액 계산 (수수료 포함)"""
+        """
+        현재 포지션들로 인해 사용된 금액 계산 (수수료 포함)
+        """
         used = 0.0
         for pos in self.positions:
             for exec_record in pos.executions:
                 if not exec_record.get("closed", False):
-                    used += exec_record["entry_price"] * exec_record["size"] * (1 + self.fee_rate)
+                    calc = exec_record["entry_price"] * exec_record["size"] * (1 + self.fee_rate)
+                    used += calc
+                    logger.debug(
+                        f"계산 중: 포지션 ID={pos.position_id}, "
+                        f"entry_price={exec_record['entry_price']}, size={exec_record['size']}, "
+                        f"fee_rate={self.fee_rate}, 계산값={calc:.2f}"
+                    )
+        logger.debug(f"총 사용 금액 계산: {used:.2f}")
         return used
 
     def get_available_balance(self):
-        """현물 잔고에서 사용 중 금액을 제외한 가용 현금 반환"""
-        return self.spot_balance - self.get_used_balance()
+        """
+        현물 잔고에서 사용 중 금액을 제외한 가용 현금 반환
+        """
+        used = self.get_used_balance()
+        available = self.spot_balance - used
+        logger.debug(
+            f"가용 잔고 계산: spot_balance={self.spot_balance:.2f} - used={used:.2f} = available={available:.2f}"
+        )
+        return available
 
     def update_after_trade(self, trade):
         """
         체결된 거래의 pnl을 반영하여 잔고를 업데이트합니다.
-        (pnl이 음수면 손실, 양수면 수익으로 반영)
         """
         pnl = trade.get("pnl", 0.0)
+        previous_balance = self.spot_balance
         self.spot_balance += pnl
-        logger.debug(f"거래 후 업데이트: pnl={pnl:.2f}, 현물 잔고={self.spot_balance:.2f}")
+        logger.info(
+            f"거래 체결 업데이트: pnl={pnl:.2f}, 현물 잔고={self.spot_balance:.2f}"
+        )
+        logger.debug(
+            f"업데이트 상세: 이전 현물 잔고={previous_balance:.2f}, pnl {pnl:.2f} 반영하여 {self.spot_balance:.2f}가 되었습니다."
+        )
 
     def convert_to_stablecoin(self, amount, conversion_fee=0.001):
         """
         현물 자산 일부를 스테이블코인으로 전환합니다.
-        전환 수수료를 반영하며, 가용 잔액을 초과할 경우 가능한 만큼 전환합니다.
         """
         available = self.get_available_balance()
+        logger.debug(
+            f"전환 요청: amount={amount:.2f}, 가용 잔고={available:.2f}"
+        )
         if amount > available:
+            logger.debug(
+                f"요청 금액 {amount:.2f}이 가용 잔고 {available:.2f}보다 큽니다. 가용 잔고로 조정합니다."
+            )
             amount = available
         fee = amount * conversion_fee
         net_amount = amount - fee
+        logger.debug(
+            f"전환 계산: amount={amount:.2f}, conversion_fee={conversion_fee}, fee={fee:.2f}, net_amount={net_amount:.2f}"
+        )
         self.spot_balance -= amount
         self.stablecoin_balance += net_amount
-        logger.debug(f"convert_to_stablecoin: 전환액={amount:.2f}, 수수료={fee:.2f}, 전환 후 현물 잔고={self.spot_balance:.2f}")
+        logger.info(
+            f"현물 -> 스테이블코인 전환: 전환액={amount:.2f}, 수수료={fee:.2f}, 전환 후 현물 잔고={self.spot_balance:.2f}"
+        )
         return net_amount
 
     def convert_to_spot(self, amount, conversion_fee=0.001):
         """
         스테이블코인 일부를 현물 자산으로 전환합니다.
         """
+        logger.debug(
+            f"현물 전환 요청: amount={amount:.2f}, 현재 스테이블코인 잔고={self.stablecoin_balance:.2f}"
+        )
         if amount > self.stablecoin_balance:
+            logger.debug(
+                f"요청 금액 {amount:.2f}이 스테이블코인 잔고 {self.stablecoin_balance:.2f}보다 큽니다. 잔고로 조정합니다."
+            )
             amount = self.stablecoin_balance
         fee = amount * conversion_fee
         net_amount = amount - fee
+        logger.debug(
+            f"전환 계산: amount={amount:.2f}, conversion_fee={conversion_fee}, fee={fee:.2f}, net_amount={net_amount:.2f}"
+        )
         self.stablecoin_balance -= amount
         self.spot_balance += net_amount
-        logger.debug(f"convert_to_spot: 전환액={amount:.2f}, 수수료={fee:.2f}, 전환 후 현물 잔고={self.spot_balance:.2f}")
+        logger.info(
+            f"스테이블코인 -> 현물 전환: 전환액={amount:.2f}, 수수료={fee:.2f}, 전환 후 현물 잔고={self.spot_balance:.2f}"
+        )
         return net_amount
 
     def __str__(self):
-        return (f"Account(spot_balance={self.spot_balance:.2f}, "
-                f"stablecoin_balance={self.stablecoin_balance:.2f}, "
-                f"available_balance={self.get_available_balance():.2f})")
+        return (
+            f"Account(spot_balance={self.spot_balance:.2f}, "
+            f"stablecoin_balance={self.stablecoin_balance:.2f}, "
+            f"available_balance={self.get_available_balance():.2f})"
+        )
 
 ---
 
@@ -91,42 +144,43 @@ class AssetManager:
         """
         자산 배분 및 리밸런싱을 관리합니다.
         - min_rebalance_threshold: 리밸런싱 실행을 위한 최소 배분 차이 (전체 자산 대비)
-        - min_rebalance_interval_minutes: 리밸런싱 최소 간격
+        - min_rebalance_interval_minutes: 리밸런싱 최소 간격 (분)
         """
         self.account = account
-        self.logger = setup_logger("asset_manager")
+        self.logger = setup_logger(__name__)
         self.min_rebalance_threshold = min_rebalance_threshold
         self.min_rebalance_interval = timedelta(minutes=min_rebalance_interval_minutes)
         self.last_rebalance_time = None
         self.last_account_state = None  # (spot_balance, stablecoin_balance)
+        self.logger.debug(f"AssetManager 초기화: 최소 임계치={min_rebalance_threshold}, 최소 간격={min_rebalance_interval_minutes}분")
 
     def _get_account_state(self):
-        return (round(self.account.spot_balance, 4), round(self.account.stablecoin_balance, 4))
+        state = (round(self.account.spot_balance, 4), round(self.account.stablecoin_balance, 4))
+        self.logger.debug(f"현재 계좌 상태: spot_balance={state[0]}, stablecoin_balance={state[1]}")
+        return state
 
     def rebalance(self, market_regime):
         """
         시장 레짐에 따라 자산 배분을 재조정합니다.
-          - bullish: 목표 배분 90% spot
-          - bearish: 목표 배분 10% spot
-          - sideways: 목표 배분 60% spot
-        현재 배분과 목표 배분의 차이가 전체 자산 대비 최소 임계치 이상일 경우에만 전환을 실행합니다.
         """
         current_time = datetime.now()
+        self.logger.debug(f"리밸런싱 시작 시각: {current_time}")
 
         if self.last_rebalance_time is not None:
             elapsed = current_time - self.last_rebalance_time
             if elapsed < self.min_rebalance_interval:
-                self.logger.debug(
-                    f"리밸런싱 건너뜀: 마지막 리밸런싱 후 {elapsed.total_seconds()/60:.2f}분 경과 (최소 {self.min_rebalance_interval.total_seconds()/60:.2f}분 필요)."
-                )
+                self.logger.debug(f"리밸런싱 최소 간격 미충족: 경과 시간 {elapsed} (최소 간격: {self.min_rebalance_interval}).")
                 return
 
         total_assets = self.account.spot_balance + self.account.stablecoin_balance
+        self.logger.debug(f"총 자산 계산: spot_balance={self.account.spot_balance:.2f}, "
+                          f"stablecoin_balance={self.account.stablecoin_balance:.2f}, total_assets={total_assets:.2f}")
         if total_assets <= 0:
             self.logger.warning("총 자산이 0 이하입니다. 리밸런싱을 건너뜁니다.")
             return
 
         regime = market_regime.lower()
+        self.logger.debug(f"시장 레짐: {regime}")
         if regime == "bullish":
             desired_spot = total_assets * 0.90
         elif regime == "bearish":
@@ -134,43 +188,51 @@ class AssetManager:
         elif regime == "sideways":
             desired_spot = total_assets * 0.60
         else:
-            self.logger.warning(f"알 수 없는 시장 레짐: {market_regime}. 리밸런싱 건너뜀.")
+            self.logger.warning(f"알 수 없는 시장 레짐: {market_regime}. 리밸런싱을 건너뜁니다.")
             return
 
+        self.logger.debug(f"목표 현물 자산(desired_spot): {desired_spot:.2f}")
         current_spot = self.account.spot_balance
+        self.logger.debug(f"현재 현물 자산(current_spot): {current_spot:.2f}")
         diff_ratio = abs(current_spot - desired_spot) / total_assets
+        self.logger.debug(f"배분 차이 비율: {diff_ratio:.4f} (임계치: {self.min_rebalance_threshold})")
 
         if diff_ratio < self.min_rebalance_threshold:
-            self.logger.info("자산 배분 차이가 임계치 미만입니다. 리밸런싱 건너뜁니다.")
+            self.logger.info("자산 배분 차이가 임계치 미만입니다. 리밸런싱을 실행하지 않습니다.")
             return
 
-        # 자산 전환 수행
+        # 리밸런싱 실행
         if current_spot < desired_spot:
             amount_to_convert = desired_spot - current_spot
+            self.logger.debug(f"스테이블코인 -> 현물 전환 필요량: {amount_to_convert:.2f}")
             converted = self.account.convert_to_spot(amount_to_convert)
-            self.logger.info(f"[{market_regime.capitalize()}] {converted:.2f} 만큼 스테이블코인에서 현물로 전환됨.")
+            self.logger.info(f"[{market_regime.capitalize()}] 리밸런싱 실행: 스테이블코인 -> 현물 전환 {converted:.2f}")
         else:
             amount_to_convert = current_spot - desired_spot
+            self.logger.debug(f"현물 -> 스테이블코인 전환 필요량: {amount_to_convert:.2f}")
             converted = self.account.convert_to_stablecoin(amount_to_convert)
-            self.logger.info(f"[{market_regime.capitalize()}] {converted:.2f} 만큼 현물에서 스테이블코인으로 전환됨.")
+            self.logger.info(f"[{market_regime.capitalize()}] 리밸런싱 실행: 현물 -> 스테이블코인 전환 {converted:.2f}")
 
         self.last_rebalance_time = current_time
 
+        # 최종 계좌 상태 요약
         current_state = self._get_account_state()
         if current_state != self.last_account_state:
             self.last_account_state = current_state
-            self.logger.info(f"리밸런싱 후 계좌 상태: {self.account}")
+            self.logger.info(f"리밸런싱 완료 후 계좌 상태: {self.account}")
         else:
-            self.logger.debug("리밸런싱 후 계좌 상태 변화 없음.")
+            self.logger.info("리밸런싱 완료: 계좌 상태 변화 없음.")
 
 ---
 
 # trading/ensemble_manager.py
 from logs.logger_config import setup_logger
 from trading.strategies import TradingStrategies
-from datetime import timedelta
 
 class EnsembleManager:
+    # 집계 임계치: 신호 변경이 2000회 이상 발생하면 집계 로그 남김
+    SIGNAL_CHANGE_COUNT_THRESHOLD = 2000
+
     def __init__(self):
         self.logger = setup_logger(__name__)
         # 각 전략별 가중치 (필요 시 동적 조정)
@@ -182,17 +244,13 @@ class EnsembleManager:
             "high_frequency": 1.0
         }
         self.strategy_manager = TradingStrategies()
-        # 최소 신호 전환 간격
-        self.min_signal_interval = timedelta(minutes=60)
-        self.last_signal_time = None
-        self.last_final_signal = "hold"
-        self.last_signals = None
+        # 최종 집계 신호의 마지막 값을 저장
+        self.last_final_signal = None
+        # 집계(데바운스)용 내부 카운트
+        self.signal_change_count = 0
 
     def get_final_signal(self, market_regime, liquidity_info, data, current_time):
-        """
-        여러 전략의 신호를 개별로 산출한 후, 가중치 기반 투표 및 추가 필터링을 통해 최종 거래 신호를 결정합니다.
-        최소 신호 간격을 적용하여 잦은 신호 변경을 억제합니다.
-        """
+        # 각 전략의 원시 신호 산출 (세부 정보는 DEBUG 레벨로 기록)
         signals = {
             "base": self.strategy_manager.select_strategy(market_regime, liquidity_info, data, current_time),
             "trend_following": self.strategy_manager.trend_following_strategy(data, current_time),
@@ -200,9 +258,9 @@ class EnsembleManager:
             "counter_trend": self.strategy_manager.counter_trend_strategy(data, current_time),
             "high_frequency": self.strategy_manager.high_frequency_strategy(data, current_time)
         }
+        self.logger.debug(f"각 전략 원시 신호: {signals}")
 
-        self.logger.debug(f"EnsembleManager 원시 신호 ({current_time}): {signals}")
-
+        # 가중치 기반 투표: 'enter_long'와 'exit_all' 신호의 가중치 합산
         vote_enter = sum(self.strategy_weights.get(k, 1.0) for k, sig in signals.items() if sig == "enter_long")
         vote_exit  = sum(self.strategy_weights.get(k, 1.0) for k, sig in signals.items() if sig == "exit_all")
         
@@ -212,28 +270,21 @@ class EnsembleManager:
             final_signal = "enter_long"
         else:
             final_signal = "hold"
-        
-        # 최소 신호 간격 적용
-        if self.last_signal_time is not None:
-            elapsed = current_time - self.last_signal_time
-            if elapsed < self.min_signal_interval:
-                self.logger.debug(f"신호 전환 억제: 마지막 신호 후 {elapsed.total_seconds()/60:.2f}분 경과.")
-                final_signal = self.last_final_signal
-            else:
-                self.last_signal_time = current_time
-                self.last_final_signal = final_signal
-        else:
-            if final_signal != "hold":
-                self.last_signal_time = current_time
-                self.last_final_signal = final_signal
 
-        if self.last_signals == signals:
-            self.logger.debug(f"이전 신호와 동일: 최종 신호 {final_signal} 유지.")
+        # 신호가 이전과 다르면 집계 카운트를 증가시킵니다.
+        if self.last_final_signal != final_signal:
+            self.signal_change_count += 1
+            self.logger.debug(f"신호 변경 발생: 이전 신호={self.last_final_signal}, 새로운 신호={final_signal}, 카운트={self.signal_change_count}")
+            # 집계 임계치에 도달하면 요약 로그를 남기고 카운트를 초기화합니다.
+            if self.signal_change_count >= EnsembleManager.SIGNAL_CHANGE_COUNT_THRESHOLD:
+                self.logger.info(
+                    f"집계 신호 변경 요약: {self.signal_change_count}회 변경, 최종 신호: {final_signal} at {current_time}"
+                )
+                self.signal_change_count = 0
+            self.last_final_signal = final_signal
         else:
-            self.last_signals = signals.copy()
-            self.logger.debug(f"신호 업데이트: {signals}")
+            self.logger.debug(f"신호 유지: '{final_signal}' at {current_time}")
 
-        self.logger.info(f"EnsembleManager 최종 신호 ({current_time}): {final_signal}")
         return final_signal
 
     def update_strategy_weights(self, performance_metrics):
@@ -262,8 +313,9 @@ def compute_sma(data: pd.DataFrame, price_column: str = 'close', period: int = 2
     try:
         sma = SMAIndicator(close=data[price_column], window=period, fillna=fillna)
         data[output_col] = sma.sma_indicator()
+        logger.debug(f"SMA computed: period={period}, output_col={output_col}")
     except Exception as e:
-        logger.error(f"compute_sma 에러: {e}")
+        logger.error(f"compute_sma 에러: {e}", exc_info=True)
     return data
 
 def compute_macd(data: pd.DataFrame, price_column: str = 'close', slow_period: int = 26, fast_period: int = 12, signal_period: int = 9, fillna: bool = False, prefix: str = 'macd_') -> pd.DataFrame:
@@ -276,16 +328,18 @@ def compute_macd(data: pd.DataFrame, price_column: str = 'close', slow_period: i
         data[f'{prefix}macd'] = macd.macd()
         data[f'{prefix}signal'] = macd.macd_signal()
         data[f'{prefix}diff'] = macd.macd_diff()
+        logger.debug(f"MACD computed: slow={slow_period}, fast={fast_period}, signal={signal_period}, prefix={prefix}")
     except Exception as e:
-        logger.error(f"compute_macd 에러: {e}")
+        logger.error(f"compute_macd 에러: {e}", exc_info=True)
     return data
 
 def compute_rsi(data: pd.DataFrame, price_column: str = 'close', period: int = 14, fillna: bool = False, output_col: str = 'rsi') -> pd.DataFrame:
     try:
         rsi = RSIIndicator(close=data[price_column], window=period, fillna=fillna)
         data[output_col] = rsi.rsi()
+        logger.debug(f"RSI computed: period={period}, output_col={output_col}")
     except Exception as e:
-        logger.error(f"compute_rsi 에러: {e}")
+        logger.error(f"compute_rsi 에러: {e}", exc_info=True)
     return data
 
 def compute_bollinger_bands(data: pd.DataFrame, price_column: str = 'close', period: int = 20, std_multiplier: float = 2.0, fillna: bool = False, prefix: str = 'bb_') -> pd.DataFrame:
@@ -298,8 +352,9 @@ def compute_bollinger_bands(data: pd.DataFrame, price_column: str = 'close', per
         data[f'{prefix}wband'] = bb.bollinger_wband()
         data[f'{prefix}hband_ind'] = bb.bollinger_hband_indicator()
         data[f'{prefix}lband_ind'] = bb.bollinger_lband_indicator()
+        logger.debug(f"Bollinger Bands computed: period={period}, std_multiplier={std_multiplier}, prefix={prefix}")
     except Exception as e:
-        logger.error(f"compute_bollinger_bands 에러: {e}")
+        logger.error(f"compute_bollinger_bands 에러: {e}", exc_info=True)
     return data
 
 ---
@@ -329,6 +384,7 @@ class TradePosition:
         self.executed_splits = 0
         self.allocation_plan = allocation_plan if allocation_plan is not None else []
         self.highest_price = initial_price if initial_price is not None else 0.0
+        logger.info(f"새 포지션 생성: ID={self.position_id}, side={self.side}, 초기가격={self.initial_price}")
 
     def add_execution(self, entry_price: float, size: float, stop_loss: float = None, take_profit: float = None, entry_time=None, exit_targets: list = None, trade_type: str = "unknown", min_order_size: float = 1e-8):
         """
@@ -337,7 +393,7 @@ class TradePosition:
           - min_order_size: 최소 체결 수량
         """
         if size < min_order_size:
-            logger.info("체결 수량이 최소 주문 수량보다 작습니다. 체결을 건너뜁니다.")
+            logger.info("체결 수량이 최소 주문 수량보다 작아 실행 건너뜀.")
             return
         exit_targets_flagged = []
         if exit_targets is not None:
@@ -358,7 +414,7 @@ class TradePosition:
             'highest_price_since_entry': entry_price,
             'closed': False
         })
-        logger.debug(f"실행 추가: {entry_price}, 수량: {size}")
+        logger.debug(f"실행 추가됨: entry_price={entry_price}, size={size}, trade_type={trade_type}")
 
     def get_total_size(self) -> float:
         return sum(exec_record['size'] for exec_record in self.executions if not exec_record.get('closed', False))
@@ -371,7 +427,7 @@ class TradePosition:
     def remove_execution(self, index: int):
         if 0 <= index < len(self.executions):
             self.executions.pop(index)
-            logger.debug(f"실행 제거: 인덱스 {index}")
+            logger.debug(f"실행 제거됨: index={index}")
 
     def is_empty(self) -> bool:
         return all(exec_record.get("closed", False) for exec_record in self.executions)
@@ -389,7 +445,7 @@ class TradePosition:
                 exec_record['exit_targets'] = [t for t in exec_record['exit_targets'] if not t.get('hit', False)]
             if exec_record['size'] < min_order_size:
                 exec_record['closed'] = True
-            logger.debug(f"부분 청산: 인덱스 {index}, 청산 수량: {qty_to_close}")
+            logger.debug(f"부분 청산 실행: index={index}, close_ratio={close_ratio}, 청산 수량={qty_to_close}")
             return qty_to_close
         return 0.0
 
@@ -401,13 +457,14 @@ from logs.logger_config import setup_logger
 logger = setup_logger(__name__)
 
 class RiskManager:
+    # 마지막으로 기록된 리스크 파라미터를 저장
+    last_computed_risk_params = None
+    # risk 파라미터 로그 집계를 위한 호출 카운터
+    risk_params_call_count = 0
+    RISK_PARAMS_AGG_THRESHOLD = 1000  # 예: 매 1000번째 호출마다 요약 로그 남김
+
     @staticmethod
     def compute_position_size(available_balance: float, risk_percentage: float, entry_price: float, stop_loss: float, fee_rate: float = 0.001, min_order_size: float = 1e-8, volatility: float = 0.0) -> float:
-        """
-        포지션 사이즈 계산:
-          - stop_loss가 None이면 entry_price의 2% 하락값 사용.
-          - 변동성이 높으면 포지션 사이즈 축소.
-        """
         if stop_loss is None:
             stop_loss = entry_price * 0.98
         price_diff = abs(entry_price - stop_loss)
@@ -417,8 +474,9 @@ class RiskManager:
         computed_size = max_risk / loss_per_unit if loss_per_unit > 0 else 0.0
         if volatility > 0:
             computed_size /= (1 + volatility)
-        logger.debug(f"계산된 포지션 사이즈: {computed_size}")
-        return computed_size if computed_size >= min_order_size else 0.0
+        computed_size = computed_size if computed_size >= min_order_size else 0.0
+        logger.debug(f"포지션 사이즈 계산: available_balance={available_balance}, risk_percentage={risk_percentage}, entry_price={entry_price}, stop_loss={stop_loss}, computed_size={computed_size}")
+        return computed_size
 
     @staticmethod
     def allocate_position_splits(total_size: float, splits_count: int = 3, allocation_mode: str = 'equal', min_order_size: float = 1e-8) -> list:
@@ -436,21 +494,19 @@ class RiskManager:
         elif allocation_mode == 'pyramid_down':
             ratio_sum = splits_count * (splits_count + 1) / 2
             allocation = [i / ratio_sum for i in range(splits_count, 0, -1)]
-        logger.debug(f"포지션 분할 할당: {allocation}")
+        logger.debug(f"포지션 분할 할당: total_size={total_size}, splits_count={splits_count}, allocation_mode={allocation_mode}, allocation={allocation}")
         return allocation
 
     @staticmethod
     def attempt_scale_in_position(position, current_price: float, scale_in_threshold: float = 0.02, slippage_rate: float = 0.0, stop_loss: float = None, take_profit: float = None, entry_time=None, trade_type: str = "scale_in", base_multiplier: float = 1.0, dynamic_volatility: float = 1.0):
-        """
-        스케일‑인 시도:
-          - 설정된 scale_in_threshold 및 동적 변동성을 고려하여 추가 진입 시도를 진행.
-        """
         if position is None or position.is_empty():
-            logger.debug("스케일‑인 시도: 유효한 포지션이 없습니다.")
+            logger.debug("스케일인 시도: 포지션이 없거나 비어있음")
             return
+        scale_in_count = 0
         while position.executed_splits < position.total_splits:
             next_split = position.executed_splits
             target_price = position.initial_price * (1.0 + scale_in_threshold * (next_split + 1)) * dynamic_volatility
+            logger.debug(f"스케일인 타겟 가격 계산: next_split={next_split}, target_price={target_price:.2f}, current_price={current_price:.2f}")
             if current_price < target_price:
                 break
             if next_split < len(position.allocation_plan):
@@ -461,16 +517,42 @@ class RiskManager:
             executed_price = current_price * (1.0 + slippage_rate)
             position.add_execution(entry_price=executed_price, size=chunk_size, stop_loss=stop_loss, take_profit=take_profit, entry_time=entry_time, trade_type=trade_type)
             position.executed_splits += 1
-            logger.debug(f"스케일‑인 실행: split {next_split+1}, 체결 가격: {executed_price}, 수량: {chunk_size}")
+            scale_in_count += 1
+            logger.debug(f"스케일인 실행: 실행 가격={executed_price:.2f}, 크기={chunk_size:.4f}, 새로운 실행 횟수={position.executed_splits}")
+
+        if scale_in_count > 0:
+            if not hasattr(position, 'scale_in_attempt_count'):
+                position.scale_in_attempt_count = 0
+            position.scale_in_attempt_count += scale_in_count
+            logger.debug(f"포지션 {position.position_id} 스케일인 시도 누적: {position.scale_in_attempt_count}")
+            if position.scale_in_attempt_count >= 1000:
+                logger.info(f"포지션 {position.position_id} 집계: 총 {position.scale_in_attempt_count}회 스케일인 시도 (최근 가격: {current_price})")
+                position.scale_in_attempt_count = 0
+
+    @staticmethod
+    def is_significant_change(new_params: dict, old_params: dict, threshold: float = 0.10) -> bool:
+        for k in new_params:
+            if k in old_params:
+                old_val = old_params[k]
+                new_val = new_params[k]
+                if old_val == 0:
+                    if new_val != 0:
+                        logger.debug(f"파라미터 {k} 변화: old=0, new={new_val} (변화 있음)")
+                        return True
+                else:
+                    rel_diff = abs(new_val - old_val) / abs(old_val)
+                    if rel_diff > threshold:
+                        logger.debug(f"파라미터 {k} 변화: old={old_val}, new={new_val}, rel_diff={rel_diff:.2f} (임계치 초과)")
+                        return True
+            else:
+                logger.debug(f"새로운 파라미터 {k} 발견됨: {new_params[k]}")
+                return True
+        return False
 
     @staticmethod
     def compute_risk_parameters_by_regime(base_params: dict, regime: str, liquidity: str = None, bullish_risk_multiplier: float = 1.1, bullish_atr_multiplier_factor: float = 0.9, bullish_profit_ratio_multiplier: float = 1.1, bearish_risk_multiplier: float = 0.8, bearish_atr_multiplier_factor: float = 1.1, bearish_profit_ratio_multiplier: float = 0.9, high_liquidity_risk_multiplier: float = 1.0, low_liquidity_risk_multiplier: float = 0.8, high_atr_multiplier_factor: float = 1.0, low_atr_multiplier_factor: float = 1.1, high_profit_ratio_multiplier: float = 1.0, low_profit_ratio_multiplier: float = 0.9) -> dict:
-        """
-        시장 레짐 및 유동성 정보에 따라 리스크 파라미터를 동적으로 조정합니다.
-        """
         regime = regime.lower()
         risk_params = {}
-
         if regime == "bullish":
             risk_params['risk_per_trade'] = base_params['risk_per_trade'] * bullish_risk_multiplier
             risk_params['atr_multiplier'] = base_params['atr_multiplier'] * bullish_atr_multiplier_factor
@@ -481,7 +563,7 @@ class RiskManager:
             risk_params['profit_ratio'] = base_params['profit_ratio'] * bearish_profit_ratio_multiplier
         elif regime == "sideways":
             if liquidity is None:
-                raise ValueError("횡보장(regime='sideways')에서는 'liquidity' 정보를 반드시 제공해야 합니다.")
+                raise ValueError("횡보장에서는 'liquidity' 정보를 반드시 제공해야 합니다.")
             liquidity = liquidity.lower()
             if liquidity == "high":
                 risk_params['risk_per_trade'] = base_params['risk_per_trade'] * high_liquidity_risk_multiplier
@@ -498,10 +580,29 @@ class RiskManager:
         if current_volatility is not None:
             if current_volatility > 0.05:
                 risk_params['risk_per_trade'] *= 0.8
+                logger.debug(f"현재 변동성이 높음({current_volatility}), risk_per_trade 조정됨")
             else:
                 risk_params['risk_per_trade'] *= 1.1
+                logger.debug(f"현재 변동성이 낮음({current_volatility}), risk_per_trade 조정됨")
 
-        logger.debug(f"조정된 리스크 파라미터: {risk_params}")
+        # 호출 횟수를 집계하여, 일정 횟수마다 요약 로그를 남깁니다.
+        RiskManager.risk_params_call_count += 1
+        if RiskManager.risk_params_call_count >= RiskManager.RISK_PARAMS_AGG_THRESHOLD:
+            if (RiskManager.last_computed_risk_params is None or
+                RiskManager.is_significant_change(risk_params, RiskManager.last_computed_risk_params)):
+                logger.info(f"[요약] 최종 리스크 파라미터 (최근 {RiskManager.RISK_PARAMS_AGG_THRESHOLD}회 호출): {risk_params}")
+            else:
+                logger.debug(f"[요약] 최종 리스크 파라미터 (미세 변화, 최근 {RiskManager.RISK_PARAMS_AGG_THRESHOLD}회 호출): {risk_params}")
+            RiskManager.risk_params_call_count = 0
+
+        # 개별 호출에서 의미 있는 변화가 있으면 DEBUG로, 미세 변화면 DEBUG로 모두 기록하여 추적
+        if (RiskManager.last_computed_risk_params is None or
+            RiskManager.is_significant_change(risk_params, RiskManager.last_computed_risk_params)):
+            logger.debug(f"최종 리스크 파라미터 (의미 있는 변화): {risk_params}")
+        else:
+            logger.debug(f"최종 리스크 파라미터 (미세 변화): {risk_params}")
+        RiskManager.last_computed_risk_params = risk_params.copy()
+
         return risk_params
 
 ---
@@ -510,9 +611,27 @@ class RiskManager:
 from logs.logger_config import setup_logger
 
 class TradingStrategies:
+    # 각 전략별 집계 임계치
+    CHANGE_COUNT_THRESHOLD = 2000
+
     def __init__(self):
         self.logger = setup_logger(__name__)
-        self.previous_signal = None
+        # 각 전략별로 마지막 최종 신호를 저장하는 딕셔너리
+        self.previous_signals = {
+            "select_strategy": None,
+            "trend_following_strategy": None,
+            "breakout_strategy": None,
+            "counter_trend_strategy": None,
+            "high_frequency_strategy": None
+        }
+        # 각 전략별 신호 변경 집계 카운드
+        self.change_counts = {
+            "select_strategy": 0,
+            "trend_following_strategy": 0,
+            "breakout_strategy": 0,
+            "counter_trend_strategy": 0,
+            "high_frequency_strategy": 0
+        }
 
     def _get_candle_pattern_signal(self, row):
         try:
@@ -525,7 +644,7 @@ class TradingStrategies:
             elif close_price < open_price * 0.99:
                 return "bearish"
         except Exception as e:
-            self.logger.error(f"_get_candle_pattern_signal error: {e}")
+            self.logger.error(f"_get_candle_pattern_signal error: {e}", exc_info=True)
         return None
 
     def _get_sma_rsi_signal(self, row, previous_sma):
@@ -535,7 +654,7 @@ class TradingStrategies:
             if sma is not None and previous_sma is not None and sma > previous_sma and rsi is not None and rsi < 35:
                 return "enter_long"
         except Exception as e:
-            self.logger.error(f"_get_sma_rsi_signal error: {e}")
+            self.logger.error(f"_get_sma_rsi_signal error: {e}", exc_info=True)
         return "hold"
 
     def _get_bb_signal(self, row):
@@ -545,22 +664,24 @@ class TradingStrategies:
             if bb_lband is not None and close_price <= bb_lband * 1.002:
                 return "enter_long"
         except Exception as e:
-            self.logger.error(f"_get_bb_signal error: {e}")
+            self.logger.error(f"_get_bb_signal error: {e}", exc_info=True)
         return "hold"
 
     def select_strategy(self, market_regime: str, liquidity_info: str, data, current_time, market_type: str = "crypto") -> str:
+        """
+        여러 보조 신호를 집계하여 최종 거래 신호를 결정합니다.
+        """
         regime = market_regime.lower()
         signals = []
 
         try:
             current_row = data.loc[current_time]
         except Exception as e:
-            self.logger.error(f"select_strategy: 데이터 조회 실패 for time {current_time}: {e}")
+            self.logger.error(f"select_strategy: 데이터 조회 실패 for time {current_time}: {e}", exc_info=True)
             return "hold"
 
         if regime == "bullish":
             candle_signal = self._get_candle_pattern_signal(current_row)
-            self.logger.debug(f"_get_candle_pattern_signal: {candle_signal} at {current_time}")
             signals.append("enter_long" if candle_signal == "bullish" else "hold")
             
             try:
@@ -570,15 +691,12 @@ class TradingStrategies:
                 else:
                     previous_sma = current_row.get('sma')
             except Exception as e:
-                self.logger.error(f"select_strategy: 이전 데이터 조회 실패: {e}")
+                self.logger.error(f"select_strategy: 이전 데이터 조회 실패: {e}", exc_info=True)
                 previous_sma = current_row.get('sma')
-                
             sma_rsi_signal = self._get_sma_rsi_signal(current_row, previous_sma)
-            self.logger.debug(f"_get_sma_rsi_signal: {sma_rsi_signal} at {current_time}")
             signals.append(sma_rsi_signal)
             
             bb_signal = self._get_bb_signal(current_row)
-            self.logger.debug(f"_get_bb_signal: {bb_signal} at {current_time}")
             signals.append(bb_signal)
             
             final_signal = "enter_long" if "enter_long" in signals else "hold"
@@ -589,78 +707,132 @@ class TradingStrategies:
         else:
             final_signal = "hold"
 
-        self.logger.debug(f"select_strategy: regime={regime}, liquidity_info={liquidity_info}, signals={signals}")
-        self.logger.info(f"select_strategy: 최종 신호={final_signal} at {current_time}")
-        self.previous_signal = final_signal
+        # 집계/데바운스: 신호가 이전과 달라진 경우 집계 카운트를 증가시킵니다.
+        key = "select_strategy"
+        if self.previous_signals[key] != final_signal:
+            self.change_counts[key] += 1
+            if self.change_counts[key] >= TradingStrategies.CHANGE_COUNT_THRESHOLD:
+                self.logger.info(f"select_strategy 집계: 최근 {self.change_counts[key]}회 신호 변경, 최종 신호: {final_signal} at {current_time}")
+                self.change_counts[key] = 0
+            self.previous_signals[key] = final_signal
+        else:
+            self.logger.debug(f"select_strategy: 신호 유지: '{final_signal}' at {current_time}")
+
         return final_signal
 
     def trend_following_strategy(self, data, current_time):
+        key = "trend_following_strategy"
         try:
             row = data.loc[current_time]
         except Exception as e:
-            self.logger.error(f"trend_following_strategy: 데이터 조회 실패 for time {current_time}: {e}")
+            self.logger.error(f"trend_following_strategy: 데이터 조회 실패 for time {current_time}: {e}", exc_info=True)
             return "hold"
         sma = row.get('sma')
         price = row.get('close')
-        if sma is not None and price is not None and price > sma:
-            self.logger.debug(f"trend_following_strategy: bullish signal at {current_time}")
-            return "enter_long"
-        return "hold"
+        final_signal = "enter_long" if sma is not None and price is not None and price > sma else "hold"
+        
+        if self.previous_signals[key] != final_signal:
+            self.change_counts[key] += 1
+            if self.change_counts[key] >= TradingStrategies.CHANGE_COUNT_THRESHOLD:
+                self.logger.info(f"trend_following_strategy 집계: 최근 {self.change_counts[key]}회 신호 변경, 최종 신호: {final_signal} at {current_time}")
+                self.change_counts[key] = 0
+            self.previous_signals[key] = final_signal
+        else:
+            self.logger.debug(f"trend_following_strategy: 신호 유지: '{final_signal}' at {current_time}")
+            
+        return final_signal
 
     def breakout_strategy(self, data, current_time, window=20):
+        key = "breakout_strategy"
         try:
             data_sub = data.loc[:current_time]
             if len(data_sub) < window:
-                return "hold"
-            recent_high = data_sub['high'].iloc[-window:].max()
-            price = data.loc[current_time, 'close']
-            if price > recent_high:
-                self.logger.debug(f"breakout_strategy: breakout detected at {current_time}")
-                return "enter_long"
+                final_signal = "hold"
+            else:
+                recent_high = data_sub['high'].iloc[-window:].max()
+                price = data.loc[current_time, 'close']
+                final_signal = "enter_long" if price > recent_high else "hold"
         except Exception as e:
-            self.logger.error(f"breakout_strategy: 데이터 조회 실패 for time {current_time}: {e}")
-        return "hold"
+            self.logger.error(f"breakout_strategy: 데이터 조회 실패 for time {current_time}: {e}", exc_info=True)
+            final_signal = "hold"
+        
+        if self.previous_signals[key] != final_signal:
+            self.change_counts[key] += 1
+            if self.change_counts[key] >= TradingStrategies.CHANGE_COUNT_THRESHOLD:
+                self.logger.info(f"breakout_strategy 집계: 최근 {self.change_counts[key]}회 신호 변경, 최종 신호: {final_signal} at {current_time}")
+                self.change_counts[key] = 0
+            self.previous_signals[key] = final_signal
+        else:
+            self.logger.debug(f"breakout_strategy: 신호 유지: '{final_signal}' at {current_time}")
+        
+        return final_signal
 
     def counter_trend_strategy(self, data, current_time):
+        key = "counter_trend_strategy"
         try:
             row = data.loc[current_time]
         except Exception as e:
-            self.logger.error(f"counter_trend_strategy: 데이터 조회 실패 for time {current_time}: {e}")
+            self.logger.error(f"counter_trend_strategy: 데이터 조회 실패 for time {current_time}: {e}", exc_info=True)
             return "hold"
         rsi = row.get('rsi')
         if rsi is not None:
             if rsi < 30:
-                self.logger.debug(f"counter_trend_strategy: bullish signal at {current_time} (rsi: {rsi})")
-                return "enter_long"
+                final_signal = "enter_long"
             elif rsi > 70:
-                self.logger.debug(f"counter_trend_strategy: bearish signal at {current_time} (rsi: {rsi})")
-                return "exit_all"
-        return "hold"
+                final_signal = "exit_all"
+            else:
+                final_signal = "hold"
+        else:
+            final_signal = "hold"
+        
+        if self.previous_signals[key] != final_signal:
+            self.change_counts[key] += 1
+            if self.change_counts[key] >= TradingStrategies.CHANGE_COUNT_THRESHOLD:
+                self.logger.info(f"counter_trend_strategy 집계: 최근 {self.change_counts[key]}회 신호 변경, 최종 신호: {final_signal} at {current_time} (rsi: {rsi})")
+                self.change_counts[key] = 0
+            self.previous_signals[key] = final_signal
+        else:
+            self.logger.debug(f"counter_trend_strategy: 신호 유지: '{final_signal}' at {current_time} (rsi: {rsi})")
+        
+        return final_signal
 
     def high_frequency_strategy(self, data, current_time):
+        key = "high_frequency_strategy"
         try:
             current_index = data.index.get_loc(current_time)
             if current_index == 0:
-                return "hold"
-            prev_time = data.index[current_index - 1]
-            current_row = data.loc[current_time]
-            prev_row = data.loc[prev_time]
+                final_signal = "hold"
+            else:
+                prev_time = data.index[current_index - 1]
+                current_row = data.loc[current_time]
+                prev_row = data.loc[prev_time]
+                current_price = current_row.get('close')
+                prev_price = prev_row.get('close')
+                if current_price is None or prev_price is None:
+                    final_signal = "hold"
+                else:
+                    threshold = 0.002  # 0.2% 임계치
+                    price_change = (current_price - prev_price) / prev_price
+                    if price_change > threshold:
+                        final_signal = "enter_long"
+                    elif price_change < -threshold:
+                        final_signal = "exit_all"
+                    else:
+                        final_signal = "hold"
         except Exception as e:
-            self.logger.error(f"high_frequency_strategy: 데이터 조회 실패 for time {current_time}: {e}")
-            return "hold"
-        current_price = current_row.get('close')
-        prev_price = prev_row.get('close')
-        if current_price is None or prev_price is None:
-            return "hold"
-        threshold = 0.002  # 0.2% 임계치
-        price_change = (current_price - prev_price) / prev_price
-        if price_change > threshold:
-            self.logger.debug(f"high_frequency_strategy: bullish price change ({price_change:.4f}) at {current_time}")
-            return "enter_long"
-        elif price_change < -threshold:
-            self.logger.debug(f"high_frequency_strategy: bearish price change ({price_change:.4f}) at {current_time}")
-            return "exit_all"
-        return "hold"
+            self.logger.error(f"high_frequency_strategy: 데이터 조회 실패 for time {current_time}: {e}", exc_info=True)
+            final_signal = "hold"
+        
+        if self.previous_signals[key] != final_signal:
+            self.change_counts[key] += 1
+            if self.change_counts[key] >= TradingStrategies.CHANGE_COUNT_THRESHOLD:
+                self.logger.info(f"high_frequency_strategy 집계: 최근 {self.change_counts[key]}회 신호 변경, 최종 신호: {final_signal} at {current_time}")
+                self.change_counts[key] = 0
+            self.previous_signals[key] = final_signal
+        else:
+            self.logger.debug(f"high_frequency_strategy: 신호 유지: '{final_signal}' at {current_time}")
+        
+        return final_signal
 
 ---
 
@@ -687,8 +859,10 @@ class TradeManager:
         close_col: str = 'close',
         entry_signal_col: str = 'long_entry'
     ) -> pd.DataFrame:
+        # ATR 계산
         if len(data) < atr_period:
             data[atr_col] = data[high_col] - data[low_col]
+            logger.debug("ATR 계산: 데이터 길이가 짧아 high-low 차이 사용.")
         else:
             try:
                 atr_indicator = ta.volatility.AverageTrueRange(
@@ -699,18 +873,33 @@ class TradeManager:
                     fillna=True
                 )
                 data[atr_col] = atr_indicator.average_true_range()
+                logger.debug(f"ATR 계산 성공: 첫 5행 {data[atr_col].head().tolist()}")
             except Exception as e:
-                logger.error(f"ATR 계산 에러: {e}")
+                logger.error(f"ATR 계산 에러: {e}", exc_info=True)
                 data[atr_col] = data[high_col] - data[low_col]
+
+        # 중간 계산: rolling 평균, 표준편차, 비율 및 동적 승수 계산
         data['close_ma'] = data[close_col].rolling(window=atr_period, min_periods=1).mean()
         data['close_std'] = data[close_col].rolling(window=atr_period, min_periods=1).std()
         data['std_ratio'] = data['close_std'] / data['close_ma']
         data['dynamic_multiplier'] = atr_multiplier * (1 + data['std_ratio'])
+        logger.debug(f"중간 계산 결과: close_ma 첫 5행={data['close_ma'].head().tolist()}, "
+                     f"close_std 첫 5행={data['close_std'].head().tolist()}, "
+                     f"std_ratio 첫 5행={data['std_ratio'].head().tolist()}, "
+                     f"dynamic_multiplier 첫 5행={data['dynamic_multiplier'].head().tolist()}")
+        
+        # entry_price 컬럼 채우기 (입력 신호 발생 시 close 값을 기록하고, ffill)
         data[entry_price_col] = np.where(data.get(entry_signal_col, False), data[close_col], np.nan)
         data[entry_price_col] = data[entry_price_col].ffill()
+        
+        # 스탑로스 가격 계산
         data[stop_loss_col] = data[entry_price_col] - (data[atr_col] * data['dynamic_multiplier'] * dynamic_sl_adjustment)
+        logger.debug(f"스탑로스 계산: 첫 5행 {data[stop_loss_col].head().tolist()}")
+        
+        # 중간 계산에 사용한 임시 컬럼 제거
         data.drop(columns=['close_ma', 'close_std', 'std_ratio', 'dynamic_multiplier'], inplace=True)
-        logger.debug("ATR 기반 스탑로스 계산 완료.")
+
+        logger.info(f"ATR 기반 스탑로스 계산 완료: 총 {len(data)} 행 처리")
         return data
 
     @staticmethod
@@ -725,7 +914,7 @@ class TradeManager:
             current_stop = highest_price * (1 - trailing_percentage * (1 + volatility))
         new_stop = highest_price * (1.0 - trailing_percentage * (1 + volatility))
         adjusted_stop = new_stop if new_stop > current_stop and new_stop < current_price else current_stop
-        logger.debug(f"조정된 트레일링 스탑: {adjusted_stop}")
+        logger.debug(f"트레일링 스탑 조정: current_price={current_price:.2f}, highest_price={highest_price:.2f}, 조정 후 스탑={adjusted_stop:.2f}")
         return adjusted_stop
 
     @staticmethod
@@ -736,7 +925,7 @@ class TradeManager:
         entry_price_col: str = 'entry_price'
     ) -> pd.DataFrame:
         data[take_profit_col] = data[entry_price_col] * (1 + profit_ratio)
-        logger.debug("고정 테이크 프로핏 설정 완료.")
+        logger.info(f"고정 테이크 프로핏 설정 완료: 총 {len(data)} 행 처리")
         return data
 
     @staticmethod
@@ -759,7 +948,7 @@ class TradeManager:
         recent_min = window_data[price_column].min()
         current_price = data.loc[current_time, price_column] if current_time in data.index else data.iloc[-1][price_column]
         decision = current_price < recent_min
-        logger.debug(f"should_exit_trend 결정: {decision} (current_price={current_price}, recent_min={recent_min})")
+        logger.debug(f"should_exit_trend 결정: current_price={current_price}, recent_min={recent_min}, exit_decision={decision}")
         return decision
 
     @staticmethod
@@ -772,7 +961,9 @@ class TradeManager:
     ):
         partial_target = entry_price * (1.0 + partial_profit_ratio)
         final_target = entry_price * (1.0 + final_profit_ratio)
-        logger.debug(f"부분 청산 목표 계산: partial_target={partial_target}, final_target={final_target}")
+        logger.debug(f"부분 청산 목표 계산: entry_price={entry_price}, partial_profit_ratio={partial_profit_ratio}, final_profit_ratio={final_profit_ratio}, "
+                     f"계산된 partial_target={partial_target:.2f}, final_target={final_target:.2f}")
+        logger.info(f"부분 청산 목표 계산 완료: partial_target = {partial_target:.2f}, final_target = {final_target:.2f}")
         return [(partial_target, partial_exit_ratio), (final_target, final_exit_ratio)]
 
     @staticmethod
@@ -786,10 +977,11 @@ class TradeManager:
                 fillna=True
             )
             data['atr'] = atr_indicator.average_true_range()
+            logger.debug(f"compute_atr: 첫 5행 ATR 값: {data['atr'].head().tolist()}")
         except Exception as e:
-            logger.error(f"compute_atr 에러: {e}")
+            logger.error(f"compute_atr 에러: {e}", exc_info=True)
             data['atr'] = data['high'] - data['low']
-        logger.debug("ATR 계산 완료.")
+        logger.info(f"ATR 계산 완료: 총 {len(data)} 행 처리")
         return data
 
     @staticmethod
@@ -798,16 +990,12 @@ class TradeManager:
         atr: float,
         risk_params: dict
     ):
-        """
-        동적 스탑로스와 테이크 프로핏 가격을 계산합니다.
-        - entry_price: 진입 가격
-        - atr: 현재 ATR 값
-        - risk_params: 리스크 파라미터 (예: 'atr_multiplier', 'profit_ratio', 'volatility_multiplier' 등 포함)
-        """
         atr_multiplier = risk_params.get("atr_multiplier", 2.0)
         profit_ratio = risk_params.get("profit_ratio", 0.05)
         volatility_multiplier = risk_params.get("volatility_multiplier", 1.0)
         stop_loss_price = entry_price - (atr * atr_multiplier * volatility_multiplier)
         take_profit_price = entry_price * (1 + profit_ratio)
-        logger.debug(f"동적 스탑로스/테이크 프로핏 계산: entry_price={entry_price}, atr={atr}, stop_loss={stop_loss_price}, take_profit={take_profit_price}")
+        logger.debug(f"동적 스탑로스/테이크 프로핏 계산: entry_price={entry_price:.2f}, ATR={atr:.2f}, "
+                     f"atr_multiplier={atr_multiplier}, volatility_multiplier={volatility_multiplier}, profit_ratio={profit_ratio}, "
+                     f"계산된 stop_loss={stop_loss_price:.2f}, take_profit={take_profit_price:.2f}")
         return stop_loss_price, take_profit_price

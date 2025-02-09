@@ -21,7 +21,8 @@ def collect_and_store_ohlcv_data(
 ) -> None:
     """
     심볼과 타임프레임에 따라 OHLCV 데이터를 수집한 후, DB에 저장합니다.
-    - 수집 시 에러 및 빈 데이터 처리, DB 저장 시 chunk 단위 저장으로 대용량 데이터 처리를 최적화합니다.
+    - 수집 시 에러 및 빈 데이터 처리는 상세 에러는 ERROR 레벨, 요약 정보는 INFO 레벨로 기록합니다.
+    - DB 저장 시 chunk 단위 저장으로 대용량 데이터 처리를 최적화합니다.
     """
     for symbol in symbols:
         for tf in timeframes:
@@ -48,7 +49,7 @@ def collect_and_store_ohlcv_data(
                         exchange_id=exchange_id
                     )
             except Exception as e:
-                logger.error(f"데이터 수집 에러 ({symbol} - {tf}): {e}")
+                logger.error(f"데이터 수집 에러 ({symbol} - {tf}): {e}", exc_info=True)
                 continue
 
             logger.info(f"    -> Total Rows Fetched: {len(df)}")
@@ -61,5 +62,5 @@ def collect_and_store_ohlcv_data(
                 insert_ohlcv_records(df, table_name=table_name)
                 logger.info(f"    -> Saved to table: {table_name}")
             except Exception as e:
-                logger.error(f"데이터 저장 에러 ({table_name}): {e}")
+                logger.error(f"데이터 저장 에러 ({table_name}): {e}", exc_info=True)
             time.sleep(pause_sec)
