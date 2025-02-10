@@ -26,14 +26,14 @@ def test_logging_summary_output():
 
     # 요약 로그 임계치(예: 2000회) 전까지 이벤트 기록
     for i in range(1999):
-        logging_util.log_event(f"Test event {i}", level=logging.DEBUG)
+        logging_util.log_event(f"Test event {i}")
 
-    # 2000번째 이벤트 – 이 시점에서 요약 로그(INFO 레벨)가 찍혀야 함
-    logging_util.log_event("Test event 1999", level=logging.DEBUG)
+    # 2000번째 이벤트 – 이 시점에서 요약 로그가 찍혀야 함
+    logging_util.log_event("Test event 1999")
 
     # 강제로 핸들러 flush
     stream_handler.flush()
 
     # 로그 출력값을 가져와서 요약 로그 메시지가 포함되었는지 확인
     output = log_stream.getvalue()
-    assert "요약 로그:" in output
+    assert "집계:" in output

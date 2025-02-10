@@ -4,12 +4,6 @@ from logs.logger_config import setup_logger
 logger = setup_logger(__name__)
 
 class RiskManager:
-    # 마지막으로 기록된 리스크 파라미터를 저장
-    last_computed_risk_params = None
-    # risk 파라미터 로그 집계를 위한 호출 카운터
-    risk_params_call_count = 0
-    RISK_PARAMS_AGG_THRESHOLD = 1000  # 예: 매 1000번째 호출마다 요약 로그 남김
-
     @staticmethod
     def compute_position_size(available_balance: float, risk_percentage: float, entry_price: float, stop_loss: float, fee_rate: float = 0.001, min_order_size: float = 1e-8, volatility: float = 0.0) -> float:
         if stop_loss is None:
@@ -22,6 +16,8 @@ class RiskManager:
         if volatility > 0:
             computed_size /= (1 + volatility)
         computed_size = computed_size if computed_size >= min_order_size else 0.0
+        # 이 로그는 DEBUG 레벨이므로, 실제 출력은 INFO 이상만 나오므로
+        # AggregatingHandler 의 집계 대상이 되지 않습니다.
         logger.debug(f"포지션 사이즈 계산: available_balance={available_balance}, risk_percentage={risk_percentage}, entry_price={entry_price}, stop_loss={stop_loss}, computed_size={computed_size}")
         return computed_size
 
@@ -49,7 +45,6 @@ class RiskManager:
         if position is None or position.is_empty():
             logger.debug("스케일인 시도: 포지션이 없거나 비어있음")
             return
-        scale_in_count = 0
         while position.executed_splits < position.total_splits:
             next_split = position.executed_splits
             target_price = position.initial_price * (1.0 + scale_in_threshold * (next_split + 1)) * dynamic_volatility
@@ -64,17 +59,10 @@ class RiskManager:
             executed_price = current_price * (1.0 + slippage_rate)
             position.add_execution(entry_price=executed_price, size=chunk_size, stop_loss=stop_loss, take_profit=take_profit, entry_time=entry_time, trade_type=trade_type)
             position.executed_splits += 1
-            scale_in_count += 1
             logger.debug(f"스케일인 실행: 실행 가격={executed_price:.2f}, 크기={chunk_size:.4f}, 새로운 실행 횟수={position.executed_splits}")
-
-        if scale_in_count > 0:
-            if not hasattr(position, 'scale_in_attempt_count'):
-                position.scale_in_attempt_count = 0
-            position.scale_in_attempt_count += scale_in_count
-            logger.debug(f"포지션 {position.position_id} 스케일인 시도 누적: {position.scale_in_attempt_count}")
-            if position.scale_in_attempt_count >= 1000:
-                logger.info(f"포지션 {position.position_id} 집계: 총 {position.scale_in_attempt_count}회 스케일인 시도 (최근 가격: {current_price})")
-                position.scale_in_attempt_count = 0
+        # 기존에 스케일인 시도 누적 집계 코드는 제거되었습니다.
+        # 대신, 각 스케일인 실행 결과에 대해 INFO 레벨의 로그를 남겨 AggregatingHandler 가 집계할 수 있도록 합니다.
+        logger.info(f"포지션 {position.position_id} 스케일인 시도 완료: 총 실행 횟수={position.executed_splits}")
 
     @staticmethod
     def is_significant_change(new_params: dict, old_params: dict, threshold: float = 0.10) -> bool:
@@ -97,7 +85,11 @@ class RiskManager:
         return False
 
     @staticmethod
-    def compute_risk_parameters_by_regime(base_params: dict, regime: str, liquidity: str = None, bullish_risk_multiplier: float = 1.1, bullish_atr_multiplier_factor: float = 0.9, bullish_profit_ratio_multiplier: float = 1.1, bearish_risk_multiplier: float = 0.8, bearish_atr_multiplier_factor: float = 1.1, bearish_profit_ratio_multiplier: float = 0.9, high_liquidity_risk_multiplier: float = 1.0, low_liquidity_risk_multiplier: float = 0.8, high_atr_multiplier_factor: float = 1.0, low_atr_multiplier_factor: float = 1.1, high_profit_ratio_multiplier: float = 1.0, low_profit_ratio_multiplier: float = 0.9) -> dict:
+    def compute_risk_parameters_by_regime(base_params: dict, regime: str, liquidity: str = None,
+                                          bullish_risk_multiplier: float = 1.1, bullish_atr_multiplier_factor: float = 0.9, bullish_profit_ratio_multiplier: float = 1.1,
+                                          bearish_risk_multiplier: float = 0.8, bearish_atr_multiplier_factor: float = 1.1, bearish_profit_ratio_multiplier: float = 0.9,
+                                          high_liquidity_risk_multiplier: float = 1.0, low_liquidity_risk_multiplier: float = 0.8, high_atr_multiplier_factor: float = 1.0, low_atr_multiplier_factor: float = 1.1,
+                                          high_profit_ratio_multiplier: float = 1.0, low_profit_ratio_multiplier: float = 0.9) -> dict:
         regime = regime.lower()
         risk_params = {}
         if regime == "bullish":
@@ -127,27 +119,12 @@ class RiskManager:
         if current_volatility is not None:
             if current_volatility > 0.05:
                 risk_params['risk_per_trade'] *= 0.8
-                logger.debug(f"현재 변동성이 높음({current_volatility}), risk_per_trade 조정됨")
+                # INFO 레벨 로그로 변경하여 AggregatingHandler 의 집계 대상이 됩니다.
+                logger.info(f"현재 변동성이 높음({current_volatility}), risk_per_trade 조정됨")
             else:
                 risk_params['risk_per_trade'] *= 1.1
-                logger.debug(f"현재 변동성이 낮음({current_volatility}), risk_per_trade 조정됨")
+                logger.info(f"현재 변동성이 낮음({current_volatility}), risk_per_trade 조정됨")
 
-        # 호출 횟수를 집계하여, 일정 횟수마다 요약 로그를 남깁니다.
-        RiskManager.risk_params_call_count += 1
-        if RiskManager.risk_params_call_count >= RiskManager.RISK_PARAMS_AGG_THRESHOLD:
-            if (RiskManager.last_computed_risk_params is None or
-                RiskManager.is_significant_change(risk_params, RiskManager.last_computed_risk_params)):
-                logger.info(f"[요약] 최종 리스크 파라미터 (최근 {RiskManager.RISK_PARAMS_AGG_THRESHOLD}회 호출): {risk_params}")
-            else:
-                logger.debug(f"[요약] 최종 리스크 파라미터 (미세 변화, 최근 {RiskManager.RISK_PARAMS_AGG_THRESHOLD}회 호출): {risk_params}")
-            RiskManager.risk_params_call_count = 0
-
-        # 개별 호출에서 의미 있는 변화가 있으면 DEBUG로, 미세 변화면 DEBUG로 모두 기록하여 추적
-        if (RiskManager.last_computed_risk_params is None or
-            RiskManager.is_significant_change(risk_params, RiskManager.last_computed_risk_params)):
-            logger.debug(f"최종 리스크 파라미터 (의미 있는 변화): {risk_params}")
-        else:
-            logger.debug(f"최종 리스크 파라미터 (미세 변화): {risk_params}")
-        RiskManager.last_computed_risk_params = risk_params.copy()
-
+        # 최종 리스크 파라미터는 INFO 레벨로 기록되어 AggregatingHandler 에서 집계됩니다.
+        logger.info(f"최종 리스크 파라미터: {risk_params}")
         return risk_params

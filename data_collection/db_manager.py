@@ -11,6 +11,7 @@ logger = setup_logger(__name__)
 def insert_on_conflict(table, conn, keys, data_iter):
     """
     데이터를 삽입할 때, timestamp 컬럼을 기준으로 중복 발생 시 삽입하지 않습니다.
+    pandas.to_sql() 의 method 인자로 사용되며, 각 chunk 단위로 호출됩니다.
     """
     try:
         raw_conn = conn.connection
@@ -20,6 +21,8 @@ def insert_on_conflict(table, conn, keys, data_iter):
         sql = f"INSERT INTO {table.name} ({columns}) VALUES %s ON CONFLICT (timestamp) DO NOTHING"
         execute_values(cur, sql, values)
         cur.close()
+        # 각 chunk 삽입이 완료되면 INFO 레벨 로그로 기록하여 AggregatingHandler 가 집계하도록 함.
+        logger.info(f"[DB] insert_on_conflict: {len(values)} records processed for table {table.name}")
     except Exception as e:
         logger.error(f"insert_on_conflict 에러: {e}", exc_info=True)
 

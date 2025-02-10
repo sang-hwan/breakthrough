@@ -1,0 +1,1093 @@
+[data_collection]
+# data_collection/db_config.py
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+DATABASE = {
+    'user': os.getenv('DB_USER'),
+    'password': os.getenv('DB_PASSWORD'),
+    'host': os.getenv('DB_HOST'),
+    'port': int(os.getenv('DB_PORT')),
+    'dbname': os.getenv('DB_NAME')
+}
+
+---
+
+# data_collection/db_manager.py
+import logging
+from sqlalchemy import create_engine, text
+from psycopg2.extras import execute_values
+import pandas as pd
+from data_collection.db_config import DATABASE
+from logs.logger_config import setup_logger
+
+logger = setup_logger(__name__)
+
+def insert_on_conflict(table, conn, keys, data_iter):
+    """
+    데이터를 삽입할 때, timestamp 컬럼을 기준으로 중복 발생 시 삽입하지 않습니다.
+    pandas.to_sql() 의 method 인자로 사용되며, 각 chunk 단위로 호출됩니다.
+    """
+    try:
+        raw_conn = conn.connection
+        cur = raw_conn.cursor()
+        values = list(data_iter)
+        columns = ", ".join(keys)
+        sql = f"INSERT INTO {table.name} ({columns}) VALUES %s ON CONFLICT (timestamp) DO NOTHING"
+        execute_values(cur, sql, values)
+        cur.close()
+        # 각 chunk 삽입이 완료되면 INFO 레벨 로그로 기록하여 AggregatingHandler 가 집계하도록 함.
+        logger.info(f"[DB] insert_on_conflict: {len(values)} records processed for table {table.name}")
+    except Exception as e:
+        logger.error(f"insert_on_conflict 에러: {e}", exc_info=True)
+
+def insert_ohlcv_records(df: pd.DataFrame, table_name: str = 'ohlcv_data', conflict_action: str = "DO NOTHING", db_config: dict = None, chunk_size: int = 10000) -> None:
+    """
+    OHLCV 데이터를 지정된 테이블에 저장합니다.
+    - 대용량 데이터 처리를 위해 chunk_size 단위로 나누어 저장합니다.
+    - 저장 성공 시 총 행수를 INFO 레벨 로그로 남기며, 에러 발생 시 ERROR 레벨로 기록합니다.
+    """
+    if db_config is None:
+        db_config = DATABASE
+
+    engine = create_engine(
+        f"postgresql://{db_config['user']}:{db_config['password']}@"
+        f"{db_config['host']}:{db_config['port']}/{db_config['dbname']}",
+        pool_pre_ping=True
+    )
+
+    create_table_sql = text(f"""
+        CREATE TABLE IF NOT EXISTS {table_name} (
+            timestamp TIMESTAMP NOT NULL,
+            open DOUBLE PRECISION,
+            high DOUBLE PRECISION,
+            low DOUBLE PRECISION,
+            close DOUBLE PRECISION,
+            volume DOUBLE PRECISION,
+            PRIMARY KEY (timestamp)
+        );
+    """)
+    try:
+        with engine.begin() as conn:
+            conn.execute(create_table_sql)
+    except Exception as e:
+        logger.error(f"테이블 생성 에러 ({table_name}): {e}", exc_info=True)
+        return
+
+    try:
+        df = df.copy()
+        df.reset_index(inplace=True)
+        # 대용량 데이터를 chunk 단위로 저장
+        df.to_sql(
+            table_name,
+            engine,
+            if_exists='append',
+            index=False,
+            method=insert_on_conflict,
+            chunksize=chunk_size
+        )
+        logger.info(f"데이터 저장 완료: {table_name} (총 {len(df)} 행)")
+    except Exception as e:
+        logger.error(f"데이터 저장 에러 ({table_name}): {e}", exc_info=True)
+
+def fetch_ohlcv_records(table_name: str = 'ohlcv_data', start_date: str = None, end_date: str = None, db_config: dict = None) -> pd.DataFrame:
+    """
+    지정된 테이블에서 OHLCV 데이터를 읽어옵니다.
+    - 에러 발생 시 빈 DataFrame을 반환하며, 상세 에러 내용을 ERROR 레벨로 기록합니다.
+    """
+    if db_config is None:
+        db_config = DATABASE
+
+    try:
+        engine = create_engine(
+            f"postgresql://{db_config['user']}:{db_config['password']}@"
+            f"{db_config['host']}:{db_config['port']}/{db_config['dbname']}",
+            pool_pre_ping=True
+        )
+    except Exception as e:
+        logger.error(f"DB 엔진 생성 에러: {e}", exc_info=True)
+        return pd.DataFrame()
+
+    query = f"SELECT * FROM {table_name} WHERE 1=1"
+    params = {}
+    if start_date:
+        query += " AND timestamp >= :start_date"
+        params['start_date'] = start_date
+    if end_date:
+        query += " AND timestamp <= :end_date"
+        params['end_date'] = end_date
+    query += " ORDER BY timestamp"
+    query = text(query)
+    try:
+        df = pd.read_sql(query, engine, params=params, parse_dates=['timestamp'])
+        df.set_index('timestamp', inplace=True)
+        logger.info(f"데이터 로드 완료: {table_name} (총 {len(df)} 행)")
+        return df
+    except Exception as e:
+        logger.error(f"데이터 로드 에러 ({table_name}): {e}", exc_info=True)
+        return pd.DataFrame()
+
+---
+
+# data_collection/ohlcv_fetcher.py
+import ccxt
+import pandas as pd
+from datetime import datetime
+import time
+from logs.logger_config import setup_logger
+from logs.aggregating_handler import AggregatingHandler
+import logging
+
+# 로거 설정 및 AggregatingHandler 추가 (INFO 레벨 이상의 로그 집계)
+logger = setup_logger(__name__)
+aggregating_handler = AggregatingHandler(threshold=10, level=logging.INFO)  # 임계치는 필요에 따라 조정 가능
+logger.addHandler(aggregating_handler)
+
+def fetch_historical_ohlcv_data(symbol: str, timeframe: str, start_date: str, 
+                                limit_per_request: int = 1000, pause_sec: float = 1.0, 
+                                exchange_id: str = 'binance', single_fetch: bool = False,
+                                time_offset_ms: int = 1, max_retries: int = 3):
+    """
+    ccxt를 이용해 지정한 심볼, 타임프레임, 시작일로부터 OHLCV 데이터를 수집합니다.
+    single_fetch=True이면 한 번의 요청만 수행합니다.
+    
+    반환 DataFrame: 'open', 'high', 'low', 'close', 'volume' 컬럼을 가지며, 인덱스는 timestamp.
+    """
+    try:
+        exchange_class = getattr(ccxt, exchange_id)
+        exchange = exchange_class({'enableRateLimit': True})
+        exchange.load_markets()
+    except Exception as e:
+        logger.error(f"Exchange '{exchange_id}' 초기화 에러: {e}", exc_info=True)
+        return pd.DataFrame()
+
+    try:
+        since = exchange.parse8601(datetime.strptime(start_date, "%Y-%m-%d").isoformat())
+    except Exception as e:
+        logger.error(f"start_date ({start_date}) 파싱 에러: {e}", exc_info=True)
+        return pd.DataFrame()
+
+    ohlcv_list = []
+    retry_count = 0
+    while True:
+        try:
+            ohlcvs = exchange.fetch_ohlcv(symbol, timeframe, since=since, limit=limit_per_request)
+        except Exception as e:
+            logger.error(f"{symbol}의 {timeframe} 데이터 수집 에러: {e}", exc_info=True)
+            retry_count += 1
+            if retry_count >= max_retries:
+                logger.error(f"최대 재시도({max_retries}) 횟수 초과로 {symbol} {timeframe} 데이터 수집 중단")
+                break
+            time.sleep(pause_sec)
+            continue
+
+        if not ohlcvs:
+            break
+
+        ohlcv_list.extend(ohlcvs)
+        
+        # single_fetch 옵션이 True이면 한 번의 요청 후 종료
+        if single_fetch:
+            break
+
+        last_timestamp = ohlcvs[-1][0]
+        since = last_timestamp + time_offset_ms  # 중복 방지를 위해 offset 적용
+
+        # 현재 시간보다 과거 데이터가 모두 수집되었으면 종료
+        if last_timestamp >= exchange.milliseconds():
+            break
+
+        time.sleep(pause_sec)
+
+    if ohlcv_list:
+        try:
+            df = pd.DataFrame(ohlcv_list, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df.set_index('timestamp', inplace=True)
+            logger.info(f"{symbol} {timeframe} historical data 수집 완료 (총 {len(df)} 행)")
+            return df
+        except Exception as e:
+            logger.error(f"DataFrame 변환 에러: {e}", exc_info=True)
+            return pd.DataFrame()
+    else:
+        logger.warning(f"{symbol} {timeframe}에 대한 데이터가 없습니다.")
+        return pd.DataFrame()
+    
+def fetch_latest_ohlcv_data(symbol: str, timeframe: str, limit: int = 500, exchange_id: str = 'binance'):
+    """
+    최신 OHLCV 데이터를 수집합니다.
+    """
+    try:
+        exchange_class = getattr(ccxt, exchange_id)
+        exchange = exchange_class({'enableRateLimit': True})
+        exchange.load_markets()
+    except Exception as e:
+        logger.error(f"Exchange '{exchange_id}' 초기화 에러: {e}", exc_info=True)
+        return pd.DataFrame()
+    
+    try:
+        ohlcvs = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+    except Exception as e:
+        logger.error(f"{symbol}의 {timeframe} 최신 데이터 수집 에러: {e}", exc_info=True)
+        return pd.DataFrame()
+    
+    if ohlcvs:
+        try:
+            df = pd.DataFrame(ohlcvs, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df.set_index('timestamp', inplace=True)
+            logger.info(f"{symbol} {timeframe} 최신 데이터 수집 완료 (총 {len(df)} 행)")
+            return df
+        except Exception as e:
+            logger.error(f"DataFrame 변환 에러: {e}", exc_info=True)
+            return pd.DataFrame()
+    else:
+        logger.warning(f"{symbol} {timeframe}에 대한 최신 데이터가 없습니다.")
+        return pd.DataFrame()
+    
+def get_top_market_cap_symbols(exchange_id: str = 'binance', quote_currency: str = 'USDT', 
+                               required_start_date: str = "2018-01-01", count: int = 5, 
+                               pause_sec: float = 1.0):
+    """
+    거래량(quoteVolume)을 기준으로 상위 심볼들을 선정합니다.
+    데이터 가용성을 확인하여, 지정된 시작일 이전 데이터가 존재하는 심볼만 반환합니다.
+    """
+    try:
+        exchange_class = getattr(ccxt, exchange_id)
+        exchange = exchange_class({'enableRateLimit': True})
+        markets = exchange.load_markets()
+    except Exception as e:
+        logger.error(f"{exchange_id}에서 마켓 로드 에러: {e}", exc_info=True)
+        return []
+
+    usdt_symbols = [symbol for symbol in markets if symbol.endswith('/' + quote_currency)]
+    
+    try:
+        tickers = exchange.fetch_tickers()
+    except Exception as e:
+        logger.error(f"티커 수집 에러: {e}", exc_info=True)
+        tickers = {}
+
+    symbol_volumes = []
+    for symbol in usdt_symbols:
+        ticker = tickers.get(symbol, {})
+        volume = ticker.get('quoteVolume', 0)
+        symbol_volumes.append((symbol, volume))
+    
+    symbol_volumes.sort(key=lambda x: x[1] if x[1] is not None else 0, reverse=True)
+    
+    valid_symbols = []
+    for symbol, volume in symbol_volumes:
+        logger.info(f"심볼 {symbol}의 데이터 가용성 확인 중 (시작일: {required_start_date})...")
+        df = fetch_historical_ohlcv_data(symbol, '1d', required_start_date, 
+                                         limit_per_request=1, pause_sec=pause_sec, 
+                                         exchange_id=exchange_id, single_fetch=True)
+        if df.empty:
+            logger.info(f"  → {symbol}은(는) {required_start_date} 이후 데이터만 존재하거나 데이터가 없음. 스킵합니다.")
+            continue
+        first_timestamp = df.index.min()
+        if first_timestamp > pd.to_datetime(required_start_date):
+            logger.info(f"  → {symbol}은(는) {required_start_date} 이후 상장됨 (최초 데이터: {first_timestamp}). 스킵합니다.")
+            continue
+        valid_symbols.append(symbol)
+        if len(valid_symbols) >= count:
+            break
+
+    if len(valid_symbols) < count:
+        logger.warning(f"경고: {required_start_date} 이전 데이터가 있는 유효 심볼이 {len(valid_symbols)}개 밖에 없습니다.")
+    return valid_symbols
+
+---
+
+# data_collection/ohlcv_pipeline.py
+import time
+from typing import List, Optional
+from logs.logger_config import setup_logger
+from data_collection.ohlcv_fetcher import fetch_historical_ohlcv_data, fetch_latest_ohlcv_data
+from data_collection.db_manager import insert_ohlcv_records
+
+logger = setup_logger(__name__)
+
+def collect_and_store_ohlcv_data(
+    symbols: List[str],
+    timeframes: List[str],
+    use_historical: bool = True,
+    start_date: Optional[str] = '2018-01-01 00:00:00',
+    limit_per_request: int = 1000,
+    latest_limit: int = 500,
+    pause_sec: float = 1.0,
+    table_name_format: str = "ohlcv_{symbol}_{timeframe}",
+    exchange_id: str = 'binance',
+    time_offset_ms: int = 1
+) -> None:
+    """
+    심볼과 타임프레임에 따라 OHLCV 데이터를 수집한 후, DB에 저장합니다.
+    - 수집 시 에러 및 빈 데이터 처리는 상세 에러는 ERROR 레벨, 요약 정보는 INFO 레벨로 기록합니다.
+    - DB 저장 시 chunk 단위 저장으로 대용량 데이터 처리를 최적화합니다.
+    
+    AggregatingHandler 는 동일 (logger 이름, 파일, 함수) 기준으로 반복 로그를 집계하여,
+    임계치 도달 시 "집계: 최근 N회 로그 발생, 마지막 메시지: ..." 형태의 요약 로그를 출력합니다.
+    따라서 여기서 발생하는 INFO 로그들은 AggregatingHandler 가 자동으로 요약할 수 있습니다.
+    """
+    for symbol in symbols:
+        for tf in timeframes:
+            logger.info(f"[OHLCV PIPELINE] Fetching {symbol} - {tf} data...")
+            try:
+                if use_historical:
+                    if not start_date:
+                        raise ValueError("start_date는 과거 데이터 수집 시 반드시 필요합니다.")
+                    df = fetch_historical_ohlcv_data(
+                        symbol=symbol,
+                        timeframe=tf,
+                        start_date=start_date,
+                        limit_per_request=limit_per_request,
+                        pause_sec=pause_sec,
+                        exchange_id=exchange_id,
+                        single_fetch=False,
+                        time_offset_ms=time_offset_ms
+                    )
+                else:
+                    df = fetch_latest_ohlcv_data(
+                        symbol=symbol,
+                        timeframe=tf,
+                        limit=latest_limit,
+                        exchange_id=exchange_id
+                    )
+            except Exception as e:
+                logger.error(f"[OHLCV PIPELINE] 데이터 수집 에러 ({symbol} - {tf}): {e}", exc_info=True)
+                continue
+
+            logger.info(f"[OHLCV PIPELINE] -> Total Rows Fetched for {symbol} - {tf}: {len(df)}")
+            if df.empty:
+                logger.warning(f"[OHLCV PIPELINE] -> {symbol} - {tf} 데이터가 없습니다. 저장 건너뜁니다.")
+                continue
+
+            table_name = table_name_format.format(symbol=symbol.replace('/', '').lower(), timeframe=tf)
+            try:
+                insert_ohlcv_records(df, table_name=table_name)
+                logger.info(f"[OHLCV PIPELINE] -> Saved to table: {table_name}")
+            except Exception as e:
+                logger.error(f"[OHLCV PIPELINE] 데이터 저장 에러 ({table_name}): {e}", exc_info=True)
+            time.sleep(pause_sec)
+
+[logs]
+# logs/aggregating_handler.py
+import logging
+import os
+from datetime import datetime
+
+class AggregatingHandler(logging.Handler):
+    """
+    AggregatingHandler는 각 로그 레코드를 (logger 이름, 파일명, 함수명) 별로 집계합니다.
+    지정된 임계치(threshold)만큼 로그가 누적되면, 해당 모듈/함수에서 발생한 로그의 특성을 요약하여
+    다음과 같은 형식으로 출력합니다.
+    
+    예시)
+      INFO:trading.strategies:strategies.py:high_frequency_strategy: high_frequency_strategy 집계: 최근 2000회 로그 발생, 마지막 메시지: hold at 2021-04-02 04:00:00
+      [2025-02-10 14:25:23,659] INFO:backtesting.backtester:backtester.py:process_bullish_entry: 2021-04-12 08:00:00 - Bullish Entry Summary: 5000 events; 신규 진입 불가 (가용 잔고 부족): 3, 신규 진입 실행됨: 1, 스케일인 실행됨: 4996; 평균 진입가: 418.86
+     
+    모듈마다 로그 발생량이 다를 수 있으므로, 생성 시 module_name을 전달하면 
+    환경변수 AGG_THRESHOLD_<MODULE_NAME> (대문자) 값이 있으면 이를 임계치로 사용합니다.
+    """
+    def __init__(self, threshold=None, level=logging.INFO, module_name=None):
+        # 만약 threshold가 명시되지 않았다면, module_name을 기준으로 환경변수를 확인
+        if threshold is None and module_name:
+            env_var = f"AGG_THRESHOLD_{module_name.upper()}"
+            threshold_str = os.getenv(env_var)
+            if threshold_str and threshold_str.isdigit():
+                threshold = int(threshold_str)
+            else:
+                threshold = 2000  # 기본값
+        elif threshold is None:
+            threshold = 2000
+
+        super().__init__(level)
+        self.threshold = threshold
+        # 집계 딕셔너리: key = (logger 이름, 파일명, 함수명)
+        self.aggregation = {}
+
+    def emit(self, record):
+        try:
+            # 파일 경로에서 파일명만 추출
+            filename = os.path.basename(record.pathname)
+            key = (record.name, filename, record.funcName)
+            
+            # 해당 key에 대한 집계 정보 초기화
+            if key not in self.aggregation:
+                self.aggregation[key] = {
+                    "count": 0,
+                    "last_message": None,
+                    "last_time": None,
+                }
+            agg = self.aggregation[key]
+            agg["count"] += 1
+            agg["last_message"] = record.getMessage()
+            agg["last_time"] = datetime.fromtimestamp(record.created).strftime("%Y-%m-%d %H:%M:%S")
+            
+            # 임계치(threshold)에 도달하면 요약 로그 생성
+            if agg["count"] >= self.threshold:
+                summary_msg = (
+                    f"{key[2]} 집계: 최근 {agg['count']}회 로그 발생, 마지막 메시지: {agg['last_message']} at {agg['last_time']}"
+                )
+                summary_record = self.make_summary_record(record, summary_msg)
+                # 현재 record의 logger를 사용하여 summary record를 처리
+                logging.getLogger(record.name).handle(summary_record)
+                # 집계 카운터 초기화
+                self.aggregation[key]["count"] = 0
+        except Exception:
+            self.handleError(record)
+
+    def make_summary_record(self, original_record, summary):
+        """
+        원본 로그 레코드의 정보를 유지하면서 msg만 요약 메시지로 대체한 새로운 LogRecord를 생성합니다.
+        """
+        summary_record = logging.LogRecord(
+            name=original_record.name,
+            level=original_record.levelno,
+            pathname=original_record.pathname,
+            lineno=original_record.lineno,
+            msg=summary,
+            args=original_record.args,
+            exc_info=original_record.exc_info
+        )
+        return summary_record
+
+---
+
+# logs/final_report.py
+from logs.logger_config import setup_logger
+
+logger = setup_logger(__name__)
+
+def generate_final_report(performance_data, symbol=None):
+    """
+    종목별 성과 리포트를 생성합니다.
+    symbol 인자가 전달되면 헤더에 심볼명을 포함합니다.
+    """
+    report_lines = []
+    header = f"=== FINAL BACKTEST PERFORMANCE REPORT for {symbol} ===" if symbol else "=== FINAL BACKTEST PERFORMANCE REPORT ==="
+    report_lines.append(header)
+    report_lines.append(f"Overall ROI: {performance_data.get('roi', 0):.2f}%")
+    report_lines.append(f"Cumulative Return: {performance_data.get('cumulative_return', 0):.2f}")
+    report_lines.append(f"Total PnL: {performance_data.get('total_pnl', 0):.2f}")
+    report_lines.append(f"Trade Count: {performance_data.get('trade_count', 0)}")
+    report_lines.append("")
+    report_lines.append("Performance Overview:")
+    report_lines.append(f"  Annualized Return: {performance_data.get('annualized_return', 0):.2f}%")
+    report_lines.append(f"  Annualized Volatility: {performance_data.get('annualized_volatility', 0):.2f}%")
+    report_lines.append(f"  Sharpe Ratio: {performance_data.get('sharpe_ratio', 0):.2f}")
+    report_lines.append(f"  Sortino Ratio: {performance_data.get('sortino_ratio', 0):.2f}")
+    report_lines.append(f"  Calmar Ratio: {performance_data.get('calmar_ratio', 0):.2f}")
+    report_lines.append(f"  Maximum Drawdown: {performance_data.get('max_drawdown', 0):.2f}")
+    report_lines.append("")
+    report_lines.append("Trading Stats:")
+    report_lines.append(f"  Win Rate: {performance_data.get('win_rate', 0):.2f}%")
+    report_lines.append(f"  Average Win: {performance_data.get('avg_win', 0):.2f}")
+    report_lines.append(f"  Average Loss: {performance_data.get('avg_loss', 0):.2f}")
+    report_lines.append(f"  Profit Factor: {performance_data.get('profit_factor', 0):.2f}")
+    report_lines.append(f"  Trades per Year: {performance_data.get('trades_per_year', 0):.2f}")
+    report_lines.append(f"  Max Consecutive Wins: {performance_data.get('max_consecutive_wins', 0)}")
+    report_lines.append(f"  Max Consecutive Losses: {performance_data.get('max_consecutive_losses', 0)}")
+    report_lines.append("")
+    report_lines.append("Monthly Performance:")
+    monthly = performance_data.get("monthly_performance", {})
+    for month in sorted(monthly.keys()):
+        data = monthly[month]
+        status = "TARGET MET" if data["roi"] >= 2.0 else "TARGET NOT MET"
+        report_lines.append(f"  {month}: ROI {data['roi']:.2f}% (Trades: {data['trade_count']}) --> {status}")
+    report_lines.append("=========================================")
+    
+    report_str = "\n".join(report_lines)
+    logger.info(report_str)
+
+---
+
+# logs/logger_config.py
+import logging
+import os
+from logging.handlers import RotatingFileHandler
+from dotenv import load_dotenv
+
+# .env 파일 로드
+load_dotenv()
+
+# 환경 변수 읽기 (프로젝트 전체에 통일된 로그 레벨)
+ENVIRONMENT = os.getenv("ENVIRONMENT", "development").lower()
+_LOG_LEVEL_FROM_ENV = os.getenv("LOG_LEVEL", None)
+if _LOG_LEVEL_FROM_ENV:
+    level = getattr(logging, _LOG_LEVEL_FROM_ENV.upper(), logging.INFO)
+else:
+    level = logging.INFO
+
+# 기본 로그 파일 이름 (최초 로그는 이 파일에 기록됨)
+BASE_LOG_FILE = os.path.join("logs", "project.log")
+
+class OneLineFormatter(logging.Formatter):
+    """
+    로그 메시지 내 개행 문자를 제거하여 한 로그 이벤트가 한 줄로 기록되도록 합니다.
+    """
+    def format(self, record):
+        formatted = super().format(record)
+        return formatted.replace("\n", " | ")
+
+class LineRotatingFileHandler(RotatingFileHandler):
+    """
+    지정된 라인 수(max_lines)를 초과하면 현재 로그 파일을 닫고,
+    새로운 로그 파일을 'project.log', 'project1.log', 'project2.log', … 
+    와 같이 순차적으로 생성하는 핸들러입니다.
+    """
+    def __init__(self, base_filename, mode='a', max_lines=1000, backupCount=7, encoding=None, delay=False):
+        self.base_filename = base_filename
+        self.current_index = 0
+        self._set_current_filename()
+        # maxBytes=0으로 설정하여 크기 기반 롤오버 대신 라인 수 기반 롤오버를 구현합니다.
+        super().__init__(self.current_filename, mode, maxBytes=0, backupCount=backupCount, encoding=encoding, delay=delay)
+        self.max_lines = max_lines
+        # 항상 current_line_count를 0으로 초기화하여 이전 로그 파일 내용의 영향을 받지 않도록 수정함.
+        self.current_line_count = 0
+
+    def _set_current_filename(self):
+        """
+        현재 인덱스에 따라 로그 파일 이름을 결정하고, self.baseFilename을 업데이트합니다.
+        """
+        base, ext = os.path.splitext(self.base_filename)
+        if self.current_index == 0:
+            self.current_filename = self.base_filename
+        else:
+            self.current_filename = f"{base}{self.current_index}{ext}"
+        self.baseFilename = os.path.abspath(self.current_filename)
+
+    def doRollover(self):
+        """
+        현재 로그 파일의 라인 수가 max_lines를 초과하면 호출됩니다.
+        """
+        if self.stream:
+            self.stream.close()
+            self.stream = None
+
+        self.current_index += 1
+        # backupCount 이상의 파일이 쌓이면 가장 오래된 로그 파일(프로젝트 로그 포함)을 삭제합니다.
+        if self.backupCount > 0 and self.current_index >= self.backupCount:
+            base, ext = os.path.splitext(self.base_filename)
+            oldest_index = self.current_index - self.backupCount
+            # oldest_index가 0이면 base_filename(project.log)이 대상이 됩니다.
+            if oldest_index == 0:
+                old_file = self.base_filename
+            else:
+                old_file = f"{base}{oldest_index}{ext}"
+            if os.path.exists(old_file):
+                os.remove(old_file)
+
+        self._set_current_filename()
+        self.mode = 'w'
+        self.stream = self._open()
+        self.current_line_count = 0
+
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            lines_in_msg = msg.count("\n") or 1
+            if self.current_line_count + lines_in_msg > self.max_lines:
+                self.doRollover()
+            self.current_line_count += lines_in_msg
+            super().emit(record)
+        except Exception:
+            self.handleError(record)
+
+# 전역 AggregatingHandler를 추가합니다.
+try:
+    from logs.aggregating_handler import AggregatingHandler
+except ImportError:
+    AggregatingHandler = None
+
+def initialize_root_logger():
+    """
+    루트 로거에 전역 파일 핸들러, 콘솔 핸들러, 그리고 AggregatingHandler를 한 번만 추가합니다.
+    모든 모듈은 propagate를 통해 이 핸들러들을 상속받아 통일된 로그 환경에서 동작합니다.
+    """
+    root_logger = logging.getLogger()
+    root_logger.setLevel(level)
+    
+    # 파일 핸들러 추가 (중복 추가 방지)
+    if not any(isinstance(handler, LineRotatingFileHandler) for handler in root_logger.handlers):
+        file_handler = LineRotatingFileHandler(
+            base_filename=BASE_LOG_FILE,
+            max_lines=1000,
+            backupCount=7,
+            encoding="utf-8",
+            delay=True
+        )
+        file_handler.setLevel(level)
+        formatter = OneLineFormatter(
+            '[%(asctime)s] %(levelname)s:%(name)s:%(filename)s:%(funcName)s: %(message)s'
+        )
+        file_handler.setFormatter(formatter)
+        root_logger.addHandler(file_handler)
+    
+    # 콘솔 핸들러 추가 (중복 추가 방지)
+    if not any(isinstance(handler, logging.StreamHandler) for handler in root_logger.handlers):
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(level)
+        console_formatter = OneLineFormatter(
+            '[%(asctime)s] %(levelname)s:%(name)s:%(filename)s:%(funcName)s: %(message)s'
+        )
+        console_handler.setFormatter(console_formatter)
+        root_logger.addHandler(console_handler)
+    
+    # AggregatingHandler 추가 (중복 추가 방지)
+    if AggregatingHandler is not None and not any(isinstance(handler, AggregatingHandler) for handler in root_logger.handlers):
+        # 전역 로그 레벨과 기본 threshold(1000)를 사용하여 AggregatingHandler를 생성합니다.
+        # 단, 환경 변수 AGG_THRESHOLD_GLOBAL 가 있으면 이를 사용합니다.
+        global_threshold = os.getenv("AGG_THRESHOLD_GLOBAL")
+        try:
+            threshold_value = int(global_threshold) if global_threshold and global_threshold.isdigit() else 1000
+        except Exception:
+            threshold_value = 1000
+
+        aggregator_handler = AggregatingHandler(threshold=threshold_value, level=level)
+        # 이미 요약된 로그는 집계하지 않도록 필터 추가
+        aggregator_handler.addFilter(lambda record: not getattr(record, '_is_summary', False))
+        aggregator_formatter = OneLineFormatter(
+            '[%(asctime)s] %(levelname)s:%(name)s:%(filename)s:%(funcName)s: %(message)s'
+        )
+        aggregator_handler.setFormatter(aggregator_formatter)
+        root_logger.addHandler(aggregator_handler)
+
+# 루트 로거 초기화 (이 시점부터 모든 모듈은 루트 로거의 핸들러를 상속받습니다)
+initialize_root_logger()
+
+def setup_logger(module_name: str) -> logging.Logger:
+    """
+    모듈 이름을 기반으로 로거를 반환합니다.
+    모든 모듈은 전역 로그 레벨과 핸들러(파일, 콘솔, AggregatingHandler)를 상속받아 통일된 로그 환경에서 동작합니다.
+    
+    추가로, 만약 환경 변수 AGG_THRESHOLD_<모듈명> (모듈명의 마지막 부분을 대문자로)이 설정되어 있다면,
+    해당 로거에는 별도의 AggregatingHandler를 추가하여 모듈별 임계치를 적용합니다.
+    """
+    logger = logging.getLogger(module_name)
+    logger.setLevel(level)
+    
+    # 기본적으로 전역 핸들러에 의해 처리되지만, 모듈별 임계치를 사용하고자 하는 경우 별도의 AggregatingHandler를 추가합니다.
+    mod_key = module_name.split('.')[-1].upper()  # 예: "backtester" → "BACKTESTER"
+    env_threshold = os.getenv(f"AGG_THRESHOLD_{mod_key}")
+    if env_threshold is not None and env_threshold.isdigit():
+        threshold = int(env_threshold)
+        # 새 AggregatingHandler를 해당 로거에 추가합니다.
+        try:
+            from logs.aggregating_handler import AggregatingHandler
+            agg_handler = AggregatingHandler(threshold=threshold, level=level, module_name=mod_key)
+            agg_handler.addFilter(lambda record: not getattr(record, '_is_summary', False))
+            formatter = OneLineFormatter('[%(asctime)s] %(levelname)s:%(name)s:%(filename)s:%(funcName)s: %(message)s')
+            agg_handler.setFormatter(formatter)
+            logger.addHandler(agg_handler)
+            # 전역 핸들러와 중복되지 않도록 해당 로거는 propagate를 False로 설정할 수 있습니다.
+            logger.propagate = False
+        except Exception as e:
+            logger.error("모듈별 AggregatingHandler 추가 실패: %s", e)
+    else:
+        logger.propagate = True
+    return logger
+
+---
+
+# logs/logging_util.py
+import logging
+import threading
+
+class EventLogger:
+    """
+    AggregatingHandler를 사용하여 이벤트 로그를 집계하는 클래스입니다.
+    
+    각 모듈에서 인스턴스를 생성하고 이벤트 발생 시 INFO 레벨 로그로 기록하면,
+    루트 로거에 등록된 AggregatingHandler가 동일 (logger 이름, 파일, 함수) 기준으로
+    로그를 누적하여 임계치 도달 시 자동으로 요약 메시지를 출력합니다.
+    
+    기존의 수동 집계(이벤트 카운터, 이벤트 목록)는 제거되었습니다.
+    """
+    def __init__(self, module_name: str):
+        """
+        :param module_name: 해당 로거가 속한 모듈의 이름 (예: "Account", "AssetManager" 등)
+        """
+        self.module_name = module_name
+        self.lock = threading.RLock()
+        self.logger = logging.getLogger(module_name)
+
+    def log_event(self, event_message: str) -> None:
+        """
+        단일 이벤트를 기록합니다.
+        이벤트 발생 시마다 INFO 레벨로 로그를 남기면, 
+        AggregatingHandler가 동일 기준의 로그들을 집계하여 임계치 도달 시 요약 메시지를 출력합니다.
+        
+        :param event_message: 기록할 이벤트 메시지
+        """
+        with self.lock:
+            self.logger.info(f"[{self.module_name}] Event: {event_message}")
+
+    def log_summary(self) -> None:
+        """
+        요약 로그는 AggregatingHandler가 자동으로 출력하므로,
+        필요 시 강제로 요약 로그를 남길 수 있도록 INFO 레벨 로그를 기록합니다.
+        """
+        with self.lock:
+            self.logger.info(f"[{self.module_name}] Summary requested.")
+
+# 테스트 코드에서 요구하는 LoggingUtil 클래스가 존재하도록,
+# EventLogger를 LoggingUtil이라는 이름으로 alias 처리합니다.
+LoggingUtil = EventLogger
+
+[markets_analysis]
+# markets_analysis/hmm_model.py
+import numpy as np
+import pandas as pd
+from hmmlearn.hmm import GaussianHMM
+from logs.logger_config import setup_logger
+from datetime import timedelta
+
+class MarketRegimeHMM:
+    def __init__(self, n_components=3, covariance_type='full', n_iter=1000, random_state=42, retrain_interval_minutes=60):
+        """
+        HMM 모델 초기화.
+        retrain_interval_minutes: 마지막 재학습 시각 이후 최소 재학습 간격(분)
+        """
+        self.n_components = n_components
+        self.covariance_type = covariance_type
+        self.n_iter = n_iter
+        self.random_state = random_state
+        self.model = GaussianHMM(
+            n_components=self.n_components,
+            covariance_type=self.covariance_type,
+            n_iter=self.n_iter,
+            random_state=self.random_state
+        )
+        self.logger = setup_logger(__name__)
+        self.trained = False
+        self.last_train_time = None  # 마지막 학습 데이터의 마지막 타임스탬프
+        self.retrain_interval_minutes = retrain_interval_minutes
+        self.last_feature_stats = None  # 이전 학습 시 사용된 피처들의 평균값 저장
+        self.retrain_feature_threshold = 0.01  # 피처 평균 변화의 임계값 (예: 1% 미만이면 재학습하지 않음)
+
+    def train(self, historical_data: pd.DataFrame, feature_columns: list = None, max_train_samples: int = None):
+        """
+        HMM 모델 학습:
+         - historical_data: 학습에 사용할 데이터프레임 (인덱스는 datetime)
+         - feature_columns: 사용할 피처 목록 (None이면 전체 컬럼 사용)
+         - max_train_samples: 최신 샘플 수만 사용할 경우 지정
+
+         마지막 학습 시각 및 피처 평균 값의 변화가 작으면 재학습을 건너뜁니다.
+        """
+        if historical_data.empty:
+            self.logger.error("Historical data is empty. Training aborted.")
+            raise ValueError("Historical data is empty.")
+        if feature_columns is None:
+            feature_columns = historical_data.columns.tolist()
+
+        # 최대 샘플 수 지정 시 최신 데이터만 사용 (INFO 레벨로 기록하여 집계 대상에 포함)
+        if max_train_samples is not None and len(historical_data) > max_train_samples:
+            training_data = historical_data.iloc[-max_train_samples:]
+            self.logger.info(f"Using last {max_train_samples} samples for training.")
+        else:
+            training_data = historical_data
+
+        current_last_time = training_data.index.max()
+
+        # 시간 기반 재학습 조건 확인 (재학습 스킵 여부를 INFO 레벨로 기록)
+        if self.last_train_time is not None:
+            elapsed = current_last_time - self.last_train_time
+            if elapsed < timedelta(minutes=self.retrain_interval_minutes):
+                self.logger.info(f"Skipping HMM retraining: only {elapsed.total_seconds()/60:.2f} minutes elapsed since last training.")
+                return
+            # 피처 변화 기반 조건: 이전 학습 시의 피처 평균과 현재 피처 평균의 차이가 작으면 재학습 건너뜀
+            if self.last_feature_stats is not None:
+                current_means = training_data[feature_columns].mean()
+                diff = np.abs(current_means - self.last_feature_stats).mean()
+                if diff < self.retrain_feature_threshold:
+                    self.logger.info(f"Skipping HMM retraining: average feature mean difference {diff:.6f} below threshold {self.retrain_feature_threshold}.")
+                    return
+
+        # 학습 데이터 준비 및 모델 학습 (주요 단계는 INFO 레벨로 기록)
+        X = training_data[feature_columns].values
+        self.logger.info(f"Training HMM model with {X.shape[0]} samples and {X.shape[1]} features.")
+        try:
+            self.model.fit(X)
+        except Exception as e:
+            self.logger.error(f"HMM 모델 학습 에러: {e}", exc_info=True)
+            raise
+        self.trained = True
+        self.last_train_time = current_last_time
+        self.last_feature_stats = training_data[feature_columns].mean()
+        self.logger.info("HMM training completed.")
+
+    def predict(self, data: pd.DataFrame, feature_columns: list = None):
+        """
+        주어진 데이터에 대해 HMM 모델로 상태 예측.
+        """
+        if not self.trained:
+            self.logger.error("Model is not trained. Prediction aborted.")
+            raise ValueError("Model is not trained.")
+        if data.empty:
+            self.logger.error("Input data is empty. Prediction aborted.")
+            raise ValueError("Input data is empty.")
+        if feature_columns is None:
+            feature_columns = data.columns.tolist()
+        X = data[feature_columns].values
+        try:
+            predicted_states = self.model.predict(X)
+        except Exception as e:
+            self.logger.error(f"HMM 예측 에러: {e}", exc_info=True)
+            raise
+        self.logger.info(f"Predicted states for {X.shape[0]} samples.")
+        return predicted_states
+
+    def predict_proba(self, data: pd.DataFrame, feature_columns: list = None):
+        """
+        주어진 데이터에 대해 각 상태의 예측 확률을 반환합니다.
+        """
+        if not self.trained:
+            self.logger.error("Model is not trained. predict_proba aborted.")
+            raise ValueError("Model is not trained.")
+        if data.empty:
+            self.logger.error("Input data is empty. predict_proba aborted.")
+            raise ValueError("Input data is empty.")
+        if feature_columns is None:
+            feature_columns = data.columns.tolist()
+        X = data[feature_columns].values
+        try:
+            probabilities = self.model.predict_proba(X)
+        except Exception as e:
+            self.logger.error(f"Error in predict_proba: {e}", exc_info=True)
+            raise
+        self.logger.info(f"Predicted probabilities for {X.shape[0]} samples.")
+        return probabilities
+
+    def update(self, new_data: pd.DataFrame, feature_columns: list = None, max_train_samples: int = None):
+        """
+        새 데이터가 들어올 때, 학습 조건에 따라 HMM 모델을 재학습합니다.
+        """
+        self.logger.info("Updating HMM model with new data.")
+        self.train(new_data, feature_columns, max_train_samples)
+        self.logger.info("HMM model update completed.")
+
+---
+
+# markets_analysis/regime_filter.py
+from logs.logger_config import setup_logger
+
+logger = setup_logger(__name__)
+
+def determine_market_regime(price_data):
+    """
+    주어진 가격 데이터를 바탕으로 시장 레짐을 결정합니다.
+    
+    파라미터:
+      - price_data (dict): 'current_price'와 'previous_price' 키를 포함하는 가격 데이터 딕셔너리.
+    
+    반환값:
+      - str: 'bullish', 'bearish', 'sideways' 또는 에러 발생 시 'unknown'
+    """
+    try:
+        current_price = price_data.get("current_price")
+        previous_price = price_data.get("previous_price")
+        if current_price is None or previous_price is None:
+            logger.error("필수 가격 데이터 누락: 'current_price' 또는 'previous_price'가 제공되지 않음.")
+            return "unknown"
+        
+        change_percent = (current_price - previous_price) / previous_price
+        
+        # 단순 기준: 2% 이상 상승이면 bullish, 2% 이상 하락이면 bearish, 그 외에는 sideways
+        if change_percent > 0.02:
+            regime = "bullish"
+        elif change_percent < -0.02:
+            regime = "bearish"
+        else:
+            regime = "sideways"
+        
+        logger.info(f"시장 레짐 결정: {regime} (변화율: {change_percent:.2%})")
+        return regime
+    except Exception as e:
+        logger.error(f"시장 레짐 결정 중 에러 발생: {e}", exc_info=True)
+        return "unknown"
+
+def filter_regime(price_data, target_regime="bullish"):
+    """
+    주어진 가격 데이터를 바탕으로 결정된 시장 레짐이 target_regime과 일치하는지 확인합니다.
+    
+    파라미터:
+      - price_data (dict): 가격 데이터 딕셔너리.
+      - target_regime (str): 확인할 목표 레짐 (기본값: 'bullish')
+    
+    반환값:
+      - bool: 결정된 레짐이 target_regime과 일치하면 True, 아니면 False.
+    """
+    regime = determine_market_regime(price_data)
+    match = (regime == target_regime)
+    logger.info(f"레짐 필터링: 목표={target_regime}, 결정={regime}, 일치 여부={match}")
+    return match
+
+def filter_by_confidence(hmm_model, df, feature_columns, threshold=0.8):
+    """
+    HMM 모델의 예측 확률을 이용해 각 행의 예측 신뢰도를 평가합니다.
+    
+    파라미터:
+      - hmm_model: 학습된 HMM 모델 (predict_proba 메서드를 제공해야 합니다).
+      - df (pd.DataFrame): 평가할 데이터 프레임.
+      - feature_columns (list): 특징으로 사용할 컬럼명 리스트.
+      - threshold (float): 신뢰도 임계치 (기본값: 0.8).
+      
+    반환값:
+      - List[bool]: 각 행에 대해 최대 확률이 임계치 이상이면 True, 아니면 False.
+    """
+    try:
+        # 새로 추가한 predict_proba 메서드를 호출합니다.
+        probabilities = hmm_model.predict_proba(df, feature_columns=feature_columns)
+        confidence_flags = [max(probs) >= threshold for probs in probabilities]
+        logger.info(f"Computed confidence flags with threshold {threshold}.")
+        return confidence_flags
+    except Exception as e:
+        logger.error(f"Error computing confidence flags: {e}", exc_info=True)
+        return [False] * len(df)
+
+[tests]
+# tests/conftest.py
+import os
+import glob
+import logging
+import pytest
+from logs.logger_config import initialize_root_logger
+
+@pytest.fixture(autouse=True, scope="session")
+def clear_logs():
+    """
+    테스트 실행 전에 logs 디렉토리 내 모든 .log 파일을 삭제하고,
+    기존 로거를 종료한 후 루트 로거를 재초기화합니다.
+    이 fixture는 세션 전체에 대해 한 번 실행됩니다.
+    """
+    log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "logs")
+    log_pattern = os.path.join(log_dir, "*.log")
+    log_files = glob.glob(log_pattern)
+    for log_file in log_files:
+        try:
+            os.remove(log_file)
+            print(f"Deleted log file: {log_file}")
+        except Exception as e:
+            print(f"Failed to delete {log_file}: {e}")
+    
+    # 기존 로거 종료 후, 최신 AggregatingHandler 설정이 반영되도록 루트 로거 재초기화
+    logging.shutdown()
+    initialize_root_logger()
+
+---
+
+# tests/test_auto_optimization_trigger.py
+
+import logging
+
+logger = logging.getLogger(__name__)
+
+def auto_optimization_trigger(performance):
+    """
+    더미 함수: 월간 ROI가 2% 미만인 달이 있으면 True를 반환합니다.
+    """
+    monthly_roi = performance.get("monthly_roi", {})
+    for month, roi in monthly_roi.items():
+        logger.debug(f"검사 중 - {month}: ROI = {roi}")
+        if roi < 2.0:
+            logger.info(f"자동 최적화 트리거 활성화: {month}의 ROI({roi})가 2% 미만입니다.")
+            return True
+    logger.info("자동 최적화 트리거 비활성화: 모든 월간 ROI가 2% 이상입니다.")
+    return False
+
+def test_auto_optimization_trigger():
+    performance_trigger = {
+        "monthly_roi": {
+            "2023-01": 1.5,
+            "2023-02": 2.5,
+            "2023-03": 1.8,
+        }
+    }
+    performance_no_trigger = {
+        "monthly_roi": {
+            "2023-01": 2.1,
+            "2023-02": 2.5,
+            "2023-03": 2.3,
+        }
+    }
+    assert auto_optimization_trigger(performance_trigger) is True
+    assert auto_optimization_trigger(performance_no_trigger) is False
+
+---
+
+# tests/test_logging_summary.py
+import logging
+import io
+from logs.logging_util import LoggingUtil
+
+def test_logging_summary_output():
+    # 메모리 내 로그 스트림 설정
+    log_stream = io.StringIO()
+    
+    # 대상 로거 생성 및 기존 핸들러 제거
+    test_logger = logging.getLogger("test_logging_summary")
+    test_logger.setLevel(logging.DEBUG)
+    for h in test_logger.handlers[:]:
+        test_logger.removeHandler(h)
+    test_logger.propagate = False
+
+    # 새 스트림 핸들러 추가
+    stream_handler = logging.StreamHandler(log_stream)
+    formatter = logging.Formatter('%(levelname)s:%(message)s')
+    stream_handler.setFormatter(formatter)
+    test_logger.addHandler(stream_handler)
+
+    # LoggingUtil 인스턴스 생성 (테스트용 logger로 교체)
+    logging_util = LoggingUtil("test_logging_summary")
+    logging_util.logger = test_logger  # 테스트용 logger 주입
+
+    # 요약 로그 임계치(예: 2000회) 전까지 이벤트 기록
+    for i in range(1999):
+        logging_util.log_event(f"Test event {i}")
+
+    # 2000번째 이벤트 – 이 시점에서 요약 로그가 찍혀야 함
+    logging_util.log_event("Test event 1999")
+
+    # 강제로 핸들러 flush
+    stream_handler.flush()
+
+    # 로그 출력값을 가져와서 요약 로그 메시지가 포함되었는지 확인
+    output = log_stream.getvalue()
+    assert "집계:" in output
+
+---
+
+# tests/test_performance_report.py
+
+import io
+import sys
+from logs.final_report import generate_final_report
+
+def test_final_report_output():
+    sample_performance = {
+        "roi": 1.5,
+        "pnl": -150.0,
+        "trade_count": 10,
+        "monthly_roi": {
+            "2023-01": 1.8,
+            "2023-02": 2.2,
+            "2023-03": 1.0,
+        }
+    }
+    # stdout 캡처
+    captured_output = io.StringIO()
+    sys.stdout = captured_output
+
+    generate_final_report(sample_performance)
+
+    sys.stdout = sys.__stdout__
+    output = captured_output.getvalue()
+    # 핵심 지표들이 출력되는지 확인 (예: ROI, 거래 횟수, 월별 데이터 등)
+    assert "ROI" in output
+    # 출력된 리포트에서 거래 횟수를 "거래 횟수:"로 표기하도록 변경했으므로 이를 확인합니다.
+    assert "trade_count" in output or "거래 횟수" in output
+    for month in sample_performance["monthly_roi"]:
+        assert month in output

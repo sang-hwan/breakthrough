@@ -14,7 +14,8 @@ def clear_log_files():
     """
     실행 시 logs 폴더 내 모든 .log 파일을 삭제합니다.
     """
-    log_dir = os.path.join(os.path.dirname(__file__), "logs")
+    # 현재 파일의 절대 경로를 기준으로 logs 폴더 경로 계산
+    log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
     log_files = glob.glob(os.path.join(log_dir, "*.log"))
     for log_file in log_files:
         try:
@@ -24,12 +25,12 @@ def clear_log_files():
             print(f"Failed to remove log file {log_file}: {e}")
 
 def run_strategy_performance():
-    # 1. logs 폴더의 모든 로그 파일 삭제
+    # 1. 기존 로그 핸들러 종료 및 글로벌 핸들러 초기화
+    logging.shutdown()
+
+    # 2. logs 폴더의 모든 로그 파일 삭제
     clear_log_files()
 
-    # 2. 기존 로그 핸들러 종료 후 재설정
-    logging.shutdown()
-    
     logger = setup_logger(__name__)
     logger.info("프로젝트 전체 테스트 실행을 시작합니다.")
     
@@ -76,7 +77,6 @@ def run_strategy_performance():
         if trades:
             performance_data = compute_performance(trades)
             logger.info("심볼 %s 성과 보고 생성", symbol)
-            # 종목명을 인자로 전달하여 개별 리포트 생성
             generate_final_report(performance_data, symbol=symbol)
         else:
             logger.info("심볼 %s 백테스트 결과, 생성된 거래 내역이 없습니다.", symbol)

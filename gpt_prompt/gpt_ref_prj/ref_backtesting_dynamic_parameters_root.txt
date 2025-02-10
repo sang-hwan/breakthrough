@@ -2,24 +2,22 @@
 # backtesting/backtester.py
 import pandas as pd
 import numpy as np
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from logs.logger_config import setup_logger
 from trading.risk_manager import RiskManager
 from trading.trade_manager import TradeManager
-from dynamic_parameters.dynamic_param_manager import DynamicParamManager
-from data_collection.db_manager import fetch_ohlcv_records
-from trading.positions import TradePosition
-from markets_analysis.hmm_model import MarketRegimeHMM
-from markets_analysis.regime_filter import filter_by_confidence
-from trading.strategies import TradingStrategies
 from trading.account import Account
-from trading.indicators import compute_sma, compute_rsi, compute_macd, compute_bollinger_bands
+from trading.positions import TradePosition
 from trading.asset_manager import AssetManager
 from trading.ensemble_manager import EnsembleManager
+from trading.indicators import compute_sma, compute_rsi, compute_macd, compute_bollinger_bands
+from dynamic_parameters.dynamic_param_manager import DynamicParamManager
+from data_collection.db_manager import fetch_ohlcv_records
+from markets_analysis.hmm_model import MarketRegimeHMM
+from markets_analysis.regime_filter import filter_by_confidence
 
 class Backtester:
-    # 집계 임계치를 5000건으로 설정
     BULLISH_ENTRY_AGGREGATION_THRESHOLD = 5000
 
     def __init__(self, symbol="BTC/USDT", account_size=10000.0, fee_rate=0.001, 
@@ -36,14 +34,13 @@ class Backtester:
         self.account = Account(initial_balance=account_size, fee_rate=fee_rate)
         self.asset_manager = AssetManager(self.account)
         self.ensemble_manager = EnsembleManager()
-        self.strategy_manager = TradingStrategies()
+        self.last_signal_time = None
+        self.bullish_entry_events = []
         self.hmm_model = None
         self.last_hmm_training_datetime = None
         self.df_extra = None
-        self.last_signal_time = None
+        # 추가: 리밸런싱 시간을 추적하기 위한 속성을 초기화합니다.
         self.last_rebalance_time = None
-        # bullish entry 이벤트 집계를 위한 리스트
-        self.bullish_entry_events = []
 
     def load_data(self, short_table_format, long_table_format, short_tf, long_tf, 
                   start_date=None, end_date=None, extra_tf=None):
@@ -58,7 +55,6 @@ class Backtester:
         self.df_short.sort_index(inplace=True)
         self.df_long.sort_index(inplace=True)
         self.logger.info(f"데이터 로드 완료: short 데이터 {len(self.df_short)}행, long 데이터 {len(self.df_long)}행")
-        
         if extra_tf:
             extra_table = short_table_format.format(symbol=symbol_for_table, timeframe=extra_tf)
             self.df_extra = fetch_ohlcv_records(extra_table, start_date, end_date)
@@ -76,7 +72,6 @@ class Backtester:
         self.logger.info("인디케이터 적용 완료 (SMA, RSI, MACD)")
 
     def update_hmm_regime(self, dynamic_params):
-        # HMM 재학습 및 예측 (세부 로그 생략)
         hmm_features = ['returns', 'volatility', 'sma', 'rsi', 'macd_macd', 'macd_signal', 'macd_diff']
         current_dt = self.df_long.index.max()
         retrain_interval = pd.Timedelta(minutes=dynamic_params.get('hmm_retrain_interval_minutes', 60))
@@ -106,12 +101,10 @@ class Backtester:
     def update_short_dataframe(self, regime_series, dynamic_params):
         self.df_short = self.df_short.join(self.df_long[['sma', 'rsi', 'volatility']], how='left').ffill()
         self.df_short['market_regime'] = regime_series.reindex(self.df_short.index).ffill()
-        # ATR 계산은 TradeManager.compute_atr()에서 요약 로그로 처리됨.
         self.df_short = TradeManager.compute_atr(self.df_short, period=dynamic_params.get("atr_period", 14))
         self.logger.info("Short 데이터 프레임 업데이트 완료 (인디케이터, 레짐, ATR)")
 
     def handle_walk_forward_window(self, current_time, row):
-        # 모든 포지션 강제 청산 – 각 포지션의 실행 결과를 개별 로그 대신 최종 요약으로 처리
         for pos in self.positions:
             for exec_record in pos.executions:
                 if not exec_record.get("closed", False):
@@ -143,7 +136,7 @@ class Backtester:
         signal_cooldown = pd.Timedelta(minutes=dynamic_params.get("signal_cooldown_minutes", 5))
         if self.last_signal_time is not None and (current_time - self.last_signal_time) < signal_cooldown:
             return
-        executed_event = None  # 개별 이벤트 설명 (예: 신규 진입, 스케일인 등)
+        executed_event = None
         for pos in self.positions:
             if pos.side == "LONG":
                 additional_size = RiskManager.compute_position_size(
@@ -157,10 +150,13 @@ class Backtester:
                 required_amount = close_price * additional_size * (1 + self.fee_rate)
                 available_balance = self.account.get_available_balance()
                 if available_balance >= required_amount:
+                    # 단가가 낮은 경우(예: close_price < 10) scale_in_threshold를 기본값의 절반으로 낮춥니다.
+                    default_threshold = dynamic_params.get("scale_in_threshold", 0.02)
+                    effective_threshold = default_threshold * 0.5 if close_price < 10 else default_threshold
                     RiskManager.attempt_scale_in_position(
                         position=pos,
                         current_price=close_price,
-                        scale_in_threshold=dynamic_params.get("scale_in_threshold", 0.02),
+                        scale_in_threshold=effective_threshold,
                         slippage_rate=self.slippage_rate,
                         stop_loss=row.get("stop_loss_price"),
                         take_profit=row.get("take_profit_price"),
@@ -194,31 +190,27 @@ class Backtester:
                         allocation_mode=dynamic_params.get("allocation_mode", "equal")
                     )
                 )
-                new_position.highest_price = close_price
                 try:
                     atr_value = self.df_short.loc[current_time, "atr"]
                 except KeyError:
                     atr_value = 0
-                stop_loss_price, take_profit_price = TradeManager.calculate_dynamic_stop_and_take(close_price, atr_value, risk_params)
-                new_position.allocation_plan = RiskManager.allocate_position_splits(
-                    total_size=1.0,
-                    splits_count=dynamic_params.get("total_splits", 3),
-                    allocation_mode=dynamic_params.get("allocation_mode", "equal")
-                )
-                exit_targets = TradeManager.calculate_partial_exit_targets(
+                stop_loss_price, take_profit_price = TradeManager.calculate_dynamic_stop_and_take(
                     entry_price=close_price,
-                    partial_exit_ratio=dynamic_params.get("partial_exit_ratio", 0.5),
-                    partial_profit_ratio=dynamic_params.get("partial_profit_ratio", 0.03),
-                    final_profit_ratio=dynamic_params.get("final_profit_ratio", 0.06)
+                    atr=atr_value,
+                    risk_params=risk_params
                 )
-                executed_price = close_price * (1 + self.slippage_rate)
                 new_position.add_execution(
-                    entry_price=executed_price,
+                    entry_price=close_price * (1 + self.slippage_rate),
                     size=total_size * new_position.allocation_plan[0],
                     stop_loss=stop_loss_price,
                     take_profit=take_profit_price,
                     entry_time=current_time,
-                    exit_targets=exit_targets,
+                    exit_targets=TradeManager.calculate_partial_exit_targets(
+                        entry_price=close_price,
+                        partial_exit_ratio=dynamic_params.get("partial_exit_ratio", 0.5),
+                        partial_profit_ratio=dynamic_params.get("partial_profit_ratio", 0.03),
+                        final_profit_ratio=dynamic_params.get("final_profit_ratio", 0.06)
+                    ),
                     trade_type="new_entry"
                 )
                 new_position.executed_splits = 1
@@ -228,7 +220,6 @@ class Backtester:
                 self.last_signal_time = current_time
             else:
                 executed_event = "신규 진입 불가 (가용 잔고 부족)"
-        # 개별 이벤트를 바로 기록하는 대신, 집계 리스트에 추가합니다.
         self.bullish_entry_events.append((current_time, executed_event, close_price))
         if len(self.bullish_entry_events) >= Backtester.BULLISH_ENTRY_AGGREGATION_THRESHOLD:
             count = len(self.bullish_entry_events)
@@ -321,7 +312,6 @@ class Backtester:
                         exec_record["stop_loss"] = new_stop
 
     def finalize_all_positions(self):
-        # Flush any remaining bullish entry events before finalizing positions
         if self.bullish_entry_events:
             count = len(self.bullish_entry_events)
             freq = {}
@@ -335,7 +325,6 @@ class Backtester:
                              ", ".join([f"{k}: {v}" for k, v in freq.items()]) +
                              f"; 평균 진입가: {avg_price:.2f}")
             self.bullish_entry_events.clear()
-
         final_time = self.df_short.index[-1]
         final_close = self.df_short.iloc[-1]["close"]
         adjusted_final_close = final_close * (1 - self.final_exit_slippage) if self.final_exit_slippage else final_close
@@ -379,7 +368,6 @@ class Backtester:
         self.apply_indicators()
         regime_series = self.update_hmm_regime(dynamic_params)
         self.update_short_dataframe(regime_series, dynamic_params)
-        
         if holdout_period:
             holdout_start, holdout_end = pd.to_datetime(holdout_period[0]), pd.to_datetime(holdout_period[1])
             df_train = self.df_short[self.df_short.index < holdout_start]
@@ -387,16 +375,13 @@ class Backtester:
         else:
             df_train = self.df_short
             df_holdout = None
-        
         if walk_forward_days is not None:
             window_start = df_train.index[0]
             walk_forward_td = pd.Timedelta(days=walk_forward_days)
         else:
             window_start = None
-        
         signal_cooldown = pd.Timedelta(minutes=dynamic_params.get("signal_cooldown_minutes", 5))
         rebalance_interval = pd.Timedelta(minutes=dynamic_params.get("rebalance_interval_minutes", 60))
-        
         self.logger.info("백테스트 시작")
         for current_time, row in df_train.iterrows():
             if walk_forward_days is not None and current_time - window_start >= walk_forward_td:
@@ -433,10 +418,14 @@ class Backtester:
                 except Exception as e:
                     self.logger.error(f"Asset rebalancing failed: {e}")
                 self.last_rebalance_time = current_time
-        
         if self.df_extra is not None and not self.df_extra.empty:
             for current_time, row in self.df_extra.iterrows():
-                hf_signal = self.strategy_manager.high_frequency_strategy(self.df_extra, current_time)
+                hf_signal = self.ensemble_manager.get_final_signal(
+                    row['market_regime'], 
+                    dynamic_params.get('liquidity_info', 'high'), 
+                    self.df_short, 
+                    current_time
+                )
                 regime = self.df_long.loc[self.df_long.index <= current_time].iloc[-1].get('market_regime', 'sideways')
                 base_risk_params = {
                     "risk_per_trade": dynamic_params.get("risk_per_trade", 0.01),
@@ -454,7 +443,6 @@ class Backtester:
                 elif hf_signal == "exit_all":
                     self.process_bearish_exit(current_time, row)
                 self.monitor_orders(current_time, row)
-        
         if df_holdout is not None:
             self.logger.info("홀드아웃 구간 백테스트 시작.")
             for current_time, row in df_holdout.iterrows():
@@ -482,7 +470,6 @@ class Backtester:
                 elif row['market_regime'] == "sideways":
                     self.process_sideways_trade(current_time, row, risk_params, dynamic_params)
                 self.update_positions(current_time, row)
-        
         self.finalize_all_positions()
         total_pnl = sum(trade["pnl"] for trade in self.trades)
         roi = total_pnl / self.account.initial_balance * 100
@@ -542,6 +529,8 @@ class DynamicParameterOptimizer:
             for split in splits:
                 for asset in assets:
                     logger.info(f"[Optimizer] {asset} 평가, 스플릿: {split}")
+                    
+                    # Training 백테스트 수행
                     backtester_train = Backtester(symbol=asset, account_size=10000)
                     backtester_train.load_data(
                         short_table_format="ohlcv_{symbol}_{timeframe}",
@@ -558,6 +547,7 @@ class DynamicParameterOptimizer:
                     roi_train = total_pnl_train / 10000 * 100
                     logger.info(f"[Optimizer] {asset} Training ROI: {roi_train:.2f}%")
 
+                    # Test 백테스트 수행
                     backtester_test = Backtester(symbol=asset, account_size=10000)
                     backtester_test.load_data(
                         short_table_format="ohlcv_{symbol}_{timeframe}",
@@ -574,6 +564,7 @@ class DynamicParameterOptimizer:
                     roi_test = total_pnl_test / 10000 * 100
                     logger.info(f"[Optimizer] {asset} Test ROI: {roi_test:.2f}%")
 
+                    # Holdout 백테스트 수행
                     backtester_holdout = Backtester(symbol=asset, account_size=10000)
                     backtester_holdout.load_data(
                         short_table_format="ohlcv_{symbol}_{timeframe}",
@@ -590,16 +581,18 @@ class DynamicParameterOptimizer:
                     roi_holdout = total_pnl_holdout / 10000 * 100
                     logger.info(f"[Optimizer] {asset} Holdout ROI: {roi_holdout:.2f}%")
 
+                    # 평가 점수 계산 (Overfit, Holdout 페널티 포함)
                     overfit_penalty = abs(roi_train - roi_test)
                     holdout_penalty = 0 if roi_holdout >= 2.0 else (2.0 - roi_holdout) * 10
-
                     score = -roi_test + overfit_penalty + holdout_penalty
                     logger.info(f"[Optimizer] {asset} Score: {score:.2f} (Overfit: {overfit_penalty:.2f}, Holdout: {holdout_penalty:.2f})")
+                    
                     total_score += score
                     num_evaluations += 1
 
             avg_score = total_score / num_evaluations if num_evaluations > 0 else total_score
 
+            # 정규화 패널티 계산
             reg_penalty = 0.0
             regularization_keys = ["atr_multiplier", "profit_ratio", "risk_per_trade", "scale_in_threshold"]
             for key in regularization_keys:
@@ -623,7 +616,8 @@ class DynamicParameterOptimizer:
         self.study.optimize(self.objective, n_trials=self.n_trials)
         
         trials_df = self.study.trials_dataframe()
-        logger.debug(f"[Optimizer] 트라이얼 결과:\n{trials_df.to_string()}")
+        # INFO 레벨 로그로 남겨 AggregatingHandler 가 집계하도록 함
+        logger.info(f"[Optimizer] 트라이얼 결과:\n{trials_df.to_string()}")
         
         best_trial = self.study.best_trial
         logger.info(f"[Optimizer] Best trial: {best_trial.number} (Value: {best_trial.value:.2f})")
@@ -637,6 +631,9 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 import math
+from logs.logger_config import setup_logger
+
+logger = setup_logger(__name__)
 
 def calculate_monthly_performance(trades):
     monthly_data = {}
@@ -658,6 +655,8 @@ def calculate_monthly_performance(trades):
             "roi": roi,
             "trade_count": len(pnl_list)
         }
+    
+    logger.info(f"[Performance] 월별 성과 계산 완료: {monthly_performance}")
     return monthly_performance
 
 def calculate_overall_performance(trades):
@@ -686,7 +685,7 @@ def calculate_overall_performance(trades):
         trade_pnls.append(pnl)
     
     if not dates:
-        # 거래가 하나도 없으면 기본값 반환
+        logger.info("[Performance] 거래 데이터 없음: 기본 성과 반환")
         return {
             "roi": roi,
             "cumulative_return": cumulative_return,
@@ -767,7 +766,7 @@ def calculate_overall_performance(trades):
     years = total_days / 365 if total_days > 0 else 1
     trades_per_year = trade_count / years
 
-    return {
+    overall_performance = {
         "roi": roi,
         "cumulative_return": cumulative_return,
         "total_pnl": total_pnl,
@@ -786,9 +785,257 @@ def calculate_overall_performance(trades):
         "max_consecutive_wins": max_consecutive_wins,
         "max_consecutive_losses": max_consecutive_losses
     }
+    
+    logger.info(f"[Performance] 전체 성과 계산 완료: ROI={roi:.2f}%, Trade Count={trade_count}, Annualized Return={annualized_return*100:.2f}%, Sharpe Ratio={sharpe_ratio:.2f}, Max Drawdown={max_drawdown:.2f}")
+    return overall_performance
 
 def compute_performance(trades):
     overall = calculate_overall_performance(trades)
     monthly = calculate_monthly_performance(trades)
     overall["monthly_performance"] = monthly
+    logger.info(f"[Performance] 최종 성과 종합 계산 완료: {overall}")
     return overall
+
+[dynamic_parameters]
+# dynamic_parameters/dynamic_param_manager.py
+from logs.logger_config import setup_logger
+
+class DynamicParamManager:
+    _instance = None  # 싱글턴 인스턴스 저장
+
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            cls._instance = super(DynamicParamManager, cls).__new__(cls)
+        return cls._instance
+
+    def __init__(self):
+        # 이미 초기화된 경우 재초기화 방지
+        if hasattr(self, '_initialized') and self._initialized:
+            return
+
+        # 기본 파라미터 설정 (다른 모듈과 연계되는 주요 값들)
+        self.default_params = {
+            "sma_period": 200,
+            "atr_period": 14,
+            "atr_multiplier": 2.07,
+            "dynamic_sl_adjustment": 1.18,
+            "profit_ratio": 0.098,
+            "use_trailing_stop": True,
+            "trailing_percent": 0.045,
+            "partial_exit_ratio": 0.5,
+            "partial_profit_ratio": 0.03,
+            "final_profit_ratio": 0.06,
+            "risk_per_trade": 0.0162,
+            "total_splits": 3,
+            "allocation_mode": "equal",
+            "scale_in_threshold": 0.0153,
+            "hmm_confidence_threshold": 0.8,
+            "liquidity_info": "high",
+            "volatility_multiplier": 1.0,  # 변동성 반영 인자
+            "use_candle_pattern": True
+        }
+        self.logger = setup_logger(__name__)
+        self.logger.info("DynamicParamManager 초기화 완료 (레짐 기반 전략 적용).")
+        self._initialized = True
+
+    def get_default_params(self) -> dict:
+        """
+        기본 파라미터 사전을 복사하여 반환합니다.
+        """
+        return self.default_params.copy()
+
+    def update_dynamic_params(self, market_data: dict) -> dict:
+        """
+        시장 데이터(예: 변동성, 추세, 거래량 등)에 따라 파라미터를 동적으로 업데이트합니다.
+        
+        예시:
+          - 변동성이 높으면 atr_multiplier 및 volatility_multiplier를 상향 조정.
+          - bullish 추세이면 profit_ratio를 소폭 상향, bearish 추세이면 하향.
+          - 거래량(volume)이 낮으면 risk_per_trade를 축소하는 방식 적용.
+        """
+        dynamic_params = self.get_default_params()
+        volatility = market_data.get("volatility", 0.0)
+        trend = market_data.get("trend", "neutral")
+        volume = market_data.get("volume", None)
+
+        # 변동성에 따른 조정
+        if volatility > 0.05:
+            dynamic_params["atr_multiplier"] *= 1.1
+            dynamic_params["volatility_multiplier"] = 1.2
+            self.logger.info("높은 변동성 감지: atr_multiplier 및 volatility_multiplier 상향 조정.")
+        else:
+            dynamic_params["atr_multiplier"] *= 0.95
+            dynamic_params["volatility_multiplier"] = 1.0
+            self.logger.info("낮거나 보통의 변동성: atr_multiplier 소폭 하향 조정.")
+
+        # 추세에 따른 profit_ratio 조정
+        if trend == "bullish":
+            dynamic_params["profit_ratio"] *= 1.05
+            self.logger.info("Bullish 추세 감지: profit_ratio 상향 조정.")
+        elif trend == "bearish":
+            dynamic_params["profit_ratio"] *= 0.95
+            self.logger.info("Bearish 추세 감지: profit_ratio 하향 조정.")
+        else:
+            self.logger.info("중립 추세: profit_ratio 변경 없음.")
+
+        # 거래량(volume)에 따른 risk_per_trade 조정
+        if volume is not None:
+            if volume < 1000:
+                dynamic_params["risk_per_trade"] *= 0.9
+                self.logger.info("낮은 거래량 감지: risk_per_trade 하향 조정.")
+            else:
+                dynamic_params["risk_per_trade"] *= 1.05
+                self.logger.info("높은 거래량 감지: risk_per_trade 소폭 상향 조정.")
+
+        self.logger.info(f"Market data: {market_data}")
+        self.logger.info(f"업데이트된 동적 파라미터: {dynamic_params}")
+        self.logger.info("동적 파라미터 업데이트 완료.")
+        return dynamic_params
+
+    def merge_params(self, optimized_params: dict) -> dict:
+        """
+        최적화 결과로 도출된 파라미터와 기본 파라미터를 병합하여 반환합니다.
+        숫자형 값의 경우 기본값과 최적화값의 가중 평균(여기서는 단순 평균, 50:50)을 사용하고,
+        그 외의 타입은 최적화값을 우선 적용합니다.
+        """
+        merged = self.get_default_params()
+        for key, opt_value in optimized_params.items():
+            default_value = merged.get(key)
+            if isinstance(default_value, (int, float)) and isinstance(opt_value, (int, float)):
+                merged[key] = (default_value + opt_value) / 2
+            else:
+                merged[key] = opt_value
+        self.logger.info(f"병합된 동적 파라미터: {merged}")
+        return merged
+
+[project root]
+# .env
+# Database 설정
+DB_USER=postgres
+DB_PASSWORD=1234
+DB_HOST=localhost
+DB_PORT=5432
+DB_NAME=my_trading_db
+
+# 로깅 관련 설정
+# ENVIRONMENT: development 또는 production (개발 환경에서는 development 권장)
+ENVIRONMENT=development
+# LOG_DETAIL_LEVEL: DEBUG 또는 INFO (개발 환경에서 상세 로그가 필요하면 DEBUG, 그렇지 않으면 INFO)
+LOG_DETAIL_LEVEL=DEBUG
+
+# (기존 LOG_LEVEL도 사용 가능하도록 남겨둘 수 있음)
+LOG_LEVEL=INFO
+
+# 모듈별 AggregatingHandler 임계치 설정
+# 높은 빈도의 로그를 출력하는 모듈은 임계치를 높여서 로그 집계 빈도를 줄입니다.
+AGG_THRESHOLD_BACKTESTER=10000
+AGG_THRESHOLD_RISK_MANAGER=10000
+AGG_THRESHOLD_STRATEGIES=10000
+AGG_THRESHOLD_ASSET_MANAGER=10000
+AGG_THRESHOLD_ENSEMBLE_MANAGER=10000
+AGG_THRESHOLD_ACCOUNT=10000
+AGG_THRESHOLD_TRADE_MANAGER=10000
+
+---
+
+# requirements.txt
+pandas
+numpy
+SQLAlchemy
+psycopg2-binary
+optuna
+ta
+ccxt
+hmmlearn
+python-dotenv
+pytest
+
+---
+
+# run_strategy_performance.py
+import os
+import glob
+import logging
+import pandas as pd
+from backtesting.optimizer import DynamicParameterOptimizer
+from backtesting.backtester import Backtester
+from backtesting.performance import compute_performance
+from logs.final_report import generate_final_report
+from logs.logger_config import setup_logger
+from dynamic_parameters.dynamic_param_manager import DynamicParamManager
+
+def clear_log_files():
+    """
+    실행 시 logs 폴더 내 모든 .log 파일을 삭제합니다.
+    """
+    # 현재 파일의 절대 경로를 기준으로 logs 폴더 경로 계산
+    log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+    log_files = glob.glob(os.path.join(log_dir, "*.log"))
+    for log_file in log_files:
+        try:
+            os.remove(log_file)
+            print(f"Deleted log file: {log_file}")
+        except Exception as e:
+            print(f"Failed to remove log file {log_file}: {e}")
+
+def run_strategy_performance():
+    # 1. 기존 로그 핸들러 종료 및 글로벌 핸들러 초기화
+    logging.shutdown()
+
+    # 2. logs 폴더의 모든 로그 파일 삭제
+    clear_log_files()
+
+    logger = setup_logger(__name__)
+    logger.info("프로젝트 전체 테스트 실행을 시작합니다.")
+    
+    # 3. 파라미터 최적화 (Walk-Forward 방식)
+    logger.info("Walk-Forward 방식의 파라미터 최적화를 시작합니다...")
+    optimizer = DynamicParameterOptimizer(n_trials=10)
+    best_trial = optimizer.optimize()
+    
+    # 4. 기본 파라미터와 최적화된 파라미터 병합
+    dynamic_manager = DynamicParamManager()
+    best_params = dynamic_manager.merge_params(best_trial.params)
+    logger.info("최적의 파라미터 도출 완료: %s", best_params)
+    
+    # 5. 각 종목별 백테스트 실행 및 성과 계산
+    start_date = "2018-06-01"
+    end_date = "2025-02-01"
+    timeframes = {"short_tf": "4h", "long_tf": "1d"}
+    symbols = ["BTC/USDT", "ETH/USDT", "XRP/USDT"]
+    
+    for symbol in symbols:
+        logger.info("심볼 %s 백테스트 시작", symbol)
+        try:
+            symbol_key = symbol.replace("/", "").lower()
+            backtester = Backtester(symbol=symbol, account_size=10000)
+            backtester.load_data(
+                short_table_format=f"ohlcv_{symbol_key}_{{timeframe}}",
+                long_table_format=f"ohlcv_{symbol_key}_{{timeframe}}",
+                short_tf=timeframes["short_tf"],
+                long_tf=timeframes["long_tf"],
+                start_date=start_date,
+                end_date=end_date
+            )
+        except Exception as e:
+            logger.error("심볼 %s 데이터 로드 실패: %s", symbol, e)
+            continue
+        
+        try:
+            trades, trade_logs = backtester.run_backtest(dynamic_params=best_params)
+            logger.info("심볼 %s 백테스트 완료: 총 거래 횟수 = %d", symbol, len(trades))
+        except Exception as e:
+            logger.error("심볼 %s 백테스트 실행 중 에러: %s", symbol, e)
+            continue
+        
+        if trades:
+            performance_data = compute_performance(trades)
+            logger.info("심볼 %s 성과 보고 생성", symbol)
+            generate_final_report(performance_data, symbol=symbol)
+        else:
+            logger.info("심볼 %s 백테스트 결과, 생성된 거래 내역이 없습니다.", symbol)
+    
+    logger.info("전체 프로젝트 테스트 실행 완료.")
+
+if __name__ == '__main__':
+    run_strategy_performance()

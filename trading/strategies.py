@@ -2,26 +2,16 @@
 from logs.logger_config import setup_logger
 
 class TradingStrategies:
-    # 각 전략별 집계 임계치
-    CHANGE_COUNT_THRESHOLD = 2000
-
     def __init__(self):
         self.logger = setup_logger(__name__)
-        # 각 전략별로 마지막 최종 신호를 저장하는 딕셔너리
+        
+        # 각 전략별 마지막 최종 신호를 저장 (신호 변경 감지용)
         self.previous_signals = {
             "select_strategy": None,
             "trend_following_strategy": None,
             "breakout_strategy": None,
             "counter_trend_strategy": None,
             "high_frequency_strategy": None
-        }
-        # 각 전략별 신호 변경 집계 카운드
-        self.change_counts = {
-            "select_strategy": 0,
-            "trend_following_strategy": 0,
-            "breakout_strategy": 0,
-            "counter_trend_strategy": 0,
-            "high_frequency_strategy": 0
         }
 
     def _get_candle_pattern_signal(self, row):
@@ -98,13 +88,11 @@ class TradingStrategies:
         else:
             final_signal = "hold"
 
-        # 집계/데바운스: 신호가 이전과 달라진 경우 집계 카운트를 증가시킵니다.
+        # 신호 변경 감지: 신호가 변경되었으면 INFO 레벨로 기록합니다.
+        # (신호 유지의 경우 DEBUG로 남기지만, 프로젝트에서는 INFO 이상만 출력됨)
         key = "select_strategy"
-        if self.previous_signals[key] != final_signal:
-            self.change_counts[key] += 1
-            if self.change_counts[key] >= TradingStrategies.CHANGE_COUNT_THRESHOLD:
-                self.logger.info(f"select_strategy 집계: 최근 {self.change_counts[key]}회 신호 변경, 최종 신호: {final_signal} at {current_time}")
-                self.change_counts[key] = 0
+        if self.previous_signals.get(key) != final_signal:
+            self.logger.info(f"select_strategy: 신호 변경, 최종 신호: {final_signal} at {current_time}")
             self.previous_signals[key] = final_signal
         else:
             self.logger.debug(f"select_strategy: 신호 유지: '{final_signal}' at {current_time}")
@@ -122,11 +110,8 @@ class TradingStrategies:
         price = row.get('close')
         final_signal = "enter_long" if sma is not None and price is not None and price > sma else "hold"
         
-        if self.previous_signals[key] != final_signal:
-            self.change_counts[key] += 1
-            if self.change_counts[key] >= TradingStrategies.CHANGE_COUNT_THRESHOLD:
-                self.logger.info(f"trend_following_strategy 집계: 최근 {self.change_counts[key]}회 신호 변경, 최종 신호: {final_signal} at {current_time}")
-                self.change_counts[key] = 0
+        if self.previous_signals.get(key) != final_signal:
+            self.logger.info(f"trend_following_strategy: 신호 변경, 최종 신호: {final_signal} at {current_time}")
             self.previous_signals[key] = final_signal
         else:
             self.logger.debug(f"trend_following_strategy: 신호 유지: '{final_signal}' at {current_time}")
@@ -147,11 +132,8 @@ class TradingStrategies:
             self.logger.error(f"breakout_strategy: 데이터 조회 실패 for time {current_time}: {e}", exc_info=True)
             final_signal = "hold"
         
-        if self.previous_signals[key] != final_signal:
-            self.change_counts[key] += 1
-            if self.change_counts[key] >= TradingStrategies.CHANGE_COUNT_THRESHOLD:
-                self.logger.info(f"breakout_strategy 집계: 최근 {self.change_counts[key]}회 신호 변경, 최종 신호: {final_signal} at {current_time}")
-                self.change_counts[key] = 0
+        if self.previous_signals.get(key) != final_signal:
+            self.logger.info(f"breakout_strategy: 신호 변경, 최종 신호: {final_signal} at {current_time}")
             self.previous_signals[key] = final_signal
         else:
             self.logger.debug(f"breakout_strategy: 신호 유지: '{final_signal}' at {current_time}")
@@ -176,11 +158,8 @@ class TradingStrategies:
         else:
             final_signal = "hold"
         
-        if self.previous_signals[key] != final_signal:
-            self.change_counts[key] += 1
-            if self.change_counts[key] >= TradingStrategies.CHANGE_COUNT_THRESHOLD:
-                self.logger.info(f"counter_trend_strategy 집계: 최근 {self.change_counts[key]}회 신호 변경, 최종 신호: {final_signal} at {current_time} (rsi: {rsi})")
-                self.change_counts[key] = 0
+        if self.previous_signals.get(key) != final_signal:
+            self.logger.info(f"counter_trend_strategy: 신호 변경, 최종 신호: {final_signal} at {current_time} (rsi: {rsi})")
             self.previous_signals[key] = final_signal
         else:
             self.logger.debug(f"counter_trend_strategy: 신호 유지: '{final_signal}' at {current_time} (rsi: {rsi})")
@@ -214,11 +193,8 @@ class TradingStrategies:
             self.logger.error(f"high_frequency_strategy: 데이터 조회 실패 for time {current_time}: {e}", exc_info=True)
             final_signal = "hold"
         
-        if self.previous_signals[key] != final_signal:
-            self.change_counts[key] += 1
-            if self.change_counts[key] >= TradingStrategies.CHANGE_COUNT_THRESHOLD:
-                self.logger.info(f"high_frequency_strategy 집계: 최근 {self.change_counts[key]}회 신호 변경, 최종 신호: {final_signal} at {current_time}")
-                self.change_counts[key] = 0
+        if self.previous_signals.get(key) != final_signal:
+            self.logger.info(f"high_frequency_strategy: 신호 변경, 최종 신호: {final_signal} at {current_time}")
             self.previous_signals[key] = final_signal
         else:
             self.logger.debug(f"high_frequency_strategy: 신호 유지: '{final_signal}' at {current_time}")

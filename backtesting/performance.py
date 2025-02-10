@@ -3,6 +3,9 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 import math
+from logs.logger_config import setup_logger
+
+logger = setup_logger(__name__)
 
 def calculate_monthly_performance(trades):
     monthly_data = {}
@@ -24,6 +27,8 @@ def calculate_monthly_performance(trades):
             "roi": roi,
             "trade_count": len(pnl_list)
         }
+    
+    logger.info(f"[Performance] 월별 성과 계산 완료: {monthly_performance}")
     return monthly_performance
 
 def calculate_overall_performance(trades):
@@ -52,7 +57,7 @@ def calculate_overall_performance(trades):
         trade_pnls.append(pnl)
     
     if not dates:
-        # 거래가 하나도 없으면 기본값 반환
+        logger.info("[Performance] 거래 데이터 없음: 기본 성과 반환")
         return {
             "roi": roi,
             "cumulative_return": cumulative_return,
@@ -133,7 +138,7 @@ def calculate_overall_performance(trades):
     years = total_days / 365 if total_days > 0 else 1
     trades_per_year = trade_count / years
 
-    return {
+    overall_performance = {
         "roi": roi,
         "cumulative_return": cumulative_return,
         "total_pnl": total_pnl,
@@ -152,9 +157,13 @@ def calculate_overall_performance(trades):
         "max_consecutive_wins": max_consecutive_wins,
         "max_consecutive_losses": max_consecutive_losses
     }
+    
+    logger.info(f"[Performance] 전체 성과 계산 완료: ROI={roi:.2f}%, Trade Count={trade_count}, Annualized Return={annualized_return*100:.2f}%, Sharpe Ratio={sharpe_ratio:.2f}, Max Drawdown={max_drawdown:.2f}")
+    return overall_performance
 
 def compute_performance(trades):
     overall = calculate_overall_performance(trades)
     monthly = calculate_monthly_performance(trades)
     overall["monthly_performance"] = monthly
+    logger.info(f"[Performance] 최종 성과 종합 계산 완료: {overall}")
     return overall

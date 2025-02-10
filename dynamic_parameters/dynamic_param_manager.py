@@ -59,38 +59,38 @@ class DynamicParamManager:
         trend = market_data.get("trend", "neutral")
         volume = market_data.get("volume", None)
 
-        # 변동성에 따른 조정 (내부 세부 상태: DEBUG)
+        # 변동성에 따른 조정
         if volatility > 0.05:
             dynamic_params["atr_multiplier"] *= 1.1
             dynamic_params["volatility_multiplier"] = 1.2
-            self.logger.debug("높은 변동성 감지: atr_multiplier 및 volatility_multiplier 상향 조정.")
+            self.logger.info("높은 변동성 감지: atr_multiplier 및 volatility_multiplier 상향 조정.")
         else:
             dynamic_params["atr_multiplier"] *= 0.95
             dynamic_params["volatility_multiplier"] = 1.0
-            self.logger.debug("낮거나 보통의 변동성: atr_multiplier 소폭 하향 조정.")
+            self.logger.info("낮거나 보통의 변동성: atr_multiplier 소폭 하향 조정.")
 
-        # 추세에 따른 profit_ratio 조정 (내부 세부 상태: DEBUG)
+        # 추세에 따른 profit_ratio 조정
         if trend == "bullish":
             dynamic_params["profit_ratio"] *= 1.05
-            self.logger.debug("Bullish 추세 감지: profit_ratio 상향 조정.")
+            self.logger.info("Bullish 추세 감지: profit_ratio 상향 조정.")
         elif trend == "bearish":
             dynamic_params["profit_ratio"] *= 0.95
-            self.logger.debug("Bearish 추세 감지: profit_ratio 하향 조정.")
+            self.logger.info("Bearish 추세 감지: profit_ratio 하향 조정.")
         else:
-            self.logger.debug("중립 추세: profit_ratio 변경 없음.")
+            self.logger.info("중립 추세: profit_ratio 변경 없음.")
 
-        # 거래량(volume)에 따른 risk_per_trade 조정 (내부 세부 상태: DEBUG)
+        # 거래량(volume)에 따른 risk_per_trade 조정
         if volume is not None:
             if volume < 1000:
                 dynamic_params["risk_per_trade"] *= 0.9
-                self.logger.debug("낮은 거래량 감지: risk_per_trade 하향 조정.")
+                self.logger.info("낮은 거래량 감지: risk_per_trade 하향 조정.")
             else:
                 dynamic_params["risk_per_trade"] *= 1.05
-                self.logger.debug("높은 거래량 감지: risk_per_trade 소폭 상향 조정.")
+                self.logger.info("높은 거래량 감지: risk_per_trade 소폭 상향 조정.")
 
-        self.logger.debug(f"Market data: {market_data}")
-        self.logger.debug(f"업데이트된 동적 파라미터: {dynamic_params}")
-        self.logger.info("동적 파라미터 업데이트 완료.")  # 주요 단계: INFO
+        self.logger.info(f"Market data: {market_data}")
+        self.logger.info(f"업데이트된 동적 파라미터: {dynamic_params}")
+        self.logger.info("동적 파라미터 업데이트 완료.")
         return dynamic_params
 
     def merge_params(self, optimized_params: dict) -> dict:
@@ -106,5 +106,5 @@ class DynamicParamManager:
                 merged[key] = (default_value + opt_value) / 2
             else:
                 merged[key] = opt_value
-        self.logger.debug(f"병합된 동적 파라미터: {merged}")
+        self.logger.info(f"병합된 동적 파라미터: {merged}")
         return merged

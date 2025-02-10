@@ -11,7 +11,8 @@ def compute_sma(data: pd.DataFrame, price_column: str = 'close', period: int = 2
     try:
         sma = SMAIndicator(close=data[price_column], window=period, fillna=fillna)
         data[output_col] = sma.sma_indicator()
-        logger.debug(f"SMA computed: period={period}, output_col={output_col}")
+        # INFO 레벨로 기록하여 AggregatingHandler가 집계하도록 함
+        logger.info(f"SMA computed: period={period}, output_col={output_col}")
     except Exception as e:
         logger.error(f"compute_sma 에러: {e}", exc_info=True)
     return data
@@ -26,7 +27,7 @@ def compute_macd(data: pd.DataFrame, price_column: str = 'close', slow_period: i
         data[f'{prefix}macd'] = macd.macd()
         data[f'{prefix}signal'] = macd.macd_signal()
         data[f'{prefix}diff'] = macd.macd_diff()
-        logger.debug(f"MACD computed: slow={slow_period}, fast={fast_period}, signal={signal_period}, prefix={prefix}")
+        logger.info(f"MACD computed: slow={slow_period}, fast={fast_period}, signal={signal_period}, prefix={prefix}")
     except Exception as e:
         logger.error(f"compute_macd 에러: {e}", exc_info=True)
     return data
@@ -35,7 +36,7 @@ def compute_rsi(data: pd.DataFrame, price_column: str = 'close', period: int = 1
     try:
         rsi = RSIIndicator(close=data[price_column], window=period, fillna=fillna)
         data[output_col] = rsi.rsi()
-        logger.debug(f"RSI computed: period={period}, output_col={output_col}")
+        logger.info(f"RSI computed: period={period}, output_col={output_col}")
     except Exception as e:
         logger.error(f"compute_rsi 에러: {e}", exc_info=True)
     return data
@@ -50,7 +51,7 @@ def compute_bollinger_bands(data: pd.DataFrame, price_column: str = 'close', per
         data[f'{prefix}wband'] = bb.bollinger_wband()
         data[f'{prefix}hband_ind'] = bb.bollinger_hband_indicator()
         data[f'{prefix}lband_ind'] = bb.bollinger_lband_indicator()
-        logger.debug(f"Bollinger Bands computed: period={period}, std_multiplier={std_multiplier}, prefix={prefix}")
+        logger.info(f"Bollinger Bands computed: period={period}, std_multiplier={std_multiplier}, prefix={prefix}")
     except Exception as e:
         logger.error(f"compute_bollinger_bands 에러: {e}", exc_info=True)
     return data

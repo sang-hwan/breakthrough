@@ -53,7 +53,8 @@ class TradePosition:
             'highest_price_since_entry': entry_price,
             'closed': False
         })
-        logger.debug(f"실행 추가됨: entry_price={entry_price}, size={size}, trade_type={trade_type}")
+        # INFO 레벨로 남기면 AggregatingHandler 가 동일 위치의 로그들을 누적하여 임계치 도달 시 요약합니다.
+        logger.info(f"실행 추가됨: entry_price={entry_price}, size={size}, trade_type={trade_type}")
 
     def get_total_size(self) -> float:
         return sum(exec_record['size'] for exec_record in self.executions if not exec_record.get('closed', False))
@@ -66,7 +67,7 @@ class TradePosition:
     def remove_execution(self, index: int):
         if 0 <= index < len(self.executions):
             self.executions.pop(index)
-            logger.debug(f"실행 제거됨: index={index}")
+            logger.info(f"실행 제거됨: index={index}")
 
     def is_empty(self) -> bool:
         return all(exec_record.get("closed", False) for exec_record in self.executions)
@@ -84,6 +85,6 @@ class TradePosition:
                 exec_record['exit_targets'] = [t for t in exec_record['exit_targets'] if not t.get('hit', False)]
             if exec_record['size'] < min_order_size:
                 exec_record['closed'] = True
-            logger.debug(f"부분 청산 실행: index={index}, close_ratio={close_ratio}, 청산 수량={qty_to_close}")
+            logger.info(f"부분 청산 실행: index={index}, close_ratio={close_ratio}, 청산 수량={qty_to_close}")
             return qty_to_close
         return 0.0

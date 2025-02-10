@@ -47,6 +47,8 @@ class DynamicParameterOptimizer:
             for split in splits:
                 for asset in assets:
                     logger.info(f"[Optimizer] {asset} 평가, 스플릿: {split}")
+                    
+                    # Training 백테스트 수행
                     backtester_train = Backtester(symbol=asset, account_size=10000)
                     backtester_train.load_data(
                         short_table_format="ohlcv_{symbol}_{timeframe}",
@@ -63,6 +65,7 @@ class DynamicParameterOptimizer:
                     roi_train = total_pnl_train / 10000 * 100
                     logger.info(f"[Optimizer] {asset} Training ROI: {roi_train:.2f}%")
 
+                    # Test 백테스트 수행
                     backtester_test = Backtester(symbol=asset, account_size=10000)
                     backtester_test.load_data(
                         short_table_format="ohlcv_{symbol}_{timeframe}",
@@ -79,6 +82,7 @@ class DynamicParameterOptimizer:
                     roi_test = total_pnl_test / 10000 * 100
                     logger.info(f"[Optimizer] {asset} Test ROI: {roi_test:.2f}%")
 
+                    # Holdout 백테스트 수행
                     backtester_holdout = Backtester(symbol=asset, account_size=10000)
                     backtester_holdout.load_data(
                         short_table_format="ohlcv_{symbol}_{timeframe}",
@@ -95,16 +99,18 @@ class DynamicParameterOptimizer:
                     roi_holdout = total_pnl_holdout / 10000 * 100
                     logger.info(f"[Optimizer] {asset} Holdout ROI: {roi_holdout:.2f}%")
 
+                    # 평가 점수 계산 (Overfit, Holdout 페널티 포함)
                     overfit_penalty = abs(roi_train - roi_test)
                     holdout_penalty = 0 if roi_holdout >= 2.0 else (2.0 - roi_holdout) * 10
-
                     score = -roi_test + overfit_penalty + holdout_penalty
                     logger.info(f"[Optimizer] {asset} Score: {score:.2f} (Overfit: {overfit_penalty:.2f}, Holdout: {holdout_penalty:.2f})")
+                    
                     total_score += score
                     num_evaluations += 1
 
             avg_score = total_score / num_evaluations if num_evaluations > 0 else total_score
 
+            # 정규화 패널티 계산
             reg_penalty = 0.0
             regularization_keys = ["atr_multiplier", "profit_ratio", "risk_per_trade", "scale_in_threshold"]
             for key in regularization_keys:
@@ -128,7 +134,8 @@ class DynamicParameterOptimizer:
         self.study.optimize(self.objective, n_trials=self.n_trials)
         
         trials_df = self.study.trials_dataframe()
-        logger.debug(f"[Optimizer] 트라이얼 결과:\n{trials_df.to_string()}")
+        # INFO 레벨 로그로 남겨 AggregatingHandler 가 집계하도록 함
+        logger.info(f"[Optimizer] 트라이얼 결과:\n{trials_df.to_string()}")
         
         best_trial = self.study.best_trial
         logger.info(f"[Optimizer] Best trial: {best_trial.number} (Value: {best_trial.value:.2f})")

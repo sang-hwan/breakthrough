@@ -4,8 +4,13 @@ import pandas as pd
 from datetime import datetime
 import time
 from logs.logger_config import setup_logger
+from logs.aggregating_handler import AggregatingHandler
+import logging
 
+# 로거 설정 및 AggregatingHandler 추가 (INFO 레벨 이상의 로그 집계)
 logger = setup_logger(__name__)
+aggregating_handler = AggregatingHandler(threshold=10, level=logging.INFO)  # 임계치는 필요에 따라 조정 가능
+logger.addHandler(aggregating_handler)
 
 def fetch_historical_ohlcv_data(symbol: str, timeframe: str, start_date: str, 
                                 limit_per_request: int = 1000, pause_sec: float = 1.0, 

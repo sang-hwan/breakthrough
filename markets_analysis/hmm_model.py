@@ -43,30 +43,30 @@ class MarketRegimeHMM:
         if feature_columns is None:
             feature_columns = historical_data.columns.tolist()
 
-        # 최대 샘플 수 지정 시 최신 데이터만 사용
+        # 최대 샘플 수 지정 시 최신 데이터만 사용 (INFO 레벨로 기록하여 집계 대상에 포함)
         if max_train_samples is not None and len(historical_data) > max_train_samples:
             training_data = historical_data.iloc[-max_train_samples:]
-            self.logger.debug(f"Using last {max_train_samples} samples for training.")
+            self.logger.info(f"Using last {max_train_samples} samples for training.")
         else:
             training_data = historical_data
 
         current_last_time = training_data.index.max()
 
-        # 시간 기반 재학습 조건 확인 (내부 세부 상태: DEBUG)
+        # 시간 기반 재학습 조건 확인 (재학습 스킵 여부를 INFO 레벨로 기록)
         if self.last_train_time is not None:
             elapsed = current_last_time - self.last_train_time
             if elapsed < timedelta(minutes=self.retrain_interval_minutes):
-                self.logger.debug(f"Skipping HMM retraining: only {elapsed.total_seconds()/60:.2f} minutes elapsed since last training.")
+                self.logger.info(f"Skipping HMM retraining: only {elapsed.total_seconds()/60:.2f} minutes elapsed since last training.")
                 return
             # 피처 변화 기반 조건: 이전 학습 시의 피처 평균과 현재 피처 평균의 차이가 작으면 재학습 건너뜀
             if self.last_feature_stats is not None:
                 current_means = training_data[feature_columns].mean()
                 diff = np.abs(current_means - self.last_feature_stats).mean()
                 if diff < self.retrain_feature_threshold:
-                    self.logger.debug(f"Skipping HMM retraining: average feature mean difference {diff:.6f} below threshold {self.retrain_feature_threshold}.")
+                    self.logger.info(f"Skipping HMM retraining: average feature mean difference {diff:.6f} below threshold {self.retrain_feature_threshold}.")
                     return
 
-        # 학습 데이터 준비 및 모델 학습 (주요 단계: INFO)
+        # 학습 데이터 준비 및 모델 학습 (주요 단계는 INFO 레벨로 기록)
         X = training_data[feature_columns].values
         self.logger.info(f"Training HMM model with {X.shape[0]} samples and {X.shape[1]} features.")
         try:
@@ -99,6 +99,27 @@ class MarketRegimeHMM:
             raise
         self.logger.info(f"Predicted states for {X.shape[0]} samples.")
         return predicted_states
+
+    def predict_proba(self, data: pd.DataFrame, feature_columns: list = None):
+        """
+        주어진 데이터에 대해 각 상태의 예측 확률을 반환합니다.
+        """
+        if not self.trained:
+            self.logger.error("Model is not trained. predict_proba aborted.")
+            raise ValueError("Model is not trained.")
+        if data.empty:
+            self.logger.error("Input data is empty. predict_proba aborted.")
+            raise ValueError("Input data is empty.")
+        if feature_columns is None:
+            feature_columns = data.columns.tolist()
+        X = data[feature_columns].values
+        try:
+            probabilities = self.model.predict_proba(X)
+        except Exception as e:
+            self.logger.error(f"Error in predict_proba: {e}", exc_info=True)
+            raise
+        self.logger.info(f"Predicted probabilities for {X.shape[0]} samples.")
+        return probabilities
 
     def update(self, new_data: pd.DataFrame, feature_columns: list = None, max_train_samples: int = None):
         """
