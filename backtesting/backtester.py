@@ -11,7 +11,7 @@ from trading.positions import TradePosition
 from trading.asset_manager import AssetManager
 from trading.ensemble_manager import EnsembleManager
 from trading.indicators import compute_sma, compute_rsi, compute_macd, compute_bollinger_bands
-from dynamic_parameters.dynamic_param_manager import DynamicParamManager
+from strategy_tuning.dynamic_param_manager import DynamicParamManager
 from data_collection.db_manager import fetch_ohlcv_records
 from markets_analysis.hmm_model import MarketRegimeHMM
 from markets_analysis.regime_filter import filter_by_confidence

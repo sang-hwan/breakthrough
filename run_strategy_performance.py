@@ -1,35 +1,21 @@
 # run_strategy_performance.py
-import os
-import glob
 import logging
+import os
+from logs.logger_config import setup_logger
+from logs.logging_util import LoggingUtil
 import pandas as pd
-from backtesting.optimizer import DynamicParameterOptimizer
+from strategy_tuning.optimizer import DynamicParameterOptimizer
 from backtesting.backtester import Backtester
 from backtesting.performance import compute_performance
 from logs.final_report import generate_final_report
-from logs.logger_config import setup_logger
-from dynamic_parameters.dynamic_param_manager import DynamicParamManager
-
-def clear_log_files():
-    """
-    실행 시 logs 폴더 내 모든 .log 파일을 삭제합니다.
-    """
-    # 현재 파일의 절대 경로를 기준으로 logs 폴더 경로 계산
-    log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
-    log_files = glob.glob(os.path.join(log_dir, "*.log"))
-    for log_file in log_files:
-        try:
-            os.remove(log_file)
-            print(f"Deleted log file: {log_file}")
-        except Exception as e:
-            print(f"Failed to remove log file {log_file}: {e}")
+from strategy_tuning.dynamic_param_manager import DynamicParamManager
 
 def run_strategy_performance():
     # 1. 기존 로그 핸들러 종료 및 글로벌 핸들러 초기화
     logging.shutdown()
 
-    # 2. logs 폴더의 모든 로그 파일 삭제
-    clear_log_files()
+    # 2. logs 폴더의 모든 로그 파일 삭제 (LoggingUtil의 정적 메서드 사용)
+    LoggingUtil.clear_log_files()
 
     logger = setup_logger(__name__)
     logger.info("프로젝트 전체 테스트 실행을 시작합니다.")

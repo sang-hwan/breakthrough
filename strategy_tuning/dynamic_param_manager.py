@@ -1,4 +1,4 @@
-# dynamic_parameters/dynamic_param_manager.py
+# strategy_tuning/dynamic_param_manager.py
 from logs.logger_config import setup_logger
 
 class DynamicParamManager:

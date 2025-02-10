@@ -12,7 +12,7 @@ from trading.positions import TradePosition
 from trading.asset_manager import AssetManager
 from trading.ensemble_manager import EnsembleManager
 from trading.indicators import compute_sma, compute_rsi, compute_macd, compute_bollinger_bands
-from dynamic_parameters.dynamic_param_manager import DynamicParamManager
+from strategy_tuning.dynamic_param_manager import DynamicParamManager
 from data_collection.db_manager import fetch_ohlcv_records
 from markets_analysis.hmm_model import MarketRegimeHMM
 from markets_analysis.regime_filter import filter_by_confidence
@@ -480,152 +480,6 @@ class Backtester:
 
 ---
 
-# backtesting/optimizer.py
-import optuna
-import pandas as pd
-from logs.logger_config import setup_logger
-from backtesting.backtester import Backtester
-from dynamic_parameters.dynamic_param_manager import DynamicParamManager
-
-logger = setup_logger(__name__)
-
-class DynamicParameterOptimizer:
-    def __init__(self, n_trials=50):
-        self.n_trials = n_trials
-        self.study = None
-        self.dynamic_param_manager = DynamicParamManager()
-
-    def objective(self, trial):
-        try:
-            base_params = self.dynamic_param_manager.get_default_params()
-            suggested_params = {
-                "hmm_confidence_threshold": trial.suggest_float("hmm_confidence_threshold", 0.7, 0.95),
-                "liquidity_info": trial.suggest_categorical("liquidity_info", ["high", "low"]),
-                "atr_multiplier": trial.suggest_float("atr_multiplier", 1.5, 3.0),
-                "profit_ratio": trial.suggest_float("profit_ratio", 0.05, 0.15),
-                "risk_per_trade": trial.suggest_float("risk_per_trade", 0.005, 0.02),
-                "scale_in_threshold": trial.suggest_float("scale_in_threshold", 0.01, 0.03),
-                "partial_exit_ratio": trial.suggest_float("partial_exit_ratio", 0.4, 0.6),
-                "partial_profit_ratio": trial.suggest_float("partial_profit_ratio", 0.02, 0.04),
-                "final_profit_ratio": trial.suggest_float("final_profit_ratio", 0.05, 0.1)
-            }
-            dynamic_params = {**base_params, **suggested_params}
-            logger.info(f"[Optimizer] 병합된 파라미터: {dynamic_params}")
-
-            assets = ["BTC/USDT", "ETH/USDT", "XRP/USDT"]
-            splits = [
-                {
-                    "train_start": "2018-06-01",
-                    "train_end": "2020-12-31",
-                    "test_start": "2021-01-01",
-                    "test_end": "2023-12-31"
-                }
-            ]
-            holdout = {"holdout_start": "2024-01-01", "holdout_end": "2025-02-01"}
-
-            total_score = 0.0
-            num_evaluations = 0
-
-            for split in splits:
-                for asset in assets:
-                    logger.info(f"[Optimizer] {asset} 평가, 스플릿: {split}")
-                    
-                    # Training 백테스트 수행
-                    backtester_train = Backtester(symbol=asset, account_size=10000)
-                    backtester_train.load_data(
-                        short_table_format="ohlcv_{symbol}_{timeframe}",
-                        long_table_format="ohlcv_{symbol}_{timeframe}",
-                        short_tf="4h", long_tf="1d",
-                        start_date=split["train_start"], end_date=split["train_end"]
-                    )
-                    try:
-                        trades_train, _ = backtester_train.run_backtest(dynamic_params)
-                    except Exception as e:
-                        logger.error(f"[Optimizer] Training backtest 실패: {asset}, 스플릿 {split}: {e}", exc_info=True)
-                        return 1e6
-                    total_pnl_train = sum(trade["pnl"] for trade in trades_train)
-                    roi_train = total_pnl_train / 10000 * 100
-                    logger.info(f"[Optimizer] {asset} Training ROI: {roi_train:.2f}%")
-
-                    # Test 백테스트 수행
-                    backtester_test = Backtester(symbol=asset, account_size=10000)
-                    backtester_test.load_data(
-                        short_table_format="ohlcv_{symbol}_{timeframe}",
-                        long_table_format="ohlcv_{symbol}_{timeframe}",
-                        short_tf="4h", long_tf="1d",
-                        start_date=split["test_start"], end_date=split["test_end"]
-                    )
-                    try:
-                        trades_test, _ = backtester_test.run_backtest(dynamic_params)
-                    except Exception as e:
-                        logger.error(f"[Optimizer] Test backtest 실패: {asset}, 스플릿 {split}: {e}", exc_info=True)
-                        return 1e6
-                    total_pnl_test = sum(trade["pnl"] for trade in trades_test)
-                    roi_test = total_pnl_test / 10000 * 100
-                    logger.info(f"[Optimizer] {asset} Test ROI: {roi_test:.2f}%")
-
-                    # Holdout 백테스트 수행
-                    backtester_holdout = Backtester(symbol=asset, account_size=10000)
-                    backtester_holdout.load_data(
-                        short_table_format="ohlcv_{symbol}_{timeframe}",
-                        long_table_format="ohlcv_{symbol}_{timeframe}",
-                        short_tf="4h", long_tf="1d",
-                        start_date=holdout["holdout_start"], end_date=holdout["holdout_end"]
-                    )
-                    try:
-                        trades_holdout, _ = backtester_holdout.run_backtest(dynamic_params)
-                    except Exception as e:
-                        logger.error(f"[Optimizer] Holdout backtest 실패: {asset}: {e}", exc_info=True)
-                        return 1e6
-                    total_pnl_holdout = sum(trade["pnl"] for trade in trades_holdout)
-                    roi_holdout = total_pnl_holdout / 10000 * 100
-                    logger.info(f"[Optimizer] {asset} Holdout ROI: {roi_holdout:.2f}%")
-
-                    # 평가 점수 계산 (Overfit, Holdout 페널티 포함)
-                    overfit_penalty = abs(roi_train - roi_test)
-                    holdout_penalty = 0 if roi_holdout >= 2.0 else (2.0 - roi_holdout) * 10
-                    score = -roi_test + overfit_penalty + holdout_penalty
-                    logger.info(f"[Optimizer] {asset} Score: {score:.2f} (Overfit: {overfit_penalty:.2f}, Holdout: {holdout_penalty:.2f})")
-                    
-                    total_score += score
-                    num_evaluations += 1
-
-            avg_score = total_score / num_evaluations if num_evaluations > 0 else total_score
-
-            # 정규화 패널티 계산
-            reg_penalty = 0.0
-            regularization_keys = ["atr_multiplier", "profit_ratio", "risk_per_trade", "scale_in_threshold"]
-            for key in regularization_keys:
-                default_value = base_params.get(key, 1.0)
-                diff = dynamic_params.get(key, default_value) - default_value
-                reg_penalty += (diff ** 2)
-            reg_penalty *= 0.1
-
-            final_score = avg_score + reg_penalty
-            logger.info(f"[Optimizer] 최종 트라이얼 점수: {final_score:.2f} (Avg: {avg_score:.2f}, Reg: {reg_penalty:.2f})")
-            return final_score
-
-        except Exception as e:
-            logger.error(f"[Optimizer] Objective 함수 에러: {e}", exc_info=True)
-            return 1e6
-
-    def optimize(self):
-        sampler = optuna.samplers.TPESampler(seed=42)
-        self.study = optuna.create_study(direction="minimize", sampler=sampler)
-        logger.info(f"[Optimizer] {self.n_trials} 트라이얼로 최적화 시작.")
-        self.study.optimize(self.objective, n_trials=self.n_trials)
-        
-        trials_df = self.study.trials_dataframe()
-        # INFO 레벨 로그로 남겨 AggregatingHandler 가 집계하도록 함
-        logger.info(f"[Optimizer] 트라이얼 결과:\n{trials_df.to_string()}")
-        
-        best_trial = self.study.best_trial
-        logger.info(f"[Optimizer] Best trial: {best_trial.number} (Value: {best_trial.value:.2f})")
-        logger.info(f"[Optimizer] Best parameters: {best_trial.params}")
-        return best_trial
-
----
-
 # backtesting/performance.py
 import pandas as pd
 import numpy as np
@@ -796,8 +650,8 @@ def compute_performance(trades):
     logger.info(f"[Performance] 최종 성과 종합 계산 완료: {overall}")
     return overall
 
-[dynamic_parameters]
-# dynamic_parameters/dynamic_param_manager.py
+[strategy_tuning]
+# strategy_tuning/dynamic_param_manager.py
 from logs.logger_config import setup_logger
 
 class DynamicParamManager:
@@ -908,134 +762,210 @@ class DynamicParamManager:
         self.logger.info(f"병합된 동적 파라미터: {merged}")
         return merged
 
-[project root]
-# .env
-# Database 설정
-DB_USER=postgres
-DB_PASSWORD=1234
-DB_HOST=localhost
-DB_PORT=5432
-DB_NAME=my_trading_db
-
-# 로깅 관련 설정
-# ENVIRONMENT: development 또는 production (개발 환경에서는 development 권장)
-ENVIRONMENT=development
-# LOG_DETAIL_LEVEL: DEBUG 또는 INFO (개발 환경에서 상세 로그가 필요하면 DEBUG, 그렇지 않으면 INFO)
-LOG_DETAIL_LEVEL=DEBUG
-
-# (기존 LOG_LEVEL도 사용 가능하도록 남겨둘 수 있음)
-LOG_LEVEL=INFO
-
-# 모듈별 AggregatingHandler 임계치 설정
-# 높은 빈도의 로그를 출력하는 모듈은 임계치를 높여서 로그 집계 빈도를 줄입니다.
-AGG_THRESHOLD_BACKTESTER=10000
-AGG_THRESHOLD_RISK_MANAGER=10000
-AGG_THRESHOLD_STRATEGIES=10000
-AGG_THRESHOLD_ASSET_MANAGER=10000
-AGG_THRESHOLD_ENSEMBLE_MANAGER=10000
-AGG_THRESHOLD_ACCOUNT=10000
-AGG_THRESHOLD_TRADE_MANAGER=10000
-
 ---
 
-# requirements.txt
-pandas
-numpy
-SQLAlchemy
-psycopg2-binary
-optuna
-ta
-ccxt
-hmmlearn
-python-dotenv
-pytest
-
----
-
-# run_strategy_performance.py
-import os
-import glob
-import logging
+# strategy_tuning/optimizer.py
+import optuna
 import pandas as pd
-from backtesting.optimizer import DynamicParameterOptimizer
+from logs.logger_config import setup_logger
+from backtesting.backtester import Backtester
+from strategy_tuning.dynamic_param_manager import DynamicParamManager
+
+logger = setup_logger(__name__)
+
+class DynamicParameterOptimizer:
+    def __init__(self, n_trials=50):
+        self.n_trials = n_trials
+        self.study = None
+        self.dynamic_param_manager = DynamicParamManager()
+
+    def objective(self, trial):
+        try:
+            base_params = self.dynamic_param_manager.get_default_params()
+            suggested_params = {
+                "hmm_confidence_threshold": trial.suggest_float("hmm_confidence_threshold", 0.7, 0.95),
+                "liquidity_info": trial.suggest_categorical("liquidity_info", ["high", "low"]),
+                "atr_multiplier": trial.suggest_float("atr_multiplier", 1.5, 3.0),
+                "profit_ratio": trial.suggest_float("profit_ratio", 0.05, 0.15),
+                "risk_per_trade": trial.suggest_float("risk_per_trade", 0.005, 0.02),
+                "scale_in_threshold": trial.suggest_float("scale_in_threshold", 0.01, 0.03),
+                "partial_exit_ratio": trial.suggest_float("partial_exit_ratio", 0.4, 0.6),
+                "partial_profit_ratio": trial.suggest_float("partial_profit_ratio", 0.02, 0.04),
+                "final_profit_ratio": trial.suggest_float("final_profit_ratio", 0.05, 0.1)
+            }
+            dynamic_params = {**base_params, **suggested_params}
+            logger.info(f"[Optimizer] 병합된 파라미터: {dynamic_params}")
+
+            assets = ["BTC/USDT", "ETH/USDT", "XRP/USDT"]
+            splits = [
+                {
+                    "train_start": "2018-06-01",
+                    "train_end": "2020-12-31",
+                    "test_start": "2021-01-01",
+                    "test_end": "2023-12-31"
+                }
+            ]
+            holdout = {"holdout_start": "2024-01-01", "holdout_end": "2025-02-01"}
+
+            total_score = 0.0
+            num_evaluations = 0
+
+            for split in splits:
+                for asset in assets:
+                    logger.info(f"[Optimizer] {asset} 평가, 스플릿: {split}")
+                    
+                    # Training 백테스트 수행
+                    backtester_train = Backtester(symbol=asset, account_size=10000)
+                    backtester_train.load_data(
+                        short_table_format="ohlcv_{symbol}_{timeframe}",
+                        long_table_format="ohlcv_{symbol}_{timeframe}",
+                        short_tf="4h", long_tf="1d",
+                        start_date=split["train_start"], end_date=split["train_end"]
+                    )
+                    try:
+                        trades_train, _ = backtester_train.run_backtest(dynamic_params)
+                    except Exception as e:
+                        logger.error(f"[Optimizer] Training backtest 실패: {asset}, 스플릿 {split}: {e}", exc_info=True)
+                        return 1e6
+                    total_pnl_train = sum(trade["pnl"] for trade in trades_train)
+                    roi_train = total_pnl_train / 10000 * 100
+                    logger.info(f"[Optimizer] {asset} Training ROI: {roi_train:.2f}%")
+
+                    # Test 백테스트 수행
+                    backtester_test = Backtester(symbol=asset, account_size=10000)
+                    backtester_test.load_data(
+                        short_table_format="ohlcv_{symbol}_{timeframe}",
+                        long_table_format="ohlcv_{symbol}_{timeframe}",
+                        short_tf="4h", long_tf="1d",
+                        start_date=split["test_start"], end_date=split["test_end"]
+                    )
+                    try:
+                        trades_test, _ = backtester_test.run_backtest(dynamic_params)
+                    except Exception as e:
+                        logger.error(f"[Optimizer] Test backtest 실패: {asset}, 스플릿 {split}: {e}", exc_info=True)
+                        return 1e6
+                    total_pnl_test = sum(trade["pnl"] for trade in trades_test)
+                    roi_test = total_pnl_test / 10000 * 100
+                    logger.info(f"[Optimizer] {asset} Test ROI: {roi_test:.2f}%")
+
+                    # Holdout 백테스트 수행
+                    backtester_holdout = Backtester(symbol=asset, account_size=10000)
+                    backtester_holdout.load_data(
+                        short_table_format="ohlcv_{symbol}_{timeframe}",
+                        long_table_format="ohlcv_{symbol}_{timeframe}",
+                        short_tf="4h", long_tf="1d",
+                        start_date=holdout["holdout_start"], end_date=holdout["holdout_end"]
+                    )
+                    try:
+                        trades_holdout, _ = backtester_holdout.run_backtest(dynamic_params)
+                    except Exception as e:
+                        logger.error(f"[Optimizer] Holdout backtest 실패: {asset}: {e}", exc_info=True)
+                        return 1e6
+                    total_pnl_holdout = sum(trade["pnl"] for trade in trades_holdout)
+                    roi_holdout = total_pnl_holdout / 10000 * 100
+                    logger.info(f"[Optimizer] {asset} Holdout ROI: {roi_holdout:.2f}%")
+
+                    # 평가 점수 계산 (Overfit, Holdout 페널티 포함)
+                    overfit_penalty = abs(roi_train - roi_test)
+                    holdout_penalty = 0 if roi_holdout >= 2.0 else (2.0 - roi_holdout) * 10
+                    score = -roi_test + overfit_penalty + holdout_penalty
+                    logger.info(f"[Optimizer] {asset} Score: {score:.2f} (Overfit: {overfit_penalty:.2f}, Holdout: {holdout_penalty:.2f})")
+                    
+                    total_score += score
+                    num_evaluations += 1
+
+            avg_score = total_score / num_evaluations if num_evaluations > 0 else total_score
+
+            # 정규화 패널티 계산
+            reg_penalty = 0.0
+            regularization_keys = ["atr_multiplier", "profit_ratio", "risk_per_trade", "scale_in_threshold"]
+            for key in regularization_keys:
+                default_value = base_params.get(key, 1.0)
+                diff = dynamic_params.get(key, default_value) - default_value
+                reg_penalty += (diff ** 2)
+            reg_penalty *= 0.1
+
+            final_score = avg_score + reg_penalty
+            logger.info(f"[Optimizer] 최종 트라이얼 점수: {final_score:.2f} (Avg: {avg_score:.2f}, Reg: {reg_penalty:.2f})")
+            return final_score
+
+        except Exception as e:
+            logger.error(f"[Optimizer] Objective 함수 에러: {e}", exc_info=True)
+            return 1e6
+
+    def optimize(self):
+        sampler = optuna.samplers.TPESampler(seed=42)
+        self.study = optuna.create_study(direction="minimize", sampler=sampler)
+        logger.info(f"[Optimizer] {self.n_trials} 트라이얼로 최적화 시작.")
+        self.study.optimize(self.objective, n_trials=self.n_trials)
+        
+        trials_df = self.study.trials_dataframe()
+        # INFO 레벨 로그로 남겨 AggregatingHandler 가 집계하도록 함
+        logger.info(f"[Optimizer] 트라이얼 결과:\n{trials_df.to_string()}")
+        
+        best_trial = self.study.best_trial
+        logger.info(f"[Optimizer] Best trial: {best_trial.number} (Value: {best_trial.value:.2f})")
+        logger.info(f"[Optimizer] Best parameters: {best_trial.params}")
+        return best_trial
+
+---
+
+# strategy_tuning/parameter_analysis.py
+from logs.logger_config import setup_logger
 from backtesting.backtester import Backtester
 from backtesting.performance import compute_performance
-from logs.final_report import generate_final_report
-from logs.logger_config import setup_logger
-from dynamic_parameters.dynamic_param_manager import DynamicParamManager
+from strategy_tuning.dynamic_param_manager import DynamicParamManager
 
-def clear_log_files():
+logger = setup_logger(__name__)
+
+def run_sensitivity_analysis(param_name, param_range, asset="BTC/USDT",
+                             short_tf="4h", long_tf="1d", start_date="2018-06-01", end_date="2020-12-31",
+                             base_dynamic_params=None):
     """
-    실행 시 logs 폴더 내 모든 .log 파일을 삭제합니다.
+    특정 파라미터의 값 변화에 따른 백테스트 성과(ROI)를 평가합니다.
+
+    Args:
+        param_name (str): 분석할 파라미터 이름 (예: "profit_ratio")
+        param_range (list or np.array): 파라미터 값의 리스트 또는 배열
+        asset (str): 자산 심볼 (예: "BTC/USDT")
+        short_tf (str): 단기 타임프레임 (예: "4h")
+        long_tf (str): 장기 타임프레임 (예: "1d")
+        start_date (str): 데이터 로드 시작일 (예: "2018-06-01")
+        end_date (str): 데이터 로드 종료일 (예: "2020-12-31")
+        base_dynamic_params (dict): 기본 동적 파라미터 사전. None인 경우, DynamicParamManager에서 기본값을 사용
+
+    Returns:
+        dict: 파라미터 값과 해당 ROI를 매핑한 결과 딕셔너리
     """
-    # 현재 파일의 절대 경로를 기준으로 logs 폴더 경로 계산
-    log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
-    log_files = glob.glob(os.path.join(log_dir, "*.log"))
-    for log_file in log_files:
+    results = {}
+    if base_dynamic_params is None:
+        dpm = DynamicParamManager()
+        base_dynamic_params = dpm.get_default_params()
+
+    logger.info(f"Starting sensitivity analysis for parameter: {param_name}")
+    for val in param_range:
+        dynamic_params = base_dynamic_params.copy()
+        dynamic_params[param_name] = val
+
+        logger.info(f"Testing {param_name} = {val}")
         try:
-            os.remove(log_file)
-            print(f"Deleted log file: {log_file}")
+            bt = Backtester(symbol=asset, account_size=10000)
+            symbol_key = asset.replace("/", "").lower()
+            short_table_format = f"ohlcv_{symbol_key}_{{timeframe}}"
+            long_table_format = f"ohlcv_{symbol_key}_{{timeframe}}"
+            bt.load_data(short_table_format=short_table_format,
+                         long_table_format=long_table_format,
+                         short_tf=short_tf,
+                         long_tf=long_tf,
+                         start_date=start_date,
+                         end_date=end_date)
+            trades, _ = bt.run_backtest(dynamic_params=dynamic_params)
+            perf = compute_performance(trades)
+            roi = perf.get("roi", 0)
+            logger.info(f"{param_name} = {val} => ROI: {roi:.2f}%")
+            results[val] = roi
         except Exception as e:
-            print(f"Failed to remove log file {log_file}: {e}")
+            logger.error(f"Error during backtest for {param_name}={val}: {e}", exc_info=True)
+            results[val] = None
 
-def run_strategy_performance():
-    # 1. 기존 로그 핸들러 종료 및 글로벌 핸들러 초기화
-    logging.shutdown()
-
-    # 2. logs 폴더의 모든 로그 파일 삭제
-    clear_log_files()
-
-    logger = setup_logger(__name__)
-    logger.info("프로젝트 전체 테스트 실행을 시작합니다.")
-    
-    # 3. 파라미터 최적화 (Walk-Forward 방식)
-    logger.info("Walk-Forward 방식의 파라미터 최적화를 시작합니다...")
-    optimizer = DynamicParameterOptimizer(n_trials=10)
-    best_trial = optimizer.optimize()
-    
-    # 4. 기본 파라미터와 최적화된 파라미터 병합
-    dynamic_manager = DynamicParamManager()
-    best_params = dynamic_manager.merge_params(best_trial.params)
-    logger.info("최적의 파라미터 도출 완료: %s", best_params)
-    
-    # 5. 각 종목별 백테스트 실행 및 성과 계산
-    start_date = "2018-06-01"
-    end_date = "2025-02-01"
-    timeframes = {"short_tf": "4h", "long_tf": "1d"}
-    symbols = ["BTC/USDT", "ETH/USDT", "XRP/USDT"]
-    
-    for symbol in symbols:
-        logger.info("심볼 %s 백테스트 시작", symbol)
-        try:
-            symbol_key = symbol.replace("/", "").lower()
-            backtester = Backtester(symbol=symbol, account_size=10000)
-            backtester.load_data(
-                short_table_format=f"ohlcv_{symbol_key}_{{timeframe}}",
-                long_table_format=f"ohlcv_{symbol_key}_{{timeframe}}",
-                short_tf=timeframes["short_tf"],
-                long_tf=timeframes["long_tf"],
-                start_date=start_date,
-                end_date=end_date
-            )
-        except Exception as e:
-            logger.error("심볼 %s 데이터 로드 실패: %s", symbol, e)
-            continue
-        
-        try:
-            trades, trade_logs = backtester.run_backtest(dynamic_params=best_params)
-            logger.info("심볼 %s 백테스트 완료: 총 거래 횟수 = %d", symbol, len(trades))
-        except Exception as e:
-            logger.error("심볼 %s 백테스트 실행 중 에러: %s", symbol, e)
-            continue
-        
-        if trades:
-            performance_data = compute_performance(trades)
-            logger.info("심볼 %s 성과 보고 생성", symbol)
-            generate_final_report(performance_data, symbol=symbol)
-        else:
-            logger.info("심볼 %s 백테스트 결과, 생성된 거래 내역이 없습니다.", symbol)
-    
-    logger.info("전체 프로젝트 테스트 실행 완료.")
-
-if __name__ == '__main__':
-    run_strategy_performance()
+    return results

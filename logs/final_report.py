@@ -43,3 +43,21 @@ def generate_final_report(performance_data, symbol=None):
     
     report_str = "\n".join(report_lines)
     logger.info(report_str)
+
+def generate_parameter_sensitivity_report(param_name, results):
+    """
+    Parameter Sensitivity Report 생성 (최종 로그용).
+    """
+    report_lines = []
+    report_lines.append("=== FINAL PARAMETER SENSITIVITY REPORT ===")
+    report_lines.append(f"Analyzed Parameter: {param_name}")
+    report_lines.append("Results:")
+    for val in sorted(results.keys()):
+        roi = results[val]
+        if roi is not None:
+            report_lines.append(f"{param_name} = {val:.4f} -> ROI: {roi:.2f}%")
+        else:
+            report_lines.append(f"{param_name} = {val:.4f} -> ROI: Error")
+    report_lines.append("==========================================")
+    report_str = "\n".join(report_lines)
+    logger.info(report_str)

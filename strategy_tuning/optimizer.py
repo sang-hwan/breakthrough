@@ -1,9 +1,9 @@
-# backtesting/optimizer.py
+# strategy_tuning/optimizer.py
 import optuna
 import pandas as pd
 from logs.logger_config import setup_logger
 from backtesting.backtester import Backtester
-from dynamic_parameters.dynamic_param_manager import DynamicParamManager
+from strategy_tuning.dynamic_param_manager import DynamicParamManager
 
 logger = setup_logger(__name__)
 
