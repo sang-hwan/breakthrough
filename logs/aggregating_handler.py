@@ -2,6 +2,7 @@
 import logging
 import os
 from datetime import datetime
+import atexit
 
 class AggregatingHandler(logging.Handler):
     """
@@ -43,7 +44,13 @@ class AggregatingHandler(logging.Handler):
                 sensitivity_threshold = threshold
         self.sensitivity_threshold = sensitivity_threshold
 
+        # 집계 딕셔너리 (주기별 reset되는 count)
         self.aggregation = {}
+        # 누적 집계 딕셔너리 (전체 로그 발생 건수를 유지)
+        self.total_aggregation = {}
+
+        # 프로그램 종료 시 자동으로 누적 집계 요약을 출력하도록 atexit 등록
+        atexit.register(self.flush_aggregation_summary)
 
     def emit(self, record):
         try:
@@ -55,6 +62,7 @@ class AggregatingHandler(logging.Handler):
             else:
                 current_threshold = self.threshold
 
+            # 주기별 집계: 해당 키가 없으면 새로 생성 (reset용)
             if key not in self.aggregation:
                 self.aggregation[key] = {"count": 0, "last_message": None, "last_time": None}
             agg = self.aggregation[key]
@@ -62,12 +70,21 @@ class AggregatingHandler(logging.Handler):
             agg["last_message"] = record.getMessage()
             agg["last_time"] = datetime.fromtimestamp(record.created).strftime("%Y-%m-%d %H:%M:%S")
             
+            # 누적 집계: 해당 키가 없으면 새로 생성 (누적용)
+            if key not in self.total_aggregation:
+                self.total_aggregation[key] = {"count": 0, "last_message": None, "last_time": None}
+            total_agg = self.total_aggregation[key]
+            total_agg["count"] += 1
+            total_agg["last_message"] = record.getMessage()
+            total_agg["last_time"] = datetime.fromtimestamp(record.created).strftime("%Y-%m-%d %H:%M:%S")
+            
             if agg["count"] >= current_threshold:
                 summary_msg = (
                     f"{key[2]} 집계: 최근 {agg['count']}회 로그 발생, 마지막 메시지: {agg['last_message']} at {agg['last_time']}"
                 )
                 summary_record = self.make_summary_record(record, summary_msg)
                 logging.getLogger(record.name).handle(summary_record)
+                # reset 주기별 카운트만 (누적 집계는 유지)
                 self.aggregation[key]["count"] = 0
         except Exception:
             self.handleError(record)
@@ -83,3 +100,23 @@ class AggregatingHandler(logging.Handler):
             exc_info=original_record.exc_info
         )
         return summary_record
+
+    def flush_aggregation_summary(self):
+        """
+        누적 집계된 로그 출현 빈도를 요약하여 출력합니다.
+        (예: 파일명:함수명 - 총 발생 건수, 마지막 메시지 및 발생 시각)
+        이 메서드는 run_parameter_analysis.py와 run_strategy_performance.py 등의 실행 완료 시 자동 호출됩니다.
+        """
+        if not self.total_aggregation:
+            return
+        summary_lines = []
+        for key, agg in self.total_aggregation.items():
+            logger_name, filename, funcname = key
+            count = agg.get("count", 0)
+            last_message = agg.get("last_message", "")
+            last_time = agg.get("last_time", "")
+            summary_lines.append(
+                f"{filename}:{funcname} (logger: {logger_name}) - 총 {count}회 발생, 마지막 메시지: {last_message} at {last_time}"
+            )
+        summary = "\n".join(summary_lines)
+        logging.getLogger().info("최종 누적 로그 집계 요약:\n" + summary)
