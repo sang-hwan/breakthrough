@@ -1,0 +1,410 @@
+[strategy_tuning]
+# strategy_tuning/dynamic_param_manager.py
+from logs.logger_config import setup_logger
+
+class DynamicParamManager:
+    _instance = None  # 싱글턴 인스턴스 저장
+
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            cls._instance = super(DynamicParamManager, cls).__new__(cls)
+        return cls._instance
+
+    def __init__(self):
+        # 이미 초기화된 경우 재초기화 방지
+        if hasattr(self, '_initialized') and self._initialized:
+            return
+
+        # 기본 파라미터 설정 (주요 값 및 민감도 분석 대상 파라미터 목록 포함)
+        self.default_params = {
+            "sma_period": 200,
+            "atr_period": 14,
+            "atr_multiplier": 2.07,
+            "dynamic_sl_adjustment": 1.18,
+            "profit_ratio": 0.098,
+            "use_trailing_stop": True,
+            "trailing_percent": 0.045,
+            "partial_exit_ratio": 0.5,
+            "partial_profit_ratio": 0.03,
+            "final_profit_ratio": 0.06,
+            "risk_per_trade": 0.0162,
+            "total_splits": 3,
+            "allocation_mode": "equal",
+            "scale_in_threshold": 0.0153,
+            "hmm_confidence_threshold": 0.8,
+            "liquidity_info": "high",
+            "volatility_multiplier": 1.0,  # 변동성 반영 인자
+            "use_candle_pattern": True,
+            # 주간 전략 관련 파라미터
+            "weekly_breakout_threshold": 0.01,    # 주간 돌파 임계치 (예: 1% 이상)
+            "weekly_momentum_threshold": 0.5,       # 주간 모멘텀 기준
+            "weekly_risk_coefficient": 1.0          # 주간 리스크 계수 (시장 변동성이 크면 값 상승)
+        }
+        # 민감도 분석 대상 파라미터 목록 (이 목록은 민감도 분석 시 대상 파라미터를 명확히 함)
+        self.sensitivity_params = [
+            "profit_ratio",
+            "atr_multiplier",
+            "risk_per_trade",
+            "scale_in_threshold",
+            "weekly_breakout_threshold",
+            "weekly_momentum_threshold"
+        ]
+        self.logger = setup_logger(__name__)
+        self.logger.info("DynamicParamManager 초기화 완료 (레짐 및 주간 전략 적용).")
+        self._initialized = True
+
+    def get_default_params(self) -> dict:
+        """
+        기본 파라미터 사전을 복사하여 반환합니다.
+        """
+        return self.default_params.copy()
+
+    def update_dynamic_params(self, market_data: dict) -> dict:
+        """
+        시장 데이터(예: 변동성, 추세, 거래량, 추세 강도 등)를 반영하여 파라미터를 동적으로 업데이트합니다.
+        
+        개선 사항:
+          - 단기 변동성(volatility)이 기본 임계치(0.05)보다 높으면, 초과분에 비례하여 atr_multiplier를 증가시킵니다.
+          - 시장 추세(trend)는 'bullish'/'bearish' 뿐 아니라, 숫자형 추세 강도(trend_strength)가 있다면 이를 반영합니다.
+          - 거래량(volume)은 일정 임계치(예: 1000)보다 낮을 경우 risk_per_trade를 부드럽게 축소합니다.
+          - 주간 변동성(weekly_volatility)에 따라 weekly_risk_coefficient도 조정합니다.
+        """
+        dynamic_params = self.get_default_params()
+        volatility = market_data.get("volatility", 0.0)  # 예: 0.08
+        trend = market_data.get("trend", "neutral")       # 'bullish', 'bearish', or 'neutral'
+        trend_strength = market_data.get("trend_strength", None)  # 숫자형, 예: 0.1 (양수이면 강한 상승)
+        volume = market_data.get("volume", None)
+        weekly_volatility = market_data.get("weekly_volatility", None)
+
+        # 단기 변동성 조정 (기본 기준: 0.05)
+        base_volatility = 0.05
+        if volatility > base_volatility:
+            # 예: vol 0.08 → 초과분 0.03, 0.03/0.05 = 0.6,  atr_multiplier를 기본 대비 (1 + 0.6*0.5)=1.3배 증가
+            factor = 1 + 0.5 * ((volatility - base_volatility) / base_volatility)
+            dynamic_params["atr_multiplier"] *= factor
+            dynamic_params["volatility_multiplier"] = 1.2  # 고변동 시장에서는 보수적 접근
+            self.logger.info(f"높은 단기 변동성 감지 (volatility={volatility}): atr_multiplier 조정 계수={factor:.2f}")
+        else:
+            factor = 1 - 0.3 * ((base_volatility - volatility) / base_volatility)
+            dynamic_params["atr_multiplier"] *= factor
+            dynamic_params["volatility_multiplier"] = 1.0
+            self.logger.info(f"낮은 단기 변동성 감지 (volatility={volatility}): atr_multiplier 조정 계수={factor:.2f}")
+
+        # 주간 변동성 조정
+        if weekly_volatility is not None:
+            if weekly_volatility > 0.07:
+                dynamic_params["weekly_risk_coefficient"] *= 1.2
+                self.logger.info(f"높은 주간 변동성 감지 (weekly_volatility={weekly_volatility}): weekly_risk_coefficient 상향 조정.")
+            else:
+                dynamic_params["weekly_risk_coefficient"] *= 0.9
+                self.logger.info(f"낮은 주간 변동성 감지 (weekly_volatility={weekly_volatility}): weekly_risk_coefficient 하향 조정.")
+
+        # 추세 조정: trend와 trend_strength를 모두 고려
+        if trend_strength is not None:
+            # trend_strength가 양수이면 상승 추세, 음수이면 하락 추세
+            dynamic_params["profit_ratio"] *= (1 + trend_strength)
+            self.logger.info(f"추세 강도 반영: trend_strength={trend_strength}, profit_ratio 조정됨.")
+        else:
+            if trend == "bullish":
+                dynamic_params["profit_ratio"] *= 1.05
+                self.logger.info("Bullish 추세 감지: profit_ratio 상향 조정.")
+            elif trend == "bearish":
+                dynamic_params["profit_ratio"] *= 0.95
+                self.logger.info("Bearish 추세 감지: profit_ratio 하향 조정.")
+            else:
+                self.logger.info("중립 추세: profit_ratio 변경 없음.")
+
+        # 거래량(volume)에 따른 risk_per_trade 조정
+        volume_threshold = 1000  # 기준 거래량
+        if volume is not None:
+            if volume < volume_threshold:
+                # 예: volume 500이면 risk_per_trade를 500/1000 = 0.5배 적용
+                factor = volume / volume_threshold
+                dynamic_params["risk_per_trade"] *= factor
+                self.logger.info(f"낮은 거래량 감지 (volume={volume}): risk_per_trade 축소, 계수={factor:.2f}.")
+            else:
+                # volume이 높으면 소폭 상향
+                dynamic_params["risk_per_trade"] *= 1.05
+                self.logger.info(f"높은 거래량 감지 (volume={volume}): risk_per_trade 소폭 상향 조정.")
+
+        self.logger.info(f"Market data: {market_data}")
+        self.logger.info(f"업데이트된 동적 파라미터: {dynamic_params}")
+        self.logger.info("동적 파라미터 업데이트 완료.")
+        return dynamic_params
+
+    def merge_params(self, optimized_params: dict) -> dict:
+        """
+        최적화 결과로 도출된 파라미터와 기본 파라미터를 병합하여 반환합니다.
+        숫자형 값의 경우 기본값과 최적화값의 가중 평균(현재는 50:50)을 사용하고,
+        그 외의 타입은 최적화값을 우선 적용합니다.
+        
+        개선 사항:
+          - 민감도 분석 대상 파라미터 목록(self.sensitivity_params)에 해당하는 값만 병합 대상으로 고려합니다.
+          - 향후 사용자 정의 가중치를 적용할 수 있도록 확장 가능하도록 구조를 개선합니다.
+        """
+        merged = self.get_default_params()
+        for key in self.sensitivity_params:
+            opt_value = optimized_params.get(key, None)
+            default_value = merged.get(key)
+            if opt_value is not None and isinstance(default_value, (int, float)) and isinstance(opt_value, (int, float)):
+                # 단순 평균(50:50) 대신 향후 weight 인자를 추가할 수 있도록 구조 개선
+                merged[key] = (default_value + opt_value) / 2
+            elif opt_value is not None:
+                merged[key] = opt_value
+        # 최적화 결과에 민감도 분석 대상이 아닌 항목이 있다면, 사용자 정의 값으로 덮어씁니다.
+        for key, opt_value in optimized_params.items():
+            if key not in self.sensitivity_params:
+                merged[key] = opt_value
+        self.logger.info(f"병합된 동적 파라미터: {merged}")
+        return merged
+
+---
+
+# strategy_tuning/optimizer.py
+import optuna
+from logs.logger_config import setup_logger
+from backtesting.backtester import Backtester
+from strategy_tuning.dynamic_param_manager import DynamicParamManager
+
+logger = setup_logger(__name__)
+
+class DynamicParameterOptimizer:
+    def __init__(self, n_trials=50):
+        self.n_trials = n_trials
+        self.study = None
+        self.dynamic_param_manager = DynamicParamManager()
+
+    def objective(self, trial):
+        try:
+            base_params = self.dynamic_param_manager.get_default_params()
+            suggested_params = {
+                "hmm_confidence_threshold": trial.suggest_float("hmm_confidence_threshold", 0.7, 0.95),
+                "liquidity_info": trial.suggest_categorical("liquidity_info", ["high", "low"]),
+                "atr_multiplier": trial.suggest_float("atr_multiplier", 1.5, 3.0),
+                "profit_ratio": trial.suggest_float("profit_ratio", 0.05, 0.15),
+                "risk_per_trade": trial.suggest_float("risk_per_trade", 0.005, 0.02),
+                "scale_in_threshold": trial.suggest_float("scale_in_threshold", 0.01, 0.03),
+                "partial_exit_ratio": trial.suggest_float("partial_exit_ratio", 0.4, 0.6),
+                "partial_profit_ratio": trial.suggest_float("partial_profit_ratio", 0.02, 0.04),
+                "final_profit_ratio": trial.suggest_float("final_profit_ratio", 0.05, 0.1),
+                # 신규: 주간 전략 관련 파라미터 최적화 대상 포함
+                "weekly_breakout_threshold": trial.suggest_float("weekly_breakout_threshold", 0.005, 0.02),
+                "weekly_momentum_threshold": trial.suggest_float("weekly_momentum_threshold", 0.3, 0.7)
+            }
+            dynamic_params = {**base_params, **suggested_params}
+            # 병합 파라미터 정보는 디버깅 목적으로 DEBUG 레벨로 출력
+            logger.debug(f"[Optimizer] 병합된 파라미터: {dynamic_params}")
+
+            assets = ["BTC/USDT", "ETH/USDT", "XRP/USDT"]
+            splits = [
+                {
+                    "train_start": "2018-06-01",
+                    "train_end": "2020-12-31",
+                    "test_start": "2021-01-01",
+                    "test_end": "2023-12-31"
+                }
+            ]
+            holdout = {"holdout_start": "2024-01-01", "holdout_end": "2025-02-01"}
+
+            total_score = 0.0
+            num_evaluations = 0
+
+            for split in splits:
+                for asset in assets:
+                    # 자산별 평가 상세 정보 (INFO 레벨로 출력)
+                    logger.info(f"[Optimizer] {asset} 평가, 스플릿: {split}")
+                    
+                    # Training 백테스트 수행
+                    backtester_train = Backtester(symbol=asset, account_size=10000)
+                    backtester_train.load_data(
+                        short_table_format="ohlcv_{symbol}_{timeframe}",
+                        long_table_format="ohlcv_{symbol}_{timeframe}",
+                        short_tf="4h", long_tf="1d",
+                        start_date=split["train_start"], end_date=split["train_end"]
+                    )
+                    try:
+                        trades_train, _ = backtester_train.run_backtest(dynamic_params)
+                    except Exception as e:
+                        logger.error(f"[Optimizer] Training backtest 실패: {asset}, 스플릿 {split}: {e}", exc_info=True)
+                        return 1e6
+                    total_pnl_train = sum(trade["pnl"] for trade in trades_train)
+                    roi_train = total_pnl_train / 10000 * 100
+                    logger.info(f"[Optimizer] {asset} Training ROI: {roi_train:.2f}%")
+
+                    # Test 백테스트 수행
+                    backtester_test = Backtester(symbol=asset, account_size=10000)
+                    backtester_test.load_data(
+                        short_table_format="ohlcv_{symbol}_{timeframe}",
+                        long_table_format="ohlcv_{symbol}_{timeframe}",
+                        short_tf="4h", long_tf="1d",
+                        start_date=split["test_start"], end_date=split["test_end"]
+                    )
+                    try:
+                        trades_test, _ = backtester_test.run_backtest(dynamic_params)
+                    except Exception as e:
+                        logger.error(f"[Optimizer] Test backtest 실패: {asset}, 스플릿 {split}: {e}", exc_info=True)
+                        return 1e6
+                    total_pnl_test = sum(trade["pnl"] for trade in trades_test)
+                    roi_test = total_pnl_test / 10000 * 100
+                    logger.info(f"[Optimizer] {asset} Test ROI: {roi_test:.2f}%")
+
+                    # Holdout 백테스트 수행
+                    backtester_holdout = Backtester(symbol=asset, account_size=10000)
+                    backtester_holdout.load_data(
+                        short_table_format="ohlcv_{symbol}_{timeframe}",
+                        long_table_format="ohlcv_{symbol}_{timeframe}",
+                        short_tf="4h", long_tf="1d",
+                        start_date=holdout["holdout_start"], end_date=holdout["holdout_end"]
+                    )
+                    try:
+                        trades_holdout, _ = backtester_holdout.run_backtest(dynamic_params)
+                    except Exception as e:
+                        logger.error(f"[Optimizer] Holdout backtest 실패: {asset}: {e}", exc_info=True)
+                        return 1e6
+                    total_pnl_holdout = sum(trade["pnl"] for trade in trades_holdout)
+                    roi_holdout = total_pnl_holdout / 10000 * 100
+                    logger.info(f"[Optimizer] {asset} Holdout ROI: {roi_holdout:.2f}%")
+
+                    # 평가 점수 계산 (Overfit, Holdout 페널티 포함)
+                    overfit_penalty = abs(roi_train - roi_test)
+                    holdout_penalty = 0 if roi_holdout >= 2.0 else (2.0 - roi_holdout) * 10
+                    score = -roi_test + overfit_penalty + holdout_penalty
+                    logger.info(f"[Optimizer] {asset} Score: {score:.2f} (Overfit: {overfit_penalty:.2f}, Holdout: {holdout_penalty:.2f})")
+                    
+                    total_score += score
+                    num_evaluations += 1
+
+            avg_score = total_score / num_evaluations if num_evaluations > 0 else total_score
+
+            # 정규화 패널티 계산
+            reg_penalty = 0.0
+            regularization_keys = ["atr_multiplier", "profit_ratio", "risk_per_trade", "scale_in_threshold",
+                                   "weekly_breakout_threshold", "weekly_momentum_threshold"]
+            for key in regularization_keys:
+                default_value = base_params.get(key, 1.0)
+                diff = dynamic_params.get(key, default_value) - default_value
+                reg_penalty += (diff ** 2)
+            reg_penalty *= 0.1
+
+            final_score = avg_score + reg_penalty
+            logger.info(f"[Optimizer] 최종 트라이얼 점수: {final_score:.2f} (Avg: {avg_score:.2f}, Reg: {reg_penalty:.2f})")
+            return final_score
+
+        except Exception as e:
+            logger.error(f"[Optimizer] Objective 함수 에러: {e}", exc_info=True)
+            return 1e6
+
+    def optimize(self):
+        sampler = optuna.samplers.TPESampler(seed=42)
+        self.study = optuna.create_study(direction="minimize", sampler=sampler)
+        logger.info(f"[Optimizer] {self.n_trials} 트라이얼로 최적화 시작.")
+        self.study.optimize(self.objective, n_trials=self.n_trials)
+        
+        trials_df = self.study.trials_dataframe()
+        # 최종 요약 결과는 INFO 레벨로 출력
+        logger.info(f"[Optimizer] 트라이얼 결과:\n{trials_df.to_string()}")
+        
+        best_trial = self.study.best_trial
+        logger.info(f"[Optimizer] Best trial: {best_trial.number} (Value: {best_trial.value:.2f})")
+        logger.info(f"[Optimizer] Best parameters: {best_trial.params}")
+        return best_trial
+
+---
+
+# strategy_tuning/parameter_analysis.py
+import numpy as np
+from logs.logger_config import setup_logger
+from backtesting.backtester import Backtester
+from backtesting.performance import compute_performance
+from strategy_tuning.dynamic_param_manager import DynamicParamManager
+
+logger = setup_logger(__name__)
+
+def run_sensitivity_analysis(param_settings,
+                             assets=None,
+                             short_tf="4h", long_tf="1d",
+                             start_date="2018-06-01", end_date="2020-12-31",
+                             periods=None,
+                             base_dynamic_params=None):
+    """
+    다중 파라미터 값 변화에 따른 백테스트 성과(ROI, Sharpe, 최대 낙폭, 거래 건수, 누적 수익률, 총 PnL 등)를
+    평가합니다. 여러 자산 및 기간에 대해 반복 분석할 수 있도록 확장하였습니다.
+    
+    Args:
+        param_settings (dict): 분석할 파라미터에 대한 설정 정보.
+            예) {
+                   "profit_ratio": [0.05, 0.06, 0.07, ...],
+                   "atr_multiplier": [1.8, 1.9, 2.0, ...],
+                   ...
+                 }
+        assets (list of str): 분석에 사용할 자산 심볼 리스트 (기본: ["BTC/USDT"])
+        short_tf (str): 단기 타임프레임 (예: "4h")
+        long_tf (str): 장기 타임프레임 (예: "1d")
+        start_date (str): 기본 데이터 로드 시작일 (periods가 제공되지 않을 경우 사용)
+        end_date (str): 기본 데이터 로드 종료일 (periods가 제공되지 않을 경우 사용)
+        periods (list of tuples): 각 튜플이 (start_date, end_date)를 나타내며, 여러 기간에 대해 분석할 수 있음.
+                                  기본값이 None인 경우 [(start_date, end_date)]로 설정됨.
+        base_dynamic_params (dict): 기본 동적 파라미터 사전. None인 경우 DynamicParamManager에서 기본값 사용.
+        
+    Returns:
+        dict: { param_name: {value: {metric_key: value, ...}, ...}, ... }
+    """
+    # 기본 값 설정
+    if assets is None:
+        assets = ["BTC/USDT"]
+    if periods is None:
+        periods = [(start_date, end_date)]
+    if base_dynamic_params is None:
+        dpm = DynamicParamManager()
+        base_dynamic_params = dpm.get_default_params()
+
+    logger.info(f"Starting sensitivity analysis over assets {assets} and periods {periods}")
+    
+    results = {}
+    # param_settings는 반드시 dict 형식이어야 합니다.
+    if not isinstance(param_settings, dict):
+        raise ValueError("param_settings must be a dict of {parameter_name: [values]} for multi-parameter analysis.")
+
+    for param_name, param_range in param_settings.items():
+        logger.info(f"Analyzing parameter: {param_name}")
+        results[param_name] = {}
+        for val in param_range:
+            dynamic_params = base_dynamic_params.copy()
+            dynamic_params[param_name] = val
+            run_metrics = []  # 각 run의 성과 지표를 저장할 리스트
+
+            # 여러 자산, 여러 기간에 대해 반복
+            for asset in assets:
+                for period in periods:
+                    s_date, e_date = period
+                    try:
+                        bt = Backtester(symbol=asset, account_size=10000)
+                        symbol_key = asset.replace("/", "").lower()
+                        short_table_format = f"ohlcv_{symbol_key}_{{timeframe}}"
+                        long_table_format = f"ohlcv_{symbol_key}_{{timeframe}}"
+                        bt.load_data(short_table_format=short_table_format,
+                                     long_table_format=long_table_format,
+                                     short_tf=short_tf,
+                                     long_tf=long_tf,
+                                     start_date=s_date,
+                                     end_date=e_date)
+                        trades, _ = bt.run_backtest(dynamic_params=dynamic_params)
+                        perf = compute_performance(trades)
+                        run_metrics.append(perf)
+                        logger.info(f"{param_name} = {val} | Asset: {asset} | Period: {s_date} ~ {e_date} => "
+                                    f"ROI: {perf.get('roi', 0):.2f}%, Sharpe: {perf.get('sharpe_ratio', 0):.2f}, "
+                                    f"Max Drawdown: {perf.get('max_drawdown', 0):.2f}, Trade Count: {perf.get('trade_count', 0)}")
+                    except Exception as e:
+                        logger.error(f"Error during backtest for {param_name}={val}, Asset: {asset}, Period: {s_date} ~ {e_date}: {e}", exc_info=True)
+                        # 실패한 run은 건너뛰고 다음 run 진행
+            if run_metrics:
+                aggregated = {}
+                metric_keys = ["roi", "sharpe_ratio", "max_drawdown", "trade_count", "cumulative_return", "total_pnl"]
+                for key in metric_keys:
+                    aggregated[key] = np.mean([run.get(key, 0) for run in run_metrics])
+                results[param_name][val] = aggregated
+                logger.info(f"Aggregated result for {param_name} = {val}: {aggregated}")
+            else:
+                results[param_name][val] = None
+                logger.warning(f"No successful runs for {param_name} = {val}")
+    return results

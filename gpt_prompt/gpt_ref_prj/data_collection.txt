@@ -1,0 +1,421 @@
+[data_collection]
+# data_collection/db_config.py
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+DATABASE = {
+    'user': os.getenv('DB_USER'),
+    'password': os.getenv('DB_PASSWORD'),
+    'host': os.getenv('DB_HOST'),
+    'port': int(os.getenv('DB_PORT')),
+    'dbname': os.getenv('DB_NAME')
+}
+
+---
+
+# data_collection/db_manager.py
+import logging
+from sqlalchemy import create_engine, text
+from psycopg2.extras import execute_values
+import pandas as pd
+from data_collection.db_config import DATABASE
+from logs.logger_config import setup_logger
+
+logger = setup_logger(__name__)
+
+def insert_on_conflict(table, conn, keys, data_iter):
+    """
+    데이터를 삽입할 때, timestamp 컬럼을 기준으로 중복 발생 시 삽입하지 않습니다.
+    pandas.to_sql() 의 method 인자로 사용되며, 각 chunk 단위로 호출됩니다.
+    """
+    try:
+        raw_conn = conn.connection
+        cur = raw_conn.cursor()
+        values = list(data_iter)
+        columns = ", ".join(keys)
+        sql = f"INSERT INTO {table.name} ({columns}) VALUES %s ON CONFLICT (timestamp) DO NOTHING"
+        execute_values(cur, sql, values)
+        cur.close()
+        # 각 청크 삽입이 완료되면 DEBUG 레벨 로그로 기록하여, 대용량 데이터 처리 시 불필요한 INFO 로그를 줄임.
+        logger.debug(f"[DB] insert_on_conflict: {len(values)} records processed for table {table.name}")
+    except Exception as e:
+        logger.error(f"insert_on_conflict 에러: {e}", exc_info=True)
+
+def insert_ohlcv_records(df: pd.DataFrame, table_name: str = 'ohlcv_data', conflict_action: str = "DO NOTHING", db_config: dict = None, chunk_size: int = 10000) -> None:
+    """
+    OHLCV 데이터를 지정된 테이블에 저장합니다.
+    - 대용량 데이터 처리를 위해 chunk_size 단위로 나누어 저장합니다.
+    - 저장 성공 시 총 행수를 INFO 레벨 로그로 남기며, 에러 발생 시 ERROR 레벨로 기록합니다.
+    """
+    if db_config is None:
+        db_config = DATABASE
+
+    engine = create_engine(
+        f"postgresql://{db_config['user']}:{db_config['password']}@"
+        f"{db_config['host']}:{db_config['port']}/{db_config['dbname']}",
+        pool_pre_ping=True
+    )
+
+    create_table_sql = text(f"""
+        CREATE TABLE IF NOT EXISTS {table_name} (
+            timestamp TIMESTAMP NOT NULL,
+            open DOUBLE PRECISION,
+            high DOUBLE PRECISION,
+            low DOUBLE PRECISION,
+            close DOUBLE PRECISION,
+            volume DOUBLE PRECISION,
+            PRIMARY KEY (timestamp)
+        );
+    """)
+    try:
+        with engine.begin() as conn:
+            conn.execute(create_table_sql)
+    except Exception as e:
+        logger.error(f"테이블 생성 에러 ({table_name}): {e}", exc_info=True)
+        return
+
+    try:
+        df = df.copy()
+        df.reset_index(inplace=True)
+        # 대용량 데이터를 chunk 단위로 저장 (각 청크 관련 로그는 insert_on_conflict에서 DEBUG 레벨로 처리됨)
+        df.to_sql(
+            table_name,
+            engine,
+            if_exists='append',
+            index=False,
+            method=insert_on_conflict,
+            chunksize=chunk_size
+        )
+        logger.info(f"데이터 저장 완료: {table_name} (총 {len(df)} 행)")
+    except Exception as e:
+        logger.error(f"데이터 저장 에러 ({table_name}): {e}", exc_info=True)
+
+def fetch_ohlcv_records(table_name: str = 'ohlcv_data', start_date: str = None, end_date: str = None, db_config: dict = None) -> pd.DataFrame:
+    """
+    지정된 테이블에서 OHLCV 데이터를 읽어옵니다.
+    - 에러 발생 시 빈 DataFrame을 반환하며, 상세 에러 내용을 ERROR 레벨로 기록합니다.
+    """
+    if db_config is None:
+        db_config = DATABASE
+
+    try:
+        engine = create_engine(
+            f"postgresql://{db_config['user']}:{db_config['password']}@"
+            f"{db_config['host']}:{db_config['port']}/{db_config['dbname']}",
+            pool_pre_ping=True
+        )
+    except Exception as e:
+        logger.error(f"DB 엔진 생성 에러: {e}", exc_info=True)
+        return pd.DataFrame()
+
+    query = f"SELECT * FROM {table_name} WHERE 1=1"
+    params = {}
+    if start_date:
+        query += " AND timestamp >= :start_date"
+        params['start_date'] = start_date
+    if end_date:
+        query += " AND timestamp <= :end_date"
+        params['end_date'] = end_date
+    query += " ORDER BY timestamp"
+    query = text(query)
+    try:
+        df = pd.read_sql(query, engine, params=params, parse_dates=['timestamp'])
+        df.set_index('timestamp', inplace=True)
+        logger.info(f"데이터 로드 완료: {table_name} (총 {len(df)} 행)")
+        return df
+    except Exception as e:
+        logger.error(f"데이터 로드 에러 ({table_name}): {e}", exc_info=True)
+        return pd.DataFrame()
+
+---
+
+# data_collection/ohlcv_aggregator.py
+import pandas as pd
+from ta.trend import SMAIndicator
+
+def aggregate_to_weekly(df: pd.DataFrame, compute_indicators: bool = True) -> pd.DataFrame:
+    """
+    입력 데이터프레임(df)의 날짜 인덱스를 기준으로 주간(월요일 시작) 단위 그룹화하여 집계한다.
+    - 주간 시가: 각 주의 첫 행의 open 값
+    - 주간 최고가: 해당 주의 high 값 중 최대값
+    - 주간 최저가: 해당 주의 low 값 중 최소값
+    - 주간 종가: 각 주의 마지막 행의 close 값
+    - 거래량: 해당 주의 volume 값 합계
+    옵션: compute_indicators=True인 경우 주간 SMA, 모멘텀(주간 수익률) 등의 인디케이터를 계산하여 컬럼에 추가한다.
+    
+    인자:
+      df: 입력 OHLCV 데이터 (인덱스는 datetime, 컬럼은 최소 'open', 'high', 'low', 'close', 'volume')
+      compute_indicators: 주간 인디케이터 계산 여부 (기본 True)
+    
+    반환:
+      주간 캔들 데이터프레임 (필요 시 인디케이터 컬럼 추가)
+    """
+    if df.empty:
+        return df
+
+    # resample: 주 단위 집계 (ISO 기준, 월요일 시작)
+    weekly = df.resample('W-MON', label='left', closed='left').agg({
+        'open': 'first',
+        'high': 'max',
+        'low': 'min',
+        'close': 'last',
+        'volume': 'sum'
+    })
+
+    # 데이터가 비어있는 경우 예외 처리
+    if weekly.empty:
+        return weekly
+
+    if compute_indicators:
+        # 예시: 5주 SMA (주간 종가 기준)
+        sma_indicator = SMAIndicator(close=weekly['close'], window=5, fillna=True)
+        weekly['weekly_sma'] = sma_indicator.sma_indicator()
+        # 예시: 주간 모멘텀 지표 (전주 대비 종가 변화율, %)
+        weekly['weekly_momentum'] = weekly['close'].pct_change() * 100
+
+    return weekly
+
+---
+
+# data_collection/ohlcv_fetcher.py
+import ccxt
+import pandas as pd
+from datetime import datetime
+import time
+from logs.logger_config import setup_logger
+from logs.aggregating_handler import AggregatingHandler
+import logging
+
+# 로거 설정 및 AggregatingHandler 추가 (INFO 레벨 이상의 로그 집계)
+logger = setup_logger(__name__)
+aggregating_handler = AggregatingHandler(threshold=10, level=logging.INFO)  # 임계치는 필요에 따라 조정 가능
+logger.addHandler(aggregating_handler)
+
+def fetch_historical_ohlcv_data(symbol: str, timeframe: str, start_date: str, 
+                                limit_per_request: int = 1000, pause_sec: float = 1.0, 
+                                exchange_id: str = 'binance', single_fetch: bool = False,
+                                time_offset_ms: int = 1, max_retries: int = 3):
+    """
+    ccxt를 이용해 지정한 심볼, 타임프레임, 시작일로부터 OHLCV 데이터를 수집합니다.
+    single_fetch=True이면 한 번의 요청만 수행합니다.
+    
+    반환 DataFrame: 'open', 'high', 'low', 'close', 'volume' 컬럼을 가지며, 인덱스는 timestamp.
+    """
+    try:
+        exchange_class = getattr(ccxt, exchange_id)
+        exchange = exchange_class({'enableRateLimit': True})
+        exchange.load_markets()
+    except Exception as e:
+        logger.error(f"Exchange '{exchange_id}' 초기화 에러: {e}", exc_info=True)
+        return pd.DataFrame()
+
+    try:
+        since = exchange.parse8601(datetime.strptime(start_date, "%Y-%m-%d").isoformat())
+    except Exception as e:
+        logger.error(f"start_date ({start_date}) 파싱 에러: {e}", exc_info=True)
+        return pd.DataFrame()
+
+    ohlcv_list = []
+    retry_count = 0
+    while True:
+        try:
+            ohlcvs = exchange.fetch_ohlcv(symbol, timeframe, since=since, limit=limit_per_request)
+        except Exception as e:
+            logger.error(f"{symbol}의 {timeframe} 데이터 수집 에러: {e}", exc_info=True)
+            retry_count += 1
+            if retry_count >= max_retries:
+                logger.error(f"최대 재시도({max_retries}) 횟수 초과로 {symbol} {timeframe} 데이터 수집 중단")
+                break
+            time.sleep(pause_sec)
+            continue
+
+        if not ohlcvs:
+            break
+
+        ohlcv_list.extend(ohlcvs)
+        
+        # single_fetch 옵션이 True이면 한 번의 요청 후 종료
+        if single_fetch:
+            break
+
+        last_timestamp = ohlcvs[-1][0]
+        since = last_timestamp + time_offset_ms  # 중복 방지를 위해 offset 적용
+
+        # 현재 시간보다 과거 데이터가 모두 수집되었으면 종료
+        if last_timestamp >= exchange.milliseconds():
+            break
+
+        time.sleep(pause_sec)
+
+    if ohlcv_list:
+        try:
+            df = pd.DataFrame(ohlcv_list, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df.set_index('timestamp', inplace=True)
+            logger.info(f"{symbol} {timeframe} historical data 수집 완료 (총 {len(df)} 행)")
+            return df
+        except Exception as e:
+            logger.error(f"DataFrame 변환 에러: {e}", exc_info=True)
+            return pd.DataFrame()
+    else:
+        logger.warning(f"{symbol} {timeframe}에 대한 데이터가 없습니다.")
+        return pd.DataFrame()
+    
+def fetch_latest_ohlcv_data(symbol: str, timeframe: str, limit: int = 500, exchange_id: str = 'binance'):
+    """
+    최신 OHLCV 데이터를 수집합니다.
+    """
+    try:
+        exchange_class = getattr(ccxt, exchange_id)
+        exchange = exchange_class({'enableRateLimit': True})
+        exchange.load_markets()
+    except Exception as e:
+        logger.error(f"Exchange '{exchange_id}' 초기화 에러: {e}", exc_info=True)
+        return pd.DataFrame()
+    
+    try:
+        ohlcvs = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+    except Exception as e:
+        logger.error(f"{symbol}의 {timeframe} 최신 데이터 수집 에러: {e}", exc_info=True)
+        return pd.DataFrame()
+    
+    if ohlcvs:
+        try:
+            df = pd.DataFrame(ohlcvs, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df.set_index('timestamp', inplace=True)
+            logger.info(f"{symbol} {timeframe} 최신 데이터 수집 완료 (총 {len(df)} 행)")
+            return df
+        except Exception as e:
+            logger.error(f"DataFrame 변환 에러: {e}", exc_info=True)
+            return pd.DataFrame()
+    else:
+        logger.warning(f"{symbol} {timeframe}에 대한 최신 데이터가 없습니다.")
+        return pd.DataFrame()
+    
+def get_top_market_cap_symbols(exchange_id: str = 'binance', quote_currency: str = 'USDT', 
+                               required_start_date: str = "2018-01-01", count: int = 5, 
+                               pause_sec: float = 1.0):
+    """
+    거래량(quoteVolume)을 기준으로 상위 심볼들을 선정합니다.
+    데이터 가용성을 확인하여, 지정된 시작일 이전 데이터가 존재하는 심볼만 반환합니다.
+    """
+    try:
+        exchange_class = getattr(ccxt, exchange_id)
+        exchange = exchange_class({'enableRateLimit': True})
+        markets = exchange.load_markets()
+    except Exception as e:
+        logger.error(f"{exchange_id}에서 마켓 로드 에러: {e}", exc_info=True)
+        return []
+
+    usdt_symbols = [symbol for symbol in markets if symbol.endswith('/' + quote_currency)]
+    
+    try:
+        tickers = exchange.fetch_tickers()
+    except Exception as e:
+        logger.error(f"티커 수집 에러: {e}", exc_info=True)
+        tickers = {}
+
+    symbol_volumes = []
+    for symbol in usdt_symbols:
+        ticker = tickers.get(symbol, {})
+        volume = ticker.get('quoteVolume', 0)
+        symbol_volumes.append((symbol, volume))
+    
+    symbol_volumes.sort(key=lambda x: x[1] if x[1] is not None else 0, reverse=True)
+    
+    valid_symbols = []
+    for symbol, volume in symbol_volumes:
+        logger.info(f"심볼 {symbol}의 데이터 가용성 확인 중 (시작일: {required_start_date})...")
+        df = fetch_historical_ohlcv_data(symbol, '1d', required_start_date, 
+                                         limit_per_request=1, pause_sec=pause_sec, 
+                                         exchange_id=exchange_id, single_fetch=True)
+        if df.empty:
+            logger.info(f"  → {symbol}은(는) {required_start_date} 이후 데이터만 존재하거나 데이터가 없음. 스킵합니다.")
+            continue
+        first_timestamp = df.index.min()
+        if first_timestamp > pd.to_datetime(required_start_date):
+            logger.info(f"  → {symbol}은(는) {required_start_date} 이후 상장됨 (최초 데이터: {first_timestamp}). 스킵합니다.")
+            continue
+        valid_symbols.append(symbol)
+        if len(valid_symbols) >= count:
+            break
+
+    if len(valid_symbols) < count:
+        logger.warning(f"경고: {required_start_date} 이전 데이터가 있는 유효 심볼이 {len(valid_symbols)}개 밖에 없습니다.")
+    return valid_symbols
+
+---
+
+# data_collection/ohlcv_pipeline.py
+import time
+from typing import List, Optional
+from logs.logger_config import setup_logger
+from data_collection.ohlcv_fetcher import fetch_historical_ohlcv_data, fetch_latest_ohlcv_data
+from data_collection.db_manager import insert_ohlcv_records
+
+logger = setup_logger(__name__)
+
+def collect_and_store_ohlcv_data(
+    symbols: List[str],
+    timeframes: List[str],
+    use_historical: bool = True,
+    start_date: Optional[str] = '2018-01-01 00:00:00',
+    limit_per_request: int = 1000,
+    latest_limit: int = 500,
+    pause_sec: float = 1.0,
+    table_name_format: str = "ohlcv_{symbol}_{timeframe}",
+    exchange_id: str = 'binance',
+    time_offset_ms: int = 1
+) -> None:
+    """
+    심볼과 타임프레임에 따라 OHLCV 데이터를 수집한 후, DB에 저장합니다.
+    - 수집 시 에러 및 빈 데이터 처리는 상세 에러는 ERROR 레벨, 요약 정보는 INFO 레벨로 기록합니다.
+    - DB 저장 시 chunk 단위 저장으로 대용량 데이터 처리를 최적화합니다.
+    
+    AggregatingHandler 는 동일 (logger 이름, 파일, 함수) 기준으로 반복 로그를 집계하여,
+    임계치 도달 시 "집계: 최근 N회 로그 발생, 마지막 메시지: ..." 형태의 요약 로그를 출력합니다.
+    따라서 여기서 발생하는 INFO 로그들은 AggregatingHandler 가 자동으로 요약할 수 있습니다.
+    """
+    for symbol in symbols:
+        for tf in timeframes:
+            logger.info(f"[OHLCV PIPELINE] Fetching {symbol} - {tf} data...")
+            try:
+                if use_historical:
+                    if not start_date:
+                        raise ValueError("start_date는 과거 데이터 수집 시 반드시 필요합니다.")
+                    df = fetch_historical_ohlcv_data(
+                        symbol=symbol,
+                        timeframe=tf,
+                        start_date=start_date,
+                        limit_per_request=limit_per_request,
+                        pause_sec=pause_sec,
+                        exchange_id=exchange_id,
+                        single_fetch=False,
+                        time_offset_ms=time_offset_ms
+                    )
+                else:
+                    df = fetch_latest_ohlcv_data(
+                        symbol=symbol,
+                        timeframe=tf,
+                        limit=latest_limit,
+                        exchange_id=exchange_id
+                    )
+            except Exception as e:
+                logger.error(f"[OHLCV PIPELINE] 데이터 수집 에러 ({symbol} - {tf}): {e}", exc_info=True)
+                continue
+
+            logger.info(f"[OHLCV PIPELINE] -> Total Rows Fetched for {symbol} - {tf}: {len(df)}")
+            if df.empty:
+                logger.warning(f"[OHLCV PIPELINE] -> {symbol} - {tf} 데이터가 없습니다. 저장 건너뜁니다.")
+                continue
+
+            table_name = table_name_format.format(symbol=symbol.replace('/', '').lower(), timeframe=tf)
+            try:
+                insert_ohlcv_records(df, table_name=table_name)
+                logger.info(f"[OHLCV PIPELINE] -> Saved to table: {table_name}")
+            except Exception as e:
+                logger.error(f"[OHLCV PIPELINE] 데이터 저장 에러 ({table_name}): {e}", exc_info=True)
+            time.sleep(pause_sec)

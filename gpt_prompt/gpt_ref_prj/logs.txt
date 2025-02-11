@@ -1,0 +1,395 @@
+[logs]
+# logs/aggregating_handler.py
+import logging
+import os
+from datetime import datetime
+
+class AggregatingHandler(logging.Handler):
+    """
+    AggregatingHandler는 각 로그 레코드를 (logger 이름, 파일명, 함수명) 별로 집계합니다.
+    지정된 임계치(threshold)만큼 로그가 누적되면, 해당 모듈/함수에서 발생한 로그의 특성을 요약하여
+    다음과 같은 형식으로 출력합니다.
+    
+    예시)
+      INFO:trading.strategies:strategies.py:high_frequency_strategy: high_frequency_strategy 집계: 최근 2000회 로그 발생, 마지막 메시지: hold at 2021-04-02 04:00:00
+     
+    모듈마다 로그 발생량이 다를 수 있으므로, 생성 시 module_name을 전달하면 
+    환경변수 AGG_THRESHOLD_<MODULE_NAME> (대문자) 값을 임계치로 사용하며,
+    만약 로그 레코드에 sensitivity_analysis 속성이 True로 설정되면, 
+    환경변수 AGG_THRESHOLD_SENSITIVITY 값을 별도로 적용할 수 있습니다.
+    """
+    def __init__(self, threshold=None, level=logging.INFO, module_name=None, sensitivity_threshold=None):
+        # 먼저, threshold가 제공되지 않은 경우 AGG_THRESHOLD_GLOBAL를 사용
+        if threshold is None:
+            global_threshold_str = os.getenv("AGG_THRESHOLD_GLOBAL")
+            if global_threshold_str and global_threshold_str.isdigit():
+                threshold = int(global_threshold_str)
+            else:
+                threshold = 2000  # fallback 기본값
+        # module_name이 제공되면 해당 모듈의 전용 임계치 확인 (우선 적용)
+        if module_name:
+            env_var = f"AGG_THRESHOLD_{module_name.upper()}"
+            module_threshold_str = os.getenv(env_var)
+            if module_threshold_str and module_threshold_str.isdigit():
+                threshold = int(module_threshold_str)
+        super().__init__(level)
+        self.threshold = threshold
+
+        # sensitivity_threshold: sensitivity_analysis 플래그가 있는 로그에 사용할 임계치
+        if sensitivity_threshold is None:
+            sens_str = os.getenv("AGG_THRESHOLD_SENSITIVITY")
+            if sens_str and sens_str.isdigit():
+                sensitivity_threshold = int(sens_str)
+            else:
+                sensitivity_threshold = threshold
+        self.sensitivity_threshold = sensitivity_threshold
+
+        self.aggregation = {}
+
+    def emit(self, record):
+        try:
+            import os
+            filename = os.path.basename(record.pathname)
+            key = (record.name, filename, record.funcName)
+            if getattr(record, "sensitivity_analysis", False):
+                current_threshold = self.sensitivity_threshold
+            else:
+                current_threshold = self.threshold
+
+            if key not in self.aggregation:
+                self.aggregation[key] = {"count": 0, "last_message": None, "last_time": None}
+            agg = self.aggregation[key]
+            agg["count"] += 1
+            agg["last_message"] = record.getMessage()
+            agg["last_time"] = datetime.fromtimestamp(record.created).strftime("%Y-%m-%d %H:%M:%S")
+            
+            if agg["count"] >= current_threshold:
+                summary_msg = (
+                    f"{key[2]} 집계: 최근 {agg['count']}회 로그 발생, 마지막 메시지: {agg['last_message']} at {agg['last_time']}"
+                )
+                summary_record = self.make_summary_record(record, summary_msg)
+                logging.getLogger(record.name).handle(summary_record)
+                self.aggregation[key]["count"] = 0
+        except Exception:
+            self.handleError(record)
+
+    def make_summary_record(self, original_record, summary):
+        summary_record = logging.LogRecord(
+            name=original_record.name,
+            level=original_record.levelno,
+            pathname=original_record.pathname,
+            lineno=original_record.lineno,
+            msg=summary,
+            args=original_record.args,
+            exc_info=original_record.exc_info
+        )
+        return summary_record
+
+---
+
+# logs/final_report.py
+from logs.logger_config import setup_logger
+
+logger = setup_logger(__name__)
+
+def generate_final_report(performance_data, symbol=None):
+    """
+    종목별 성과 리포트를 생성합니다.
+    symbol 인자가 전달되면 헤더에 심볼명을 포함합니다.
+    최종 성과 지표는 performance_data["overall"]에 저장되어 있으므로,
+    해당 서브 딕셔너리에서 값을 추출하도록 수정합니다.
+    """
+    overall = performance_data.get("overall", {})
+    report_lines = []
+    header = f"=== FINAL BACKTEST PERFORMANCE REPORT for {symbol} ===" if symbol else "=== FINAL BACKTEST PERFORMANCE REPORT ==="
+    report_lines.append(header)
+    report_lines.append(f"Overall ROI: {overall.get('roi', 0):.2f}%")
+    report_lines.append(f"Cumulative Return: {overall.get('cumulative_return', 0):.2f}")
+    report_lines.append(f"Total PnL: {overall.get('total_pnl', 0):.2f}")
+    report_lines.append(f"Trade Count: {overall.get('trade_count', 0)}")
+    report_lines.append("")
+    report_lines.append("Performance Overview:")
+    report_lines.append(f"  Annualized Return: {overall.get('annualized_return', 0):.2f}%")
+    report_lines.append(f"  Annualized Volatility: {overall.get('annualized_volatility', 0):.2f}%")
+    report_lines.append(f"  Sharpe Ratio: {overall.get('sharpe_ratio', 0):.2f}")
+    report_lines.append(f"  Sortino Ratio: {overall.get('sortino_ratio', 0):.2f}")
+    report_lines.append(f"  Calmar Ratio: {overall.get('calmar_ratio', 0):.2f}")
+    report_lines.append(f"  Maximum Drawdown: {overall.get('max_drawdown', 0):.2f}")
+    report_lines.append("")
+    report_lines.append("Weekly Strategy Metrics:")
+    weekly = performance_data.get("weekly", {})
+    report_lines.append(f"  Weekly ROI: {weekly.get('weekly_roi', 0):.2f}%")
+    report_lines.append(f"  Weekly Max Drawdown: {weekly.get('weekly_max_drawdown', 0):.2f}%")
+    report_lines.append("")
+    report_lines.append("Trading Stats:")
+    report_lines.append(f"  Win Rate: {overall.get('win_rate', 0):.2f}%")
+    report_lines.append(f"  Average Win: {overall.get('avg_win', 0):.2f}")
+    report_lines.append(f"  Average Loss: {overall.get('avg_loss', 0):.2f}")
+    report_lines.append(f"  Profit Factor: {overall.get('profit_factor', 0):.2f}")
+    report_lines.append(f"  Trades per Year: {overall.get('trades_per_year', 0):.2f}")
+    report_lines.append(f"  Max Consecutive Wins: {overall.get('max_consecutive_wins', 0)}")
+    report_lines.append(f"  Max Consecutive Losses: {overall.get('max_consecutive_losses', 0)}")
+    report_lines.append("")
+    report_lines.append("Monthly Performance:")
+    monthly = performance_data.get("monthly", {})
+    for month in sorted(monthly.keys()):
+        data = monthly[month]
+        status = "TARGET MET" if data["roi"] >= 2.0 else "TARGET NOT MET"
+        report_lines.append(f"  {month}: ROI {data['roi']:.2f}% (Trades: {data['trade_count']}) --> {status}")
+    report_lines.append("=========================================")
+    
+    report_str = "\n".join(report_lines)
+    logger.info(report_str)
+
+def generate_parameter_sensitivity_report(param_name, results):
+    """
+    Parameter Sensitivity Report 생성 (최종 로그용).
+    다중 파라미터 분석의 경우, results는 {param1: {value: metrics, ...}, param2: {value: metrics, ...}, ...} 형식입니다.
+    """
+    report_lines = []
+    report_lines.append("=== FINAL PARAMETER SENSITIVITY REPORT ===")
+    
+    if isinstance(results, dict) and all(isinstance(v, dict) for v in results.values()):
+        # 다중 파라미터 모드
+        for p, res in results.items():
+            report_lines.append(f"Parameter: {p}")
+            for val in sorted(res.keys()):
+                result = res[val]
+                if result is not None:
+                    roi = result.get("roi", 0)
+                    report_lines.append(f"  {p} = {val:.4f} -> ROI: {roi:.2f}%")
+                else:
+                    report_lines.append(f"  {p} = {val:.4f} -> ROI: Error")
+            report_lines.append("")  # 파라미터 간 빈 줄 추가
+    else:
+        # 단일 파라미터 모드 (지원하지 않음)
+        report_lines.append(f"Analyzed Parameter: {param_name}")
+        report_lines.append("Results:")
+        for val in sorted(results.keys()):
+            result = results[val]
+            if result is not None:
+                roi = result.get("roi", 0)
+                report_lines.append(f"{param_name} = {val:.4f} -> ROI: {roi:.2f}%")
+            else:
+                report_lines.append(f"{param_name} = {val:.4f} -> ROI: Error")
+    report_lines.append("==========================================")
+    
+    report_str = "\n".join(report_lines)
+    logger.info(report_str)
+
+---
+
+# logs/logger_config.py
+import logging
+import os
+from logging.handlers import RotatingFileHandler
+from dotenv import load_dotenv
+
+# .env 파일 로드
+load_dotenv()
+
+# 환경 변수 읽기 (프로젝트 전체에 통일된 로그 레벨)
+ENVIRONMENT = os.getenv("ENVIRONMENT", "development").lower()
+_LOG_LEVEL_FROM_ENV = os.getenv("LOG_LEVEL", None)
+if _LOG_LEVEL_FROM_ENV:
+    level = getattr(logging, _LOG_LEVEL_FROM_ENV.upper(), logging.INFO)
+else:
+    level = logging.INFO
+
+# 기본 로그 파일 이름 (최초 로그는 이 파일에 기록됨)
+BASE_LOG_FILE = os.path.join("logs", "project.log")
+
+class OneLineFormatter(logging.Formatter):
+    """
+    로그 메시지 내 개행 문자를 제거하여 한 로그 이벤트가 한 줄로 기록되도록 합니다.
+    """
+    def format(self, record):
+        formatted = super().format(record)
+        return formatted.replace("\n", " | ")
+
+class LineRotatingFileHandler(RotatingFileHandler):
+    """
+    지정된 라인 수(max_lines)를 초과하면 현재 로그 파일을 닫고,
+    새로운 로그 파일을 'project.log', 'project1.log', 'project2.log', … 
+    와 같이 순차적으로 생성하는 핸들러입니다.
+    """
+    def __init__(self, base_filename, mode='a', max_lines=1000, backupCount=7, encoding=None, delay=False):
+        self.base_filename = base_filename
+        self.current_index = 0
+        self._set_current_filename()
+        super().__init__(self.current_filename, mode, maxBytes=0, backupCount=backupCount, encoding=encoding, delay=delay)
+        self.max_lines = max_lines
+        self.current_line_count = 0
+
+    def _set_current_filename(self):
+        base, ext = os.path.splitext(self.base_filename)
+        if self.current_index == 0:
+            self.current_filename = self.base_filename
+        else:
+            self.current_filename = f"{base}{self.current_index}{ext}"
+        self.baseFilename = os.path.abspath(self.current_filename)
+
+    def doRollover(self):
+        if self.stream:
+            self.stream.close()
+            self.stream = None
+        self.current_index += 1
+        if self.backupCount > 0 and self.current_index >= self.backupCount:
+            base, ext = os.path.splitext(self.base_filename)
+            oldest_index = self.current_index - self.backupCount
+            if oldest_index == 0:
+                old_file = self.base_filename
+            else:
+                old_file = f"{base}{oldest_index}{ext}"
+            if os.path.exists(old_file):
+                os.remove(old_file)
+        self._set_current_filename()
+        self.mode = 'w'
+        self.stream = self._open()
+        self.current_line_count = 0
+
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            lines_in_msg = msg.count("\n") or 1
+            if self.current_line_count + lines_in_msg > self.max_lines:
+                self.doRollover()
+            self.current_line_count += lines_in_msg
+            super().emit(record)
+        except Exception:
+            self.handleError(record)
+
+# 전역 AggregatingHandler를 추가합니다.
+try:
+    from logs.aggregating_handler import AggregatingHandler
+except ImportError:
+    AggregatingHandler = None
+
+def initialize_root_logger():
+    root_logger = logging.getLogger()
+    root_logger.setLevel(level)
+    
+    if not any(isinstance(handler, LineRotatingFileHandler) for handler in root_logger.handlers):
+        file_handler = LineRotatingFileHandler(
+            base_filename=BASE_LOG_FILE,
+            max_lines=1000,
+            backupCount=7,
+            encoding="utf-8",
+            delay=True
+        )
+        file_handler.setLevel(level)
+        formatter = OneLineFormatter('[%(asctime)s] %(levelname)s:%(name)s:%(filename)s:%(funcName)s: %(message)s')
+        file_handler.setFormatter(formatter)
+        root_logger.addHandler(file_handler)
+    
+    if not any(isinstance(handler, logging.StreamHandler) for handler in root_logger.handlers):
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(level)
+        console_formatter = OneLineFormatter('[%(asctime)s] %(levelname)s:%(name)s:%(filename)s:%(funcName)s: %(message)s')
+        console_handler.setFormatter(console_formatter)
+        root_logger.addHandler(console_handler)
+    
+    if AggregatingHandler is not None and not any(isinstance(handler, AggregatingHandler) for handler in root_logger.handlers):
+        global_threshold_str = os.getenv("AGG_THRESHOLD_GLOBAL")
+        try:
+            global_threshold = int(global_threshold_str) if global_threshold_str and global_threshold_str.isdigit() else 2000
+        except Exception:
+            global_threshold = 2000
+        aggregator_handler = AggregatingHandler(threshold=global_threshold, level=level)
+        aggregator_handler.addFilter(lambda record: not getattr(record, '_is_summary', False))
+        aggregator_formatter = OneLineFormatter('[%(asctime)s] %(levelname)s:%(name)s:%(filename)s:%(funcName)s: %(message)s')
+        aggregator_handler.setFormatter(aggregator_formatter)
+        root_logger.addHandler(aggregator_handler)
+    
+    # 민감도 분석 관련 로그 집계를 위한 sensitivity AggregatingHandler 추가
+    sensitivity_threshold_str = os.getenv("AGG_THRESHOLD_SENSITIVITY")
+    if sensitivity_threshold_str and sensitivity_threshold_str.isdigit():
+        sensitivity_threshold = int(sensitivity_threshold_str)
+        sensitivity_handler = AggregatingHandler(threshold=global_threshold, level=level, sensitivity_threshold=sensitivity_threshold)
+        sensitivity_handler.addFilter(lambda record: getattr(record, "sensitivity_analysis", False))
+        sensitivity_formatter = OneLineFormatter('[%(asctime)s] %(levelname)s:%(name)s:%(filename)s:%(funcName)s: %(message)s')
+        sensitivity_handler.setFormatter(sensitivity_formatter)
+        root_logger.addHandler(sensitivity_handler)
+    
+initialize_root_logger()
+
+def setup_logger(module_name: str) -> logging.Logger:
+    logger = logging.getLogger(module_name)
+    logger.setLevel(level)
+    
+    mod_key = module_name.split('.')[-1].upper()
+    env_threshold = os.getenv(f"AGG_THRESHOLD_{mod_key}")
+    if env_threshold is not None and env_threshold.isdigit():
+        threshold = int(env_threshold)
+        try:
+            agg_handler = AggregatingHandler(threshold=threshold, level=level, module_name=mod_key)
+            agg_handler.addFilter(lambda record: not getattr(record, '_is_summary', False))
+            formatter = OneLineFormatter('[%(asctime)s] %(levelname)s:%(name)s:%(filename)s:%(funcName)s: %(message)s')
+            agg_handler.setFormatter(formatter)
+            logger.addHandler(agg_handler)
+            logger.propagate = False
+        except Exception as e:
+            logger.error("모듈별 AggregatingHandler 추가 실패: %s", e)
+    else:
+        logger.propagate = True
+    return logger
+
+---
+
+# logs/logging_util.py
+import threading
+import os
+import glob
+from logs.logger_config import setup_logger
+
+class LoggingUtil:
+    """
+    LoggingUtil는 이벤트 로깅과 로그 파일 관리 기능을 제공합니다.
+    
+    - 이벤트 로깅: 각 모듈별로 인스턴스를 생성하고, 이벤트 발생 시 INFO 레벨 로그를 기록하여
+      AggregatingHandler가 동일 (logger 이름, 파일, 함수) 기준으로 로그를 집계하도록 합니다.
+    - 로그 파일 관리: 정적 메서드 clear_log_files()를 통해 프로젝트 루트의 logs 폴더 내 모든 .log 파일을 삭제합니다.
+    """
+    def __init__(self, module_name: str):
+        """
+        :param module_name: 해당 로거가 속한 모듈의 이름 (예: "Account", "AssetManager" 등)
+        """
+        self.module_name = module_name
+        self.lock = threading.RLock()
+        self.logger = setup_logger(module_name)
+
+    def log_event(self, event_message: str) -> None:
+        """
+        단일 이벤트를 기록합니다.
+        이벤트 발생 시마다 INFO 레벨로 로그를 남기면 AggregatingHandler가 동일 기준의 로그들을 집계하여
+        임계치 도달 시 요약 메시지를 출력합니다.
+        
+        :param event_message: 기록할 이벤트 메시지
+        """
+        with self.lock:
+            self.logger.info(f"[{self.module_name}] Event: {event_message}")
+
+    def log_summary(self) -> None:
+        """
+        AggregatingHandler가 자동으로 요약 로그를 출력하므로,
+        필요 시 강제로 요약 로그를 남길 수 있도록 INFO 레벨 로그를 기록합니다.
+        """
+        with self.lock:
+            self.logger.info(f"[{self.module_name}] Summary requested.")
+
+    @staticmethod
+    def clear_log_files():
+        """
+        실행 시 프로젝트 루트의 logs 폴더 내 모든 .log 파일을 삭제합니다.
+        """
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        log_dir = os.path.join(base_dir, "logs")
+        log_files = glob.glob(os.path.join(log_dir, "*.log"))
+        for log_file in log_files:
+            try:
+                os.remove(log_file)
+                print(f"Deleted log file: {log_file}")
+            except Exception as e:
+                print(f"Failed to remove log file {log_file}: {e}")
+
+# 테스트 코드에서 요구하는 alias는 LoggingUtil 그대로 사용하면 됩니다.

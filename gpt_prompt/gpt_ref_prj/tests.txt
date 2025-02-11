@@ -1,0 +1,348 @@
+[tests]
+# tests/conftest.py
+import os
+import glob
+import logging
+import pytest
+from logs.logger_config import initialize_root_logger
+
+@pytest.fixture(autouse=True, scope="session")
+def clear_logs():
+    """
+    테스트 실행 전에 logs 디렉토리 내 모든 .log 파일을 삭제하고,
+    기존 로거를 종료한 후 루트 로거를 재초기화합니다.
+    이 fixture는 세션 전체에 대해 한 번 실행됩니다.
+    """
+    log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "logs")
+    log_pattern = os.path.join(log_dir, "*.log")
+    log_files = glob.glob(log_pattern)
+    for log_file in log_files:
+        try:
+            os.remove(log_file)
+            print(f"Deleted log file: {log_file}")
+        except Exception as e:
+            print(f"Failed to delete {log_file}: {e}")
+    
+    # 기존 로거 종료 후, 최신 AggregatingHandler 설정이 반영되도록 루트 로거 재초기화
+    logging.shutdown()
+    initialize_root_logger()
+
+---
+
+# tests/test_auto_optimization_trigger.py
+
+import logging
+
+logger = logging.getLogger(__name__)
+
+def auto_optimization_trigger(performance):
+    """
+    더미 함수: 월간 ROI가 2% 미만인 달이 있으면 True를 반환합니다.
+    """
+    monthly_roi = performance.get("monthly_roi", {})
+    for month, roi in monthly_roi.items():
+        logger.debug(f"검사 중 - {month}: ROI = {roi}")
+        if roi < 2.0:
+            logger.info(f"자동 최적화 트리거 활성화: {month}의 ROI({roi})가 2% 미만입니다.")
+            return True
+    logger.info("자동 최적화 트리거 비활성화: 모든 월간 ROI가 2% 이상입니다.")
+    return False
+
+def test_auto_optimization_trigger():
+    performance_trigger = {
+        "monthly_roi": {
+            "2023-01": 1.5,
+            "2023-02": 2.5,
+            "2023-03": 1.8,
+        }
+    }
+    performance_no_trigger = {
+        "monthly_roi": {
+            "2023-01": 2.1,
+            "2023-02": 2.5,
+            "2023-03": 2.3,
+        }
+    }
+    assert auto_optimization_trigger(performance_trigger) is True
+    assert auto_optimization_trigger(performance_no_trigger) is False
+
+---
+
+# tests/test_handle_weekly_end.py
+import pandas as pd
+import pytest
+from backtesting.backtester import Backtester
+from trading.positions import TradePosition
+
+@pytest.fixture
+def dummy_backtester():
+    # 간단한 백테스터 인스턴스 생성 (실제 DB 로드나 인디케이터 계산 없이 사용)
+    bt = Backtester(symbol="TEST/USDT", account_size=10000, fee_rate=0.001, slippage_rate=0.001)
+    
+    # Dummy 포지션 생성 (포지션에 미체결된 실행 내역 추가)
+    pos = TradePosition(side="LONG", initial_price=100, maximum_size=1.0, total_splits=1, allocation_plan=[1.0])
+    pos.add_execution(
+        entry_price=100,
+        size=1.0,
+        stop_loss=95,
+        take_profit=110,
+        entry_time=pd.Timestamp("2023-01-06 10:00:00"),
+        trade_type="new_entry"
+    )
+    bt.positions.append(pos)
+    return bt
+
+def test_handle_weekly_end(dummy_backtester):
+    # 청산 전 상태: 포지션 존재, trade_logs 비어있음
+    bt = dummy_backtester
+    assert len(bt.positions) == 1
+    assert len(bt.trade_logs) == 0
+
+    # 주간 종료 시 호출 (예: 금요일 데이터)
+    current_time = pd.Timestamp("2023-01-13 16:00:00")  # 금요일 가정
+    # 청산에 사용될 dummy row (close 가격 제공)
+    row = pd.Series({"close": 105})
+    
+    # handle_weekly_end() 호출
+    bt.handle_weekly_end(current_time, row)
+    
+    # 모든 포지션이 청산되어 positions 리스트가 비어야 함
+    assert len(bt.positions) == 0
+    # 거래 내역이 기록되어야 함 (포지션당 최소 1건)
+    assert len(bt.trade_logs) >= 1
+    # 계좌의 잔고가 업데이트되었는지(예: 초기 잔고 대비 변동) 확인 (단순 비교)
+    assert bt.account.get_available_balance() != 10000
+
+---
+
+# tests/test_logging_summary.py
+import logging
+import io
+from logs.logging_util import LoggingUtil
+
+def test_logging_summary_output():
+    # 메모리 내 로그 스트림 설정
+    log_stream = io.StringIO()
+    
+    # 대상 로거 생성 및 기존 핸들러 제거
+    test_logger = logging.getLogger("test_logging_summary")
+    test_logger.setLevel(logging.DEBUG)
+    for h in test_logger.handlers[:]:
+        test_logger.removeHandler(h)
+    test_logger.propagate = False
+
+    # 새 스트림 핸들러 추가
+    stream_handler = logging.StreamHandler(log_stream)
+    formatter = logging.Formatter('%(levelname)s:%(message)s')
+    stream_handler.setFormatter(formatter)
+    test_logger.addHandler(stream_handler)
+
+    # LoggingUtil 인스턴스 생성 (테스트용 logger로 교체)
+    logging_util = LoggingUtil("test_logging_summary")
+    logging_util.logger = test_logger  # 테스트용 logger 주입
+
+    # 요약 로그 임계치(예: 2000회) 전까지 이벤트 기록
+    for i in range(1999):
+        logging_util.log_event(f"Test event {i}")
+
+    # 2000번째 이벤트 – 이 시점에서 요약 로그가 찍혀야 함
+    logging_util.log_event("Test event 1999")
+
+    # 강제로 핸들러 flush
+    stream_handler.flush()
+
+    # 로그 출력값을 가져와서 요약 로그 메시지가 포함되었는지 확인
+    output = log_stream.getvalue()
+    assert "집계:" in output
+
+---
+
+# tests/test_ohlcv_aggregator.py
+import pandas as pd
+import numpy as np
+from data_collection.ohlcv_aggregator import aggregate_to_weekly
+
+def test_aggregate_to_weekly():
+    # 예시 데이터 생성: 2주 이상의 분 단위(또는 1일) 데이터
+    dates = pd.date_range(start="2023-01-02", periods=14, freq="D")  # 월요일 시작 가정
+    data = pd.DataFrame({
+        'open': np.linspace(100, 113, 14),
+        'high': np.linspace(105, 118, 14),
+        'low': np.linspace(95, 108, 14),
+        'close': np.linspace(102, 115, 14),
+        'volume': np.random.randint(1000, 5000, 14)
+    }, index=dates)
+    
+    weekly = aggregate_to_weekly(data, compute_indicators=True)
+    
+    # 각 주의 open은 그룹의 첫 행, close는 마지막 행 등으로 검증
+    # 예: 첫 주 (2023-01-02 ~ 2023-01-08)
+    first_week = data.loc["2023-01-02":"2023-01-08"]
+    assert np.isclose(weekly.iloc[0]['open'], first_week.iloc[0]['open'])
+    assert np.isclose(weekly.iloc[0]['close'], first_week.iloc[-1]['close'])
+    # volume 합계 비교
+    assert np.isclose(weekly.iloc[0]['volume'], first_week['volume'].sum())
+    # 주간 인디케이터 컬럼이 추가되었는지 확인
+    assert 'weekly_sma' in weekly.columns
+    assert 'weekly_momentum' in weekly.columns
+
+---
+
+# tests/test_performance_report.py
+
+import io
+import logging
+from logs.final_report import generate_final_report
+
+def test_final_report_output():
+    sample_performance = {
+        "roi": 1.5,
+        "pnl": -150.0,
+        "trade_count": 10,
+        "monthly_performance": {
+            "2023-01": {"roi": 1.8, "trade_count": 5},
+            "2023-02": {"roi": 2.2, "trade_count": 7},
+            "2023-03": {"roi": 1.0, "trade_count": 4},
+        }
+    }
+    
+    # logger 출력 캡처를 위한 스트림 핸들러 설정
+    log_stream = io.StringIO()
+    # generate_final_report()에서 사용되는 logger의 이름은 보통 "logs.final_report" 입니다.
+    logger = logging.getLogger("logs.final_report")
+    stream_handler = logging.StreamHandler(log_stream)
+    stream_handler.setLevel(logging.INFO)
+    formatter = logging.Formatter('%(message)s')
+    stream_handler.setFormatter(formatter)
+    logger.addHandler(stream_handler)
+    
+    # 리포트 생성 (logger를 통해 출력됨)
+    generate_final_report(sample_performance)
+    
+    # 테스트 후 핸들러 제거
+    logger.removeHandler(stream_handler)
+    output = log_stream.getvalue()
+    
+    # 핵심 지표들이 출력되는지 확인 (예: ROI, Trade Count, 월별 데이터 등)
+    assert "ROI" in output
+    assert "Trade Count" in output or "거래 횟수" in output
+    for month in sample_performance["monthly_performance"]:
+        assert month in output
+
+---
+
+# tests/test_weekly_strategies.py
+import pytest
+import pandas as pd
+from trading.strategies import TradingStrategies
+
+@pytest.fixture
+def ts_instance():
+    """TradingStrategies 인스턴스를 생성하는 fixture"""
+    return TradingStrategies()
+
+@pytest.fixture
+def weekly_data_breakout():
+    """
+    주간 돌파 전략 테스트용 DataFrame 생성.
+    인덱스: 2주치 데이터 (예: 2023-01-02, 2023-01-09)
+    컬럼: high, low, close
+    """
+    # 첫 번째 주: 고점=100, 저점=90, 종가=95
+    # 두 번째 주에서 테스트 대상 값을 변경하여 돌파 여부 확인
+    dates = [pd.to_datetime("2023-01-02"), pd.to_datetime("2023-01-09")]
+    data = {
+        "high": [100, None],
+        "low": [90, None],
+        "close": [95, None]
+    }
+    df = pd.DataFrame(data, index=dates)
+    return df
+
+@pytest.fixture
+def weekly_data_momentum():
+    """
+    주간 모멘텀 전략 테스트용 DataFrame 생성.
+    인덱스: 1주치 데이터 (또는 2주치 데이터에서 마지막 행 사용)
+    컬럼: weekly_momentum
+    """
+    dates = [pd.to_datetime("2023-01-09")]
+    data = {
+        "weekly_momentum": [0.0]  # 나중에 개별 테스트에서 값을 수정
+    }
+    df = pd.DataFrame(data, index=dates)
+    return df
+
+# === Weekly Breakout Strategy Tests ===
+
+def test_weekly_breakout_enter_long(ts_instance, weekly_data_breakout):
+    """
+    전 주 고점을 1% 이상 돌파한 경우 "enter_long" 신호가 반환되어야 함.
+    첫 주: high=100, low=90, 두 번째 주의 close를 102로 설정하면
+    102 >= 100 * 1.01 (101.0) → "enter_long"
+    """
+    # 복사본 생성 후 두 번째 주 데이터 수정
+    df = weekly_data_breakout.copy()
+    df.at[df.index[1], "close"] = 102
+    # 두 번째 주에 대한 테스트를 위해 current_time을 두 번째 주의 날짜로 설정
+    current_time = df.index[1]
+    signal = ts_instance.weekly_breakout_strategy(df, current_time, breakout_threshold=0.01)
+    assert signal == "enter_long"
+
+def test_weekly_breakout_exit_all(ts_instance, weekly_data_breakout):
+    """
+    전 주 저점을 1% 이상 하락한 경우 "exit_all" 신호가 반환되어야 함.
+    첫 주: low=90, 두 번째 주의 close를 88로 설정하면
+    88 <= 90 * 0.99 (89.1) → "exit_all"
+    """
+    df = weekly_data_breakout.copy()
+    df.at[df.index[1], "close"] = 88
+    current_time = df.index[1]
+    signal = ts_instance.weekly_breakout_strategy(df, current_time, breakout_threshold=0.01)
+    assert signal == "exit_all"
+
+def test_weekly_breakout_hold(ts_instance, weekly_data_breakout):
+    """
+    돌파 조건을 충족하지 않으면 "hold" 신호가 반환되어야 함.
+    예를 들어, 첫 주 high=100, 두 번째 주 close=95 → 조건 미충족
+    """
+    df = weekly_data_breakout.copy()
+    df.at[df.index[1], "close"] = 95
+    current_time = df.index[1]
+    signal = ts_instance.weekly_breakout_strategy(df, current_time, breakout_threshold=0.01)
+    assert signal == "hold"
+
+# === Weekly Momentum Strategy Tests ===
+
+def test_weekly_momentum_enter_long(ts_instance, weekly_data_momentum):
+    """
+    주간 모멘텀이 threshold 이상인 경우 "enter_long" 신호가 반환되어야 함.
+    예: weekly_momentum = 0.6, momentum_threshold = 0.5
+    """
+    df = weekly_data_momentum.copy()
+    df.at[df.index[0], "weekly_momentum"] = 0.6
+    current_time = df.index[0]
+    signal = ts_instance.weekly_momentum_strategy(df, current_time, momentum_threshold=0.5)
+    assert signal == "enter_long"
+
+def test_weekly_momentum_exit_all(ts_instance, weekly_data_momentum):
+    """
+    주간 모멘텀이 -threshold 이하인 경우 "exit_all" 신호가 반환되어야 함.
+    예: weekly_momentum = -0.6, momentum_threshold = 0.5
+    """
+    df = weekly_data_momentum.copy()
+    df.at[df.index[0], "weekly_momentum"] = -0.6
+    current_time = df.index[0]
+    signal = ts_instance.weekly_momentum_strategy(df, current_time, momentum_threshold=0.5)
+    assert signal == "exit_all"
+
+def test_weekly_momentum_hold(ts_instance, weekly_data_momentum):
+    """
+    주간 모멘텀이 임계치 내에 있으면 "hold" 신호가 반환되어야 함.
+    예: weekly_momentum = 0.3, momentum_threshold = 0.5
+    """
+    df = weekly_data_momentum.copy()
+    df.at[df.index[0], "weekly_momentum"] = 0.3
+    current_time = df.index[0]
+    signal = ts_instance.weekly_momentum_strategy(df, current_time, momentum_threshold=0.5)
+    assert signal == "hold"

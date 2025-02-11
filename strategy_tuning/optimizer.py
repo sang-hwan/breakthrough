@@ -1,6 +1,5 @@
 # strategy_tuning/optimizer.py
 import optuna
-import pandas as pd
 from logs.logger_config import setup_logger
 from backtesting.backtester import Backtester
 from strategy_tuning.dynamic_param_manager import DynamicParamManager
@@ -25,10 +24,14 @@ class DynamicParameterOptimizer:
                 "scale_in_threshold": trial.suggest_float("scale_in_threshold", 0.01, 0.03),
                 "partial_exit_ratio": trial.suggest_float("partial_exit_ratio", 0.4, 0.6),
                 "partial_profit_ratio": trial.suggest_float("partial_profit_ratio", 0.02, 0.04),
-                "final_profit_ratio": trial.suggest_float("final_profit_ratio", 0.05, 0.1)
+                "final_profit_ratio": trial.suggest_float("final_profit_ratio", 0.05, 0.1),
+                # 신규: 주간 전략 관련 파라미터 최적화 대상 포함
+                "weekly_breakout_threshold": trial.suggest_float("weekly_breakout_threshold", 0.005, 0.02),
+                "weekly_momentum_threshold": trial.suggest_float("weekly_momentum_threshold", 0.3, 0.7)
             }
             dynamic_params = {**base_params, **suggested_params}
-            logger.info(f"[Optimizer] 병합된 파라미터: {dynamic_params}")
+            # 병합 파라미터 정보는 디버깅 목적으로 DEBUG 레벨로 출력
+            logger.debug(f"[Optimizer] 병합된 파라미터: {dynamic_params}")
 
             assets = ["BTC/USDT", "ETH/USDT", "XRP/USDT"]
             splits = [
@@ -46,6 +49,7 @@ class DynamicParameterOptimizer:
 
             for split in splits:
                 for asset in assets:
+                    # 자산별 평가 상세 정보 (INFO 레벨로 출력)
                     logger.info(f"[Optimizer] {asset} 평가, 스플릿: {split}")
                     
                     # Training 백테스트 수행
@@ -112,7 +116,8 @@ class DynamicParameterOptimizer:
 
             # 정규화 패널티 계산
             reg_penalty = 0.0
-            regularization_keys = ["atr_multiplier", "profit_ratio", "risk_per_trade", "scale_in_threshold"]
+            regularization_keys = ["atr_multiplier", "profit_ratio", "risk_per_trade", "scale_in_threshold",
+                                   "weekly_breakout_threshold", "weekly_momentum_threshold"]
             for key in regularization_keys:
                 default_value = base_params.get(key, 1.0)
                 diff = dynamic_params.get(key, default_value) - default_value
@@ -134,7 +139,7 @@ class DynamicParameterOptimizer:
         self.study.optimize(self.objective, n_trials=self.n_trials)
         
         trials_df = self.study.trials_dataframe()
-        # INFO 레벨 로그로 남겨 AggregatingHandler 가 집계하도록 함
+        # 최종 요약 결과는 INFO 레벨로 출력
         logger.info(f"[Optimizer] 트라이얼 결과:\n{trials_df.to_string()}")
         
         best_trial = self.study.best_trial

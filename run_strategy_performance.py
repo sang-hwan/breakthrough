@@ -1,9 +1,7 @@
 # run_strategy_performance.py
 import logging
-import os
 from logs.logger_config import setup_logger
 from logs.logging_util import LoggingUtil
-import pandas as pd
 from strategy_tuning.optimizer import DynamicParameterOptimizer
 from backtesting.backtester import Backtester
 from backtesting.performance import compute_performance
@@ -40,6 +38,7 @@ def run_strategy_performance():
         logger.info("심볼 %s 백테스트 시작", symbol)
         try:
             symbol_key = symbol.replace("/", "").lower()
+            # use_weekly=True로 주간 데이터도 함께 로드하여 통합 환경을 구성함.
             backtester = Backtester(symbol=symbol, account_size=10000)
             backtester.load_data(
                 short_table_format=f"ohlcv_{symbol_key}_{{timeframe}}",
@@ -47,7 +46,8 @@ def run_strategy_performance():
                 short_tf=timeframes["short_tf"],
                 long_tf=timeframes["long_tf"],
                 start_date=start_date,
-                end_date=end_date
+                end_date=end_date,
+                use_weekly=True
             )
         except Exception as e:
             logger.error("심볼 %s 데이터 로드 실패: %s", symbol, e)
@@ -61,7 +61,8 @@ def run_strategy_performance():
             continue
         
         if trades:
-            performance_data = compute_performance(trades)
+            # 주간 전략 성과 분석 반영: 주간 데이터(backtester.df_weekly)를 함께 전달
+            performance_data = compute_performance(trades, weekly_data=backtester.df_weekly)
             logger.info("심볼 %s 성과 보고 생성", symbol)
             generate_final_report(performance_data, symbol=symbol)
         else:

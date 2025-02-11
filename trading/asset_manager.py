@@ -29,6 +29,10 @@ class AssetManager:
         """
         current_time = datetime.now()
         self.logger.info(f"리밸런싱 시작 시각: {current_time}")
+        
+        # 리밸런싱 전 계좌 상태 로깅 추가
+        pre_state = self._get_account_state()
+        self.logger.info(f"리밸런싱 전 계좌 상태: spot_balance={pre_state[0]}, stablecoin_balance={pre_state[1]}")
 
         if self.last_rebalance_time is not None:
             elapsed = current_time - self.last_rebalance_time
@@ -81,7 +85,7 @@ class AssetManager:
 
         self.last_rebalance_time = current_time
 
-        # 최종 계좌 상태 요약
+        # 리밸런싱 완료 후 계좌 상태 로깅
         current_state = self._get_account_state()
         if current_state != self.last_account_state:
             self.last_account_state = current_state

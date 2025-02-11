@@ -30,7 +30,8 @@ def determine_market_regime(price_data):
         else:
             regime = "sideways"
         
-        logger.info(f"시장 레짐 결정: {regime} (변화율: {change_percent:.2%})")
+        # 반복 호출 시 자주 기록되므로 DEBUG 레벨로 변경
+        logger.debug(f"시장 레짐 결정: {regime} (변화율: {change_percent:.2%})")
         return regime
     except Exception as e:
         logger.error(f"시장 레짐 결정 중 에러 발생: {e}", exc_info=True)
@@ -49,7 +50,8 @@ def filter_regime(price_data, target_regime="bullish"):
     """
     regime = determine_market_regime(price_data)
     match = (regime == target_regime)
-    logger.info(f"레짐 필터링: 목표={target_regime}, 결정={regime}, 일치 여부={match}")
+    # DEBUG 레벨로 기록하여 불필요한 INFO 로그를 줄임
+    logger.debug(f"레짐 필터링: 목표={target_regime}, 결정={regime}, 일치 여부={match}")
     return match
 
 def filter_by_confidence(hmm_model, df, feature_columns, threshold=0.8):
@@ -69,7 +71,8 @@ def filter_by_confidence(hmm_model, df, feature_columns, threshold=0.8):
         # 새로 추가한 predict_proba 메서드를 호출합니다.
         probabilities = hmm_model.predict_proba(df, feature_columns=feature_columns)
         confidence_flags = [max(probs) >= threshold for probs in probabilities]
-        logger.info(f"Computed confidence flags with threshold {threshold}.")
+        # DEBUG 레벨로 기록하여 로그 빈도를 낮춤
+        logger.debug(f"Computed confidence flags with threshold {threshold}.")
         return confidence_flags
     except Exception as e:
         logger.error(f"Error computing confidence flags: {e}", exc_info=True)

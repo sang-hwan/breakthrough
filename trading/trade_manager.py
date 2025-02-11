@@ -72,14 +72,29 @@ class TradeManager:
         current_price: float,
         highest_price: float,
         trailing_percentage: float,
-        volatility: float = 0.0
+        volatility: float = 0.0,
+        weekly_high: float = None,
+        weekly_volatility: float = None
     ) -> float:
+        """
+        단기(intraday) 및 주간 데이터를 모두 반영하여 동적 손절 라인을 조정합니다.
+        주간_high와 weekly_volatility가 제공되면, 주간 데이터 기반 스탑로스 값도 계산하여
+        두 값 중 보수적인(더 높은) 값을 선택합니다.
+        """
         if current_stop is None:
             current_stop = highest_price * (1 - trailing_percentage * (1 + volatility))
-        new_stop = highest_price * (1.0 - trailing_percentage * (1 + volatility))
-        adjusted_stop = new_stop if new_stop > current_stop and new_stop < current_price else current_stop
+        new_stop_intraday = highest_price * (1.0 - trailing_percentage * (1 + volatility))
+        if weekly_high is not None:
+            w_vol = weekly_volatility if weekly_volatility is not None else 0.0
+            new_stop_weekly = weekly_high * (1 - trailing_percentage * (1 + w_vol))
+            candidate_stop = max(new_stop_intraday, new_stop_weekly)
+        else:
+            candidate_stop = new_stop_intraday
+        adjusted_stop = candidate_stop if candidate_stop > current_stop and candidate_stop < current_price else current_stop
         logger.info(
             f"트레일링 스탑 조정: current_price={current_price:.2f}, highest_price={highest_price:.2f}, "
+            f"volatility={volatility:.4f}, trailing_percentage={trailing_percentage}, "
+            f"weekly_high={weekly_high}, weekly_volatility={weekly_volatility}, "
             f"조정 후 스탑={adjusted_stop:.2f}"
         )
         return adjusted_stop
@@ -130,15 +145,29 @@ class TradeManager:
         partial_exit_ratio: float = 0.5,
         partial_profit_ratio: float = 0.03,
         final_profit_ratio: float = 0.06,
-        final_exit_ratio: float = 1.0
+        final_exit_ratio: float = 1.0,
+        use_weekly_target: bool = False,
+        weekly_momentum: float = None,
+        weekly_adjustment_factor: float = 0.5
     ):
-        partial_target = entry_price * (1.0 + partial_profit_ratio)
-        final_target = entry_price * (1.0 + final_profit_ratio)
+        """
+        부분 청산 목표를 산출합니다.
+        use_weekly_target이 True이고 weekly_momentum이 제공되면, 주간 모멘텀에 따라 목표 수익률을 조정합니다.
+        """
+        if use_weekly_target and weekly_momentum is not None:
+            adjusted_partial = partial_profit_ratio + weekly_adjustment_factor * weekly_momentum
+            adjusted_final = final_profit_ratio + weekly_adjustment_factor * weekly_momentum
+        else:
+            adjusted_partial = partial_profit_ratio
+            adjusted_final = final_profit_ratio
+        partial_target = entry_price * (1.0 + adjusted_partial)
+        final_target = entry_price * (1.0 + adjusted_final)
         logger.info(
-            f"부분 청산 목표 계산: entry_price={entry_price}, partial_profit_ratio={partial_profit_ratio}, "
-            f"final_profit_ratio={final_profit_ratio}, 계산된 partial_target={partial_target:.2f}, final_target={final_target:.2f}"
+            f"부분 청산 목표 계산: entry_price={entry_price}, 기본 partial_profit_ratio={partial_profit_ratio}, "
+            f"final_profit_ratio={final_profit_ratio}, "
+            f"{'주간 목표 반영: weekly_momentum=' + str(weekly_momentum) if use_weekly_target else '기본 계산'}, "
+            f"계산된 partial_target={partial_target:.2f}, final_target={final_target:.2f}"
         )
-        logger.info(f"부분 청산 목표 계산 완료: partial_target = {partial_target:.2f}, final_target = {final_target:.2f}")
         return [(partial_target, partial_exit_ratio), (final_target, final_exit_ratio)]
 
     @staticmethod

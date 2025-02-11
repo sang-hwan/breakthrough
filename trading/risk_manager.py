@@ -5,7 +5,22 @@ logger = setup_logger(__name__)
 
 class RiskManager:
     @staticmethod
-    def compute_position_size(available_balance: float, risk_percentage: float, entry_price: float, stop_loss: float, fee_rate: float = 0.001, min_order_size: float = 1e-8, volatility: float = 0.0) -> float:
+    def compute_position_size(
+        available_balance: float,
+        risk_percentage: float,
+        entry_price: float,
+        stop_loss: float,
+        fee_rate: float = 0.001,
+        min_order_size: float = 1e-8,
+        volatility: float = 0.0,
+        weekly_volatility: float = None,
+        weekly_risk_coefficient: float = 1.0
+    ) -> float:
+        """
+        포지션 사이즈 산정 시 단기 변동성 외에도 주간 변동성(예: 주간 ATR, 주간 표준편차 등)을
+        반영하여 전체 자산의 1~2% 손실 기준에 맞도록 조정합니다.
+        주간_volatility가 제공되면, weekly_risk_coefficient에 따라 포지션 사이즈를 축소합니다.
+        """
         if stop_loss is None:
             stop_loss = entry_price * 0.98
         price_diff = abs(entry_price - stop_loss)
@@ -13,12 +28,20 @@ class RiskManager:
         fee_amount = entry_price * fee_rate
         loss_per_unit = price_diff + fee_amount
         computed_size = max_risk / loss_per_unit if loss_per_unit > 0 else 0.0
+
         if volatility > 0:
             computed_size /= (1 + volatility)
+        if weekly_volatility is not None:
+            computed_size /= (1 + weekly_risk_coefficient * weekly_volatility)
         computed_size = computed_size if computed_size >= min_order_size else 0.0
-        # 이 로그는 DEBUG 레벨이므로, 실제 출력은 INFO 이상만 나오므로
-        # AggregatingHandler 의 집계 대상이 되지 않습니다.
-        logger.debug(f"포지션 사이즈 계산: available_balance={available_balance}, risk_percentage={risk_percentage}, entry_price={entry_price}, stop_loss={stop_loss}, computed_size={computed_size}")
+
+        # 핵심 계산 결과를 INFO 레벨로 기록
+        logger.info(
+            f"포지션 사이즈 계산: available_balance={available_balance}, risk_percentage={risk_percentage}, "
+            f"entry_price={entry_price}, stop_loss={stop_loss}, fee_rate={fee_rate}, volatility={volatility}, "
+            f"weekly_volatility={weekly_volatility}, weekly_risk_coefficient={weekly_risk_coefficient}, "
+            f"computed_size={computed_size}"
+        )
         return computed_size
 
     @staticmethod
@@ -41,9 +64,12 @@ class RiskManager:
         return allocation
 
     @staticmethod
-    def attempt_scale_in_position(position, current_price: float, scale_in_threshold: float = 0.02, slippage_rate: float = 0.0, stop_loss: float = None, take_profit: float = None, entry_time=None, trade_type: str = "scale_in", base_multiplier: float = 1.0, dynamic_volatility: float = 1.0):
+    def attempt_scale_in_position(position, current_price: float, scale_in_threshold: float = 0.02, slippage_rate: float = 0.0,
+                                  stop_loss: float = None, take_profit: float = None, entry_time=None, trade_type: str = "scale_in",
+                                  base_multiplier: float = 1.0, dynamic_volatility: float = 1.0):
         if position is None or position.is_empty():
-            logger.debug("스케일인 시도: 포지션이 없거나 비어있음")
+            # 운영상 중요한 이벤트로 기록
+            logger.info("스케일인 시도: 포지션이 없거나 비어있음")
             return
         while position.executed_splits < position.total_splits:
             next_split = position.executed_splits
@@ -60,8 +86,6 @@ class RiskManager:
             position.add_execution(entry_price=executed_price, size=chunk_size, stop_loss=stop_loss, take_profit=take_profit, entry_time=entry_time, trade_type=trade_type)
             position.executed_splits += 1
             logger.debug(f"스케일인 실행: 실행 가격={executed_price:.2f}, 크기={chunk_size:.4f}, 새로운 실행 횟수={position.executed_splits}")
-        # 기존에 스케일인 시도 누적 집계 코드는 제거되었습니다.
-        # 대신, 각 스케일인 실행 결과에 대해 INFO 레벨의 로그를 남겨 AggregatingHandler 가 집계할 수 있도록 합니다.
         logger.info(f"포지션 {position.position_id} 스케일인 시도 완료: 총 실행 횟수={position.executed_splits}")
 
     @staticmethod
@@ -119,12 +143,73 @@ class RiskManager:
         if current_volatility is not None:
             if current_volatility > 0.05:
                 risk_params['risk_per_trade'] *= 0.8
-                # INFO 레벨 로그로 변경하여 AggregatingHandler 의 집계 대상이 됩니다.
                 logger.info(f"현재 변동성이 높음({current_volatility}), risk_per_trade 조정됨")
             else:
                 risk_params['risk_per_trade'] *= 1.1
                 logger.info(f"현재 변동성이 낮음({current_volatility}), risk_per_trade 조정됨")
 
-        # 최종 리스크 파라미터는 INFO 레벨로 기록되어 AggregatingHandler 에서 집계됩니다.
         logger.info(f"최종 리스크 파라미터: {risk_params}")
         return risk_params
+
+    @staticmethod
+    def adjust_trailing_stop(
+        current_stop: float,
+        current_price: float,
+        highest_price: float,
+        trailing_percentage: float,
+        volatility: float = 0.0,
+        weekly_high: float = None,
+        weekly_volatility: float = None
+    ) -> float:
+        """
+        단기(intraday) 및 주간 데이터를 모두 반영하여 동적 손절 라인을 조정합니다.
+        주간_high가 제공되면 주간 변동성을 반영한 스탑로스 값도 계산한 후, 두 값 중 보수적인(더 높은) 값을 선택합니다.
+        """
+        if current_stop is None:
+            current_stop = highest_price * (1 - trailing_percentage * (1 + volatility))
+        new_stop_intraday = highest_price * (1.0 - trailing_percentage * (1 + volatility))
+        if weekly_high is not None:
+            w_vol = weekly_volatility if weekly_volatility is not None else 0.0
+            new_stop_weekly = weekly_high * (1 - trailing_percentage * (1 + w_vol))
+            candidate_stop = max(new_stop_intraday, new_stop_weekly)
+        else:
+            candidate_stop = new_stop_intraday
+        adjusted_stop = candidate_stop if candidate_stop > current_stop and candidate_stop < current_price else current_stop
+        logger.info(
+            f"트레일링 스탑 조정: current_price={current_price:.2f}, highest_price={highest_price:.2f}, "
+            f"volatility={volatility:.4f}, trailing_percentage={trailing_percentage}, "
+            f"weekly_high={weekly_high}, weekly_volatility={weekly_volatility}, "
+            f"adjusted_stop={adjusted_stop:.2f}"
+        )
+        return adjusted_stop
+
+    @staticmethod
+    def calculate_partial_exit_targets(
+        entry_price: float,
+        partial_exit_ratio: float = 0.5,
+        partial_profit_ratio: float = 0.03,
+        final_profit_ratio: float = 0.06,
+        final_exit_ratio: float = 1.0,
+        use_weekly_target: bool = False,
+        weekly_momentum: float = None,
+        weekly_adjustment_factor: float = 0.5
+    ):
+        """
+        부분 청산 목표를 산출합니다.
+        use_weekly_target이 True이고 weekly_momentum이 제공되면, 주간 모멘텀에 따라 목표 수익률을 조정합니다.
+        """
+        if use_weekly_target and weekly_momentum is not None:
+            adjusted_partial = partial_profit_ratio + weekly_adjustment_factor * weekly_momentum
+            adjusted_final = final_profit_ratio + weekly_adjustment_factor * weekly_momentum
+        else:
+            adjusted_partial = partial_profit_ratio
+            adjusted_final = final_profit_ratio
+        partial_target = entry_price * (1.0 + adjusted_partial)
+        final_target = entry_price * (1.0 + adjusted_final)
+        logger.info(
+            f"부분 청산 목표 계산: entry_price={entry_price}, 기본 partial_profit_ratio={partial_profit_ratio}, "
+            f"final_profit_ratio={final_profit_ratio}, "
+            f"{'주간 목표 반영: weekly_momentum=' + str(weekly_momentum) if use_weekly_target else '기본 계산'}, "
+            f"계산된 partial_target={partial_target:.2f}, final_target={final_target:.2f}"
+        )
+        return [(partial_target, partial_exit_ratio), (final_target, final_exit_ratio)]

@@ -11,7 +11,9 @@ class TradingStrategies:
             "trend_following_strategy": None,
             "breakout_strategy": None,
             "counter_trend_strategy": None,
-            "high_frequency_strategy": None
+            "high_frequency_strategy": None,
+            "weekly_breakout_strategy": None,
+            "weekly_momentum_strategy": None
         }
 
     def _get_candle_pattern_signal(self, row):
@@ -200,3 +202,64 @@ class TradingStrategies:
             self.logger.debug(f"high_frequency_strategy: 신호 유지: '{final_signal}' at {current_time}")
         
         return final_signal
+
+    def weekly_breakout_strategy(self, data_weekly, current_time, breakout_threshold=0.01):
+        """
+        주간 돌파 전략:
+          - 전 주의 고점 및 저점을 기준으로 돌파 여부를 확인합니다.
+          - 전 주 고점 돌파 시 "enter_long", 전 주 저점 하락 시 "exit_all" 신호를 생성합니다.
+          - breakout_threshold 옵션으로 돌파 임계치를 조절할 수 있습니다.
+        """
+        try:
+            weekly_data = data_weekly.loc[data_weekly.index <= current_time]
+            if len(weekly_data) < 2:
+                self.logger.debug("주간 데이터 부족: 최소 2주 이상의 데이터 필요")
+                return "hold"
+            prev_week = weekly_data.iloc[-2]
+            current_week = weekly_data.iloc[-1]
+            prev_high = prev_week.get('high')
+            prev_low = prev_week.get('low')
+            current_close = current_week.get('close')
+            if current_close is None or prev_high is None or prev_low is None:
+                self.logger.error("주간 데이터에 필요한 컬럼 누락")
+                return "hold"
+            if current_close >= prev_high * (1 + breakout_threshold):
+                signal = "enter_long"
+            elif current_close <= prev_low * (1 - breakout_threshold):
+                signal = "exit_all"
+            else:
+                signal = "hold"
+            self.logger.info(f"weekly_breakout_strategy: prev_high={prev_high}, prev_low={prev_low}, current_close={current_close}, breakout_threshold={breakout_threshold}, signal={signal}")
+            return signal
+        except Exception as e:
+            self.logger.error(f"weekly_breakout_strategy 에러: {e}", exc_info=True)
+            return "hold"
+
+    def weekly_momentum_strategy(self, data_weekly, current_time, momentum_threshold=0.5):
+        """
+        주간 모멘텀 전략:
+          - 주간 인디케이터(예: 'weekly_momentum' 컬럼)를 활용하여 모멘텀 상태를 평가합니다.
+          - 상승 모멘텀이면 "enter_long", 하락 모멘텀이면 "exit_all" (그 외는 "hold") 신호를 생성합니다.
+          - momentum_threshold 옵션으로 임계치를 조절할 수 있습니다.
+        """
+        try:
+            weekly_data = data_weekly.loc[data_weekly.index <= current_time]
+            if weekly_data.empty:
+                self.logger.debug("주간 데이터가 없습니다.")
+                return "hold"
+            current_week = weekly_data.iloc[-1]
+            momentum = current_week.get('weekly_momentum')
+            if momentum is None:
+                self.logger.debug("weekly_momentum 컬럼이 누락되어 기본 'hold' 적용")
+                return "hold"
+            if momentum >= momentum_threshold:
+                signal = "enter_long"
+            elif momentum <= -momentum_threshold:
+                signal = "exit_all"
+            else:
+                signal = "hold"
+            self.logger.info(f"weekly_momentum_strategy: momentum={momentum}, momentum_threshold={momentum_threshold}, signal={signal}")
+            return signal
+        except Exception as e:
+            self.logger.error(f"weekly_momentum_strategy 에러: {e}", exc_info=True)
+            return "hold"

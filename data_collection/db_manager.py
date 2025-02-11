@@ -21,8 +21,8 @@ def insert_on_conflict(table, conn, keys, data_iter):
         sql = f"INSERT INTO {table.name} ({columns}) VALUES %s ON CONFLICT (timestamp) DO NOTHING"
         execute_values(cur, sql, values)
         cur.close()
-        # 각 chunk 삽입이 완료되면 INFO 레벨 로그로 기록하여 AggregatingHandler 가 집계하도록 함.
-        logger.info(f"[DB] insert_on_conflict: {len(values)} records processed for table {table.name}")
+        # 각 청크 삽입이 완료되면 DEBUG 레벨 로그로 기록하여, 대용량 데이터 처리 시 불필요한 INFO 로그를 줄임.
+        logger.debug(f"[DB] insert_on_conflict: {len(values)} records processed for table {table.name}")
     except Exception as e:
         logger.error(f"insert_on_conflict 에러: {e}", exc_info=True)
 
@@ -62,7 +62,7 @@ def insert_ohlcv_records(df: pd.DataFrame, table_name: str = 'ohlcv_data', confl
     try:
         df = df.copy()
         df.reset_index(inplace=True)
-        # 대용량 데이터를 chunk 단위로 저장
+        # 대용량 데이터를 chunk 단위로 저장 (각 청크 관련 로그는 insert_on_conflict에서 DEBUG 레벨로 처리됨)
         df.to_sql(
             table_name,
             engine,
