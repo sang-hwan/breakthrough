@@ -71,7 +71,7 @@ def insert_ohlcv_records(df: pd.DataFrame, table_name: str = 'ohlcv_data', confl
             method=insert_on_conflict,
             chunksize=chunk_size
         )
-        logger.info(f"데이터 저장 완료: {table_name} (총 {len(df)} 행)")
+        logger.debug(f"데이터 저장 완료: {table_name} (총 {len(df)} 행)")
     except Exception as e:
         logger.error(f"데이터 저장 에러 ({table_name}): {e}", exc_info=True)
 
@@ -106,7 +106,7 @@ def fetch_ohlcv_records(table_name: str = 'ohlcv_data', start_date: str = None, 
     try:
         df = pd.read_sql(query, engine, params=params, parse_dates=['timestamp'])
         df.set_index('timestamp', inplace=True)
-        logger.info(f"데이터 로드 완료: {table_name} (총 {len(df)} 행)")
+        logger.debug(f"데이터 로드 완료: {table_name} (총 {len(df)} 행)")
         return df
     except Exception as e:
         logger.error(f"데이터 로드 에러 ({table_name}): {e}", exc_info=True)

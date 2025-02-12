@@ -45,7 +45,7 @@ def run_sensitivity_analysis(param_settings,
         dpm = DynamicParamManager()
         base_dynamic_params = dpm.get_default_params()
 
-    logger.info(f"Starting sensitivity analysis over assets {assets} and periods {periods}")
+    logger.debug(f"Starting sensitivity analysis over assets {assets} and periods {periods}")
     
     results = {}
     # param_settings는 반드시 dict 형식이어야 합니다.
@@ -53,7 +53,7 @@ def run_sensitivity_analysis(param_settings,
         raise ValueError("param_settings must be a dict of {parameter_name: [values]} for multi-parameter analysis.")
 
     for param_name, param_range in param_settings.items():
-        logger.info(f"Analyzing parameter: {param_name}")
+        logger.debug(f"Analyzing parameter: {param_name}")
         results[param_name] = {}
         for val in param_range:
             dynamic_params = base_dynamic_params.copy()
@@ -78,7 +78,7 @@ def run_sensitivity_analysis(param_settings,
                         trades, _ = bt.run_backtest(dynamic_params=dynamic_params)
                         perf = compute_performance(trades)
                         run_metrics.append(perf)
-                        logger.info(f"{param_name} = {val} | Asset: {asset} | Period: {s_date} ~ {e_date} => "
+                        logger.debug(f"{param_name} = {val} | Asset: {asset} | Period: {s_date} ~ {e_date} => "
                                     f"ROI: {perf.get('roi', 0):.2f}%, Sharpe: {perf.get('sharpe_ratio', 0):.2f}, "
                                     f"Max Drawdown: {perf.get('max_drawdown', 0):.2f}, Trade Count: {perf.get('trade_count', 0)}")
                     except Exception as e:
@@ -90,7 +90,7 @@ def run_sensitivity_analysis(param_settings,
                 for key in metric_keys:
                     aggregated[key] = np.mean([run.get(key, 0) for run in run_metrics])
                 results[param_name][val] = aggregated
-                logger.info(f"Aggregated result for {param_name} = {val}: {aggregated}")
+                logger.debug(f"Aggregated result for {param_name} = {val}: {aggregated}")
             else:
                 results[param_name][val] = None
                 logger.warning(f"No successful runs for {param_name} = {val}")

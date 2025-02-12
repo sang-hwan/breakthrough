@@ -49,7 +49,7 @@ class DynamicParamManager:
             "weekly_momentum_threshold"
         ]
         self.logger = setup_logger(__name__)
-        self.logger.info("DynamicParamManager 초기화 완료 (레짐 및 주간 전략 적용).")
+        self.logger.debug("DynamicParamManager 초기화 완료 (레짐 및 주간 전략 적용).")
         self._initialized = True
 
     def get_default_params(self) -> dict:
@@ -82,36 +82,36 @@ class DynamicParamManager:
             factor = 1 + 0.5 * ((volatility - base_volatility) / base_volatility)
             dynamic_params["atr_multiplier"] *= factor
             dynamic_params["volatility_multiplier"] = 1.2  # 고변동 시장에서는 보수적 접근
-            self.logger.info(f"높은 단기 변동성 감지 (volatility={volatility}): atr_multiplier 조정 계수={factor:.2f}")
+            self.logger.debug(f"높은 단기 변동성 감지 (volatility={volatility}): atr_multiplier 조정 계수={factor:.2f}")
         else:
             factor = 1 - 0.3 * ((base_volatility - volatility) / base_volatility)
             dynamic_params["atr_multiplier"] *= factor
             dynamic_params["volatility_multiplier"] = 1.0
-            self.logger.info(f"낮은 단기 변동성 감지 (volatility={volatility}): atr_multiplier 조정 계수={factor:.2f}")
+            self.logger.debug(f"낮은 단기 변동성 감지 (volatility={volatility}): atr_multiplier 조정 계수={factor:.2f}")
 
         # 주간 변동성 조정
         if weekly_volatility is not None:
             if weekly_volatility > 0.07:
                 dynamic_params["weekly_risk_coefficient"] *= 1.2
-                self.logger.info(f"높은 주간 변동성 감지 (weekly_volatility={weekly_volatility}): weekly_risk_coefficient 상향 조정.")
+                self.logger.debug(f"높은 주간 변동성 감지 (weekly_volatility={weekly_volatility}): weekly_risk_coefficient 상향 조정.")
             else:
                 dynamic_params["weekly_risk_coefficient"] *= 0.9
-                self.logger.info(f"낮은 주간 변동성 감지 (weekly_volatility={weekly_volatility}): weekly_risk_coefficient 하향 조정.")
+                self.logger.debug(f"낮은 주간 변동성 감지 (weekly_volatility={weekly_volatility}): weekly_risk_coefficient 하향 조정.")
 
         # 추세 조정: trend와 trend_strength를 모두 고려
         if trend_strength is not None:
             # trend_strength가 양수이면 상승 추세, 음수이면 하락 추세
             dynamic_params["profit_ratio"] *= (1 + trend_strength)
-            self.logger.info(f"추세 강도 반영: trend_strength={trend_strength}, profit_ratio 조정됨.")
+            self.logger.debug(f"추세 강도 반영: trend_strength={trend_strength}, profit_ratio 조정됨.")
         else:
             if trend == "bullish":
                 dynamic_params["profit_ratio"] *= 1.05
-                self.logger.info("Bullish 추세 감지: profit_ratio 상향 조정.")
+                self.logger.debug("Bullish 추세 감지: profit_ratio 상향 조정.")
             elif trend == "bearish":
                 dynamic_params["profit_ratio"] *= 0.95
-                self.logger.info("Bearish 추세 감지: profit_ratio 하향 조정.")
+                self.logger.debug("Bearish 추세 감지: profit_ratio 하향 조정.")
             else:
-                self.logger.info("중립 추세: profit_ratio 변경 없음.")
+                self.logger.debug("중립 추세: profit_ratio 변경 없음.")
 
         # 거래량(volume)에 따른 risk_per_trade 조정
         volume_threshold = 1000  # 기준 거래량
@@ -120,15 +120,15 @@ class DynamicParamManager:
                 # 예: volume 500이면 risk_per_trade를 500/1000 = 0.5배 적용
                 factor = volume / volume_threshold
                 dynamic_params["risk_per_trade"] *= factor
-                self.logger.info(f"낮은 거래량 감지 (volume={volume}): risk_per_trade 축소, 계수={factor:.2f}.")
+                self.logger.debug(f"낮은 거래량 감지 (volume={volume}): risk_per_trade 축소, 계수={factor:.2f}.")
             else:
                 # volume이 높으면 소폭 상향
                 dynamic_params["risk_per_trade"] *= 1.05
-                self.logger.info(f"높은 거래량 감지 (volume={volume}): risk_per_trade 소폭 상향 조정.")
+                self.logger.debug(f"높은 거래량 감지 (volume={volume}): risk_per_trade 소폭 상향 조정.")
 
-        self.logger.info(f"Market data: {market_data}")
-        self.logger.info(f"업데이트된 동적 파라미터: {dynamic_params}")
-        self.logger.info("동적 파라미터 업데이트 완료.")
+        self.logger.debug(f"Market data: {market_data}")
+        self.logger.debug(f"업데이트된 동적 파라미터: {dynamic_params}")
+        self.logger.debug("동적 파라미터 업데이트 완료.")
         return dynamic_params
 
     def merge_params(self, optimized_params: dict) -> dict:
@@ -154,5 +154,5 @@ class DynamicParamManager:
         for key, opt_value in optimized_params.items():
             if key not in self.sensitivity_params:
                 merged[key] = opt_value
-        self.logger.info(f"병합된 동적 파라미터: {merged}")
+        self.logger.debug(f"병합된 동적 파라미터: {merged}")
         return merged

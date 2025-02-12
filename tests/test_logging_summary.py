@@ -12,7 +12,6 @@ def test_logging_summary_output():
     test_logger.setLevel(logging.DEBUG)
     for h in test_logger.handlers[:]:
         test_logger.removeHandler(h)
-    test_logger.propagate = False
 
     # 새 스트림 핸들러 추가
     stream_handler = logging.StreamHandler(log_stream)

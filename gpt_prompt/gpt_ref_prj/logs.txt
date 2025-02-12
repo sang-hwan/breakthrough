@@ -7,106 +7,37 @@ import atexit
 
 class AggregatingHandler(logging.Handler):
     """
-    AggregatingHandler는 각 로그 레코드를 (logger 이름, 파일명, 함수명) 별로 집계합니다.
-    지정된 임계치(threshold)만큼 로그가 누적되면, 해당 모듈/함수에서 발생한 로그의 특성을 요약하여
-    다음과 같은 형식으로 출력합니다.
+    AggregatingHandler는 각 로그 레코드를 (logger 이름, 파일명, 함수명) 단위로 집계합니다.
     
-    예시)
-      INFO:trading.strategies:strategies.py:high_frequency_strategy: high_frequency_strategy 집계: 최근 2000회 로그 발생, 마지막 메시지: hold at 2021-04-02 04:00:00
-     
-    모듈마다 로그 발생량이 다를 수 있으므로, 생성 시 module_name을 전달하면 
-    환경변수 AGG_THRESHOLD_<MODULE_NAME> (대문자) 값을 임계치로 사용하며,
-    만약 로그 레코드에 sensitivity_analysis 속성이 True로 설정되면, 
-    환경변수 AGG_THRESHOLD_SENSITIVITY 값을 별도로 적용할 수 있습니다.
+    실행 시작부터 종료 시까지 누적한 모든 (파일명: 함수명) 단위의 로그 발생 건수를
+    마지막에 한 번에 출력합니다.
+    
+    (주의: 로그 파일은 회전(backupCount=7)되어 중간 로그는 사라질 수 있으나,
+     이 집계는 메모리 내에서 실행 전체의 로그 발생 건수를 누적하므로 실행 종료 시점의
+     누적 결과를 확인할 수 있습니다.)
     """
-    def __init__(self, threshold=None, level=logging.INFO, module_name=None, sensitivity_threshold=None):
-        # 먼저, threshold가 제공되지 않은 경우 AGG_THRESHOLD_GLOBAL를 사용
-        if threshold is None:
-            global_threshold_str = os.getenv("AGG_THRESHOLD_GLOBAL")
-            if global_threshold_str and global_threshold_str.isdigit():
-                threshold = int(global_threshold_str)
-            else:
-                threshold = 2000  # fallback 기본값
-        # module_name이 제공되면 해당 모듈의 전용 임계치 확인 (우선 적용)
-        if module_name:
-            env_var = f"AGG_THRESHOLD_{module_name.upper()}"
-            module_threshold_str = os.getenv(env_var)
-            if module_threshold_str and module_threshold_str.isdigit():
-                threshold = int(module_threshold_str)
+    def __init__(self, level=logging.DEBUG):  # 기본 레벨을 DEBUG로 설정
         super().__init__(level)
-        self.threshold = threshold
-
-        # sensitivity_threshold: sensitivity_analysis 플래그가 있는 로그에 사용할 임계치
-        if sensitivity_threshold is None:
-            sens_str = os.getenv("AGG_THRESHOLD_SENSITIVITY")
-            if sens_str and sens_str.isdigit():
-                sensitivity_threshold = int(sens_str)
-            else:
-                sensitivity_threshold = threshold
-        self.sensitivity_threshold = sensitivity_threshold
-
-        # 집계 딕셔너리 (주기별 reset되는 count)
-        self.aggregation = {}
-        # 누적 집계 딕셔너리 (전체 로그 발생 건수를 유지)
+        # 누적 집계: 실행 시작부터 종료까지의 전체 로그 발생 건수를 누적
         self.total_aggregation = {}
-
-        # 프로그램 종료 시 자동으로 누적 집계 요약을 출력하도록 atexit 등록
+        # 프로그램 종료 시 누적 집계 요약을 출력하도록 flush_aggregation_summary()를 atexit에 등록
         atexit.register(self.flush_aggregation_summary)
 
     def emit(self, record):
         try:
-            import os
             filename = os.path.basename(record.pathname)
             key = (record.name, filename, record.funcName)
-            if getattr(record, "sensitivity_analysis", False):
-                current_threshold = self.sensitivity_threshold
-            else:
-                current_threshold = self.threshold
-
-            # 주기별 집계: 해당 키가 없으면 새로 생성 (reset용)
-            if key not in self.aggregation:
-                self.aggregation[key] = {"count": 0, "last_message": None, "last_time": None}
-            agg = self.aggregation[key]
-            agg["count"] += 1
-            agg["last_message"] = record.getMessage()
-            agg["last_time"] = datetime.fromtimestamp(record.created).strftime("%Y-%m-%d %H:%M:%S")
-            
-            # 누적 집계: 해당 키가 없으면 새로 생성 (누적용)
             if key not in self.total_aggregation:
-                self.total_aggregation[key] = {"count": 0, "last_message": None, "last_time": None}
+                self.total_aggregation[key] = {"count": 0}
             total_agg = self.total_aggregation[key]
             total_agg["count"] += 1
-            total_agg["last_message"] = record.getMessage()
-            total_agg["last_time"] = datetime.fromtimestamp(record.created).strftime("%Y-%m-%d %H:%M:%S")
-            
-            if agg["count"] >= current_threshold:
-                summary_msg = (
-                    f"{key[2]} 집계: 최근 {agg['count']}회 로그 발생, 마지막 메시지: {agg['last_message']} at {agg['last_time']}"
-                )
-                summary_record = self.make_summary_record(record, summary_msg)
-                logging.getLogger(record.name).handle(summary_record)
-                # reset 주기별 카운트만 (누적 집계는 유지)
-                self.aggregation[key]["count"] = 0
         except Exception:
             self.handleError(record)
 
-    def make_summary_record(self, original_record, summary):
-        summary_record = logging.LogRecord(
-            name=original_record.name,
-            level=original_record.levelno,
-            pathname=original_record.pathname,
-            lineno=original_record.lineno,
-            msg=summary,
-            args=original_record.args,
-            exc_info=original_record.exc_info
-        )
-        return summary_record
-
     def flush_aggregation_summary(self):
         """
-        누적 집계된 로그 출현 빈도를 요약하여 출력합니다.
-        (예: 파일명:함수명 - 총 발생 건수, 마지막 메시지 및 발생 시각)
-        이 메서드는 run_parameter_analysis.py와 run_strategy_performance.py 등의 실행 완료 시 자동 호출됩니다.
+        실행 시작부터 종료 시까지 누적된 (파일명: 함수명) 단위의 로그 발생 건수를
+        한 번에 출력합니다.
         """
         if not self.total_aggregation:
             return
@@ -114,13 +45,11 @@ class AggregatingHandler(logging.Handler):
         for key, agg in self.total_aggregation.items():
             logger_name, filename, funcname = key
             count = agg.get("count", 0)
-            last_message = agg.get("last_message", "")
-            last_time = agg.get("last_time", "")
             summary_lines.append(
-                f"{filename}:{funcname} (logger: {logger_name}) - 총 {count}회 발생, 마지막 메시지: {last_message} at {last_time}"
+                f"{filename}:{funcname} (logger: {logger_name}) - 총 {count}회 발생"
             )
         summary = "\n".join(summary_lines)
-        logging.getLogger().info("최종 누적 로그 집계 요약:\n" + summary)
+        logging.getLogger().info("전체 누적 로그 집계:\n" + summary)
 
 ---
 
@@ -176,7 +105,7 @@ def generate_final_report(performance_data, symbol=None):
     report_lines.append("=========================================")
     
     report_str = "\n".join(report_lines)
-    logger.info(report_str)
+    logger.debug(report_str)
 
 def generate_parameter_sensitivity_report(param_name, results):
     """
@@ -212,7 +141,7 @@ def generate_parameter_sensitivity_report(param_name, results):
     report_lines.append("==========================================")
     
     report_str = "\n".join(report_lines)
-    logger.info(report_str)
+    logger.debug(report_str)
 
 ---
 
@@ -227,11 +156,20 @@ load_dotenv()
 
 # 환경 변수 읽기 (프로젝트 전체에 통일된 로그 레벨)
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development").lower()
+
+# LOG_LEVEL은 파일 저장용 기본 레벨 (예: INFO)
 _LOG_LEVEL_FROM_ENV = os.getenv("LOG_LEVEL", None)
 if _LOG_LEVEL_FROM_ENV:
-    level = getattr(logging, _LOG_LEVEL_FROM_ENV.upper(), logging.INFO)
+    level = getattr(logging, _LOG_LEVEL_FROM_ENV.upper(), logging.DEBUG)
 else:
-    level = logging.INFO
+    level = logging.DEBUG
+
+# 파일에 저장할 로그는 INFO 레벨 이상의 메시지만 기록하도록 고정
+file_log_level = logging.INFO
+
+# 콘솔 출력용 상세 로그 레벨 (예: DEBUG)
+LOG_DETAIL_LEVEL = os.getenv("LOG_DETAIL_LEVEL", "DEBUG")
+detail_level = getattr(logging, LOG_DETAIL_LEVEL.upper(), logging.DEBUG)
 
 # 기본 로그 파일 이름 (최초 로그는 이 파일에 기록됨)
 BASE_LOG_FILE = os.path.join("logs", "project.log")
@@ -306,6 +244,7 @@ def initialize_root_logger():
     root_logger = logging.getLogger()
     root_logger.setLevel(level)
     
+    # 파일 핸들러: 파일에는 INFO 레벨 이상의 로그만 기록
     if not any(isinstance(handler, LineRotatingFileHandler) for handler in root_logger.handlers):
         file_handler = LineRotatingFileHandler(
             base_filename=BASE_LOG_FILE,
@@ -314,39 +253,26 @@ def initialize_root_logger():
             encoding="utf-8",
             delay=True
         )
-        file_handler.setLevel(level)
+        file_handler.setLevel(file_log_level)
         formatter = OneLineFormatter('[%(asctime)s] %(levelname)s:%(name)s:%(filename)s:%(funcName)s: %(message)s')
         file_handler.setFormatter(formatter)
         root_logger.addHandler(file_handler)
     
+    # 콘솔 핸들러: 콘솔에는 LOG_DETAIL_LEVEL (예: DEBUG) 이상의 로그를 출력
     if not any(isinstance(handler, logging.StreamHandler) for handler in root_logger.handlers):
         console_handler = logging.StreamHandler()
-        console_handler.setLevel(level)
+        console_handler.setLevel(detail_level)
         console_formatter = OneLineFormatter('[%(asctime)s] %(levelname)s:%(name)s:%(filename)s:%(funcName)s: %(message)s')
         console_handler.setFormatter(console_formatter)
         root_logger.addHandler(console_handler)
     
     if AggregatingHandler is not None and not any(isinstance(handler, AggregatingHandler) for handler in root_logger.handlers):
-        global_threshold_str = os.getenv("AGG_THRESHOLD_GLOBAL")
-        try:
-            global_threshold = int(global_threshold_str) if global_threshold_str and global_threshold_str.isdigit() else 2000
-        except Exception:
-            global_threshold = 2000
-        aggregator_handler = AggregatingHandler(threshold=global_threshold, level=level)
+        # 단일 AggregatingHandler를 추가하여 모든 로그를 중앙에서 집계
+        aggregator_handler = AggregatingHandler(level=file_log_level)
         aggregator_handler.addFilter(lambda record: not getattr(record, '_is_summary', False))
         aggregator_formatter = OneLineFormatter('[%(asctime)s] %(levelname)s:%(name)s:%(filename)s:%(funcName)s: %(message)s')
         aggregator_handler.setFormatter(aggregator_formatter)
         root_logger.addHandler(aggregator_handler)
-    
-    # 민감도 분석 관련 로그 집계를 위한 sensitivity AggregatingHandler 추가
-    sensitivity_threshold_str = os.getenv("AGG_THRESHOLD_SENSITIVITY")
-    if sensitivity_threshold_str and sensitivity_threshold_str.isdigit():
-        sensitivity_threshold = int(sensitivity_threshold_str)
-        sensitivity_handler = AggregatingHandler(threshold=global_threshold, level=level, sensitivity_threshold=sensitivity_threshold)
-        sensitivity_handler.addFilter(lambda record: getattr(record, "sensitivity_analysis", False))
-        sensitivity_formatter = OneLineFormatter('[%(asctime)s] %(levelname)s:%(name)s:%(filename)s:%(funcName)s: %(message)s')
-        sensitivity_handler.setFormatter(sensitivity_formatter)
-        root_logger.addHandler(sensitivity_handler)
     
 initialize_root_logger()
 
@@ -354,21 +280,14 @@ def setup_logger(module_name: str) -> logging.Logger:
     logger = logging.getLogger(module_name)
     logger.setLevel(level)
     
-    mod_key = module_name.split('.')[-1].upper()
-    env_threshold = os.getenv(f"AGG_THRESHOLD_{mod_key}")
-    if env_threshold is not None and env_threshold.isdigit():
-        threshold = int(env_threshold)
-        try:
-            agg_handler = AggregatingHandler(threshold=threshold, level=level, module_name=mod_key)
-            agg_handler.addFilter(lambda record: not getattr(record, '_is_summary', False))
-            formatter = OneLineFormatter('[%(asctime)s] %(levelname)s:%(name)s:%(filename)s:%(funcName)s: %(message)s')
-            agg_handler.setFormatter(formatter)
-            logger.addHandler(agg_handler)
-            logger.propagate = False
-        except Exception as e:
-            logger.error("모듈별 AggregatingHandler 추가 실패: %s", e)
-    else:
-        logger.propagate = True
+    try:
+        agg_handler = AggregatingHandler(level=file_log_level)
+        agg_handler.addFilter(lambda record: not getattr(record, '_is_summary', False))
+        formatter = OneLineFormatter('[%(asctime)s] %(levelname)s:%(name)s:%(filename)s:%(funcName)s: %(message)s')
+        agg_handler.setFormatter(formatter)
+        logger.addHandler(agg_handler)
+    except Exception as e:
+        logger.error("모듈별 AggregatingHandler 추가 실패: %s", e)
     return logger
 
 ---
@@ -404,7 +323,7 @@ class LoggingUtil:
         :param event_message: 기록할 이벤트 메시지
         """
         with self.lock:
-            self.logger.info(f"[{self.module_name}] Event: {event_message}")
+            self.logger.debug(f"[{self.module_name}] Event: {event_message}")
 
     def log_summary(self) -> None:
         """
@@ -412,7 +331,7 @@ class LoggingUtil:
         필요 시 강제로 요약 로그를 남길 수 있도록 INFO 레벨 로그를 기록합니다.
         """
         with self.lock:
-            self.logger.info(f"[{self.module_name}] Summary requested.")
+            self.logger.debug(f"[{self.module_name}] Summary requested.")
 
     @staticmethod
     def clear_log_files():

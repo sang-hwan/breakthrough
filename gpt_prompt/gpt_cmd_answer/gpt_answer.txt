@@ -1,3 +1,97 @@
+[프로젝트 파일 목록]
+**project_root**
+- .env
+- requirements.txt
+- run_parameter_analysis.py
+- run_strategy_performance.py
+
+**backtesting**
+- backtesting/backtester.py
+- backtesting/performance.py
+
+**data_collection**
+- data_collection/db_config.py
+- data_collection/db_manager.py
+- data_collection/ohlcv_aggregator.py
+- data_collection/ohlcv_fetcher.py
+- data_collection/ohlcv_pipeline.py
+
+**logs**
+- logs/aggregating_handler.py
+- logs/final_report.py
+- logs/logger_config.py
+- logs/logging_util.py
+
+**markets_analysis**
+- markets_analysis/hmm_model.py
+- markets_analysis/regime_filter.py
+
+**strategy_tuning**
+- strategy_tuning/dynamic_param_manager.py
+- strategy_tuning/optimizer.py
+- strategy_tuning/parameter_analysis.py
+
+**tests**
+- tests/conftest.py
+- tests/test_auto_optimization_trigger.py
+- tests/test_handle_weekly_end.py
+- tests/test_logging_summary.py
+- tests/test_ohlcv_aggregator.py
+- tests/test_performance_report.py
+- tests/test_weekly_strategies.py
+
+**trading**
+- trading/account.py
+- trading/asset_manager.py
+- trading/ensemble_manager.py
+- trading/indicators.py
+- trading/positions.py
+- trading/risk_manager.py
+- trading/strategies.py
+- trading/trade_manager.py
+
+
+
+[로그 개선]
+1. 파일별 집계 모듈 (예: file_aggregation.py)
+   - 각 파일에 대한 로그 발생 건수를 누적 및 관리
+   - 파일별 임계치 설정과 요약 로직을 처리하는 클래스/함수 포함
+
+2. 함수별 집계 모듈 (예: function_aggregation.py)
+   - 각 파일 내 함수의 호출 빈도 및 로그 정보 관리
+   - 함수별 임계치나 요약 정책을 독립적으로 처리하는 클래스/함수 포함
+
+3. 요약 및 집계 조정 모듈 (예: summary_aggregator.py)
+   - 집계된 데이터를 분석하여 최종 요약 메시지를 생성
+   - “파일별 총 n회 호출, 주요 함수별 m회 호출” 등 종합 리포트 생성 기능 포함
+
+1. 모듈 분리
+   - 파일별 집계를 담당하는 모듈(file_aggregation.py)
+   - 함수별 집계를 담당하는 모듈(function_aggregation.py)
+   - 전체 요약 및 집계를 담당하는 모듈(summary_aggregator.py)
+   - logger_config.py에서는 위 모듈들을 import하여 설정만 담당
+
+2. 로그 파일 분리
+   - 일반 로그는 project.log 등에 기록
+   - 파일별, 함수별 집계 결과를 각각 별도 파일(예: aggregated_file.log, aggregated_function.log)에 기록
+   - 전체 요약 정보를 별도 파일(예: aggregated_summary.log)에 기록하여 집계 내용을 정리
+
+3. 환경변수 활용
+   - AGG_THRESHOLD_FILE, AGG_THRESHOLD_FUNCTION 등 임계치 관련 환경변수를 사용
+   - .env 파일 또는 시스템 환경변수를 통해 유연하게 조정 가능
+
+4. 모듈별 설정 및 확장성
+   - setup_logger() 함수를 통해 모듈 이름에 따라 집계 핸들러를 동적으로 추가
+   - 모듈별 로거에 임계치 등을 적용하여 특정 모듈만 별도로 집계 가능
+   - 향후 집계 방식 변경이나 새로운 로깅 요구사항이 생겨도 각 모듈을 독립적으로 수정 가능
+
+5. 유지보수성 및 가독성 향상
+   - 파일별, 함수별 집계 로직을 분리하여 코드 복잡도를 낮춤
+   - logger_config.py는 설정 등록만 담당하여 로깅 관련 책임을 명확히 분리
+   - 문제 발생 시 집계 기능, 일반 로그 기능을 각각 쉽게 디버깅 가능
+
+
+
 [프로젝트 리팩토링 계획]
 **모듈별 책임 분리 및 인터페이스 개선**
 1) **모듈 경계 재정의**  

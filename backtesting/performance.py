@@ -53,7 +53,7 @@ def calculate_monthly_performance(trades, weekly_data=None):
         "monthly": monthly_perf,
         "weekly": weekly_metrics
     }
-    logger.info(f"[Performance] 월별 성과 계산 완료: {result}")
+    logger.debug(f"[Performance] 월별 성과 계산 완료: {result}")
     return result
 
 def calculate_overall_performance(trades):
@@ -88,7 +88,7 @@ def calculate_overall_performance(trades):
         trade_pnls.append(pnl)
     
     if not dates:
-        logger.info("[Performance] 거래 데이터 없음: 기본 성과 반환")
+        logger.debug("[Performance] 거래 데이터 없음: 기본 성과 반환")
         return {
             "roi": roi,
             "cumulative_return": cumulative_return,
@@ -178,7 +178,7 @@ def calculate_overall_performance(trades):
         "max_consecutive_losses": max_consecutive_losses
     }
     
-    logger.info(f"[Performance] 전체 성과 계산 완료: ROI={roi:.2f}%, Trade Count={trade_count}, Annualized Return={annualized_return*100:.2f}%, Sharpe Ratio={sharpe_ratio:.2f}, Max Drawdown={max_drawdown:.2f}")
+    logger.debug(f"[Performance] 전체 성과 계산 완료: ROI={roi:.2f}%, Trade Count={trade_count}, Annualized Return={annualized_return*100:.2f}%, Sharpe Ratio={sharpe_ratio:.2f}, Max Drawdown={max_drawdown:.2f}")
     return overall_performance
 
 def compute_performance(trades, weekly_data=None):
@@ -193,5 +193,5 @@ def compute_performance(trades, weekly_data=None):
         "monthly": monthly["monthly"],
         "weekly": monthly["weekly"]
     }
-    logger.info(f"[Performance] 최종 성과 종합 계산 완료: {performance_report}")
+    logger.debug(f"[Performance] 최종 성과 종합 계산 완료: {performance_report}")
     return performance_report

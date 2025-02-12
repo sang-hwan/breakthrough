@@ -16,17 +16,17 @@ def run_strategy_performance():
     LoggingUtil.clear_log_files()
 
     logger = setup_logger(__name__)
-    logger.info("프로젝트 전체 테스트 실행을 시작합니다.")
+    logger.debug("프로젝트 전체 테스트 실행을 시작합니다.")
     
     # 3. 파라미터 최적화 (Walk-Forward 방식)
-    logger.info("Walk-Forward 방식의 파라미터 최적화를 시작합니다...")
+    logger.debug("Walk-Forward 방식의 파라미터 최적화를 시작합니다...")
     optimizer = DynamicParameterOptimizer(n_trials=10)
     best_trial = optimizer.optimize()
     
     # 4. 기본 파라미터와 최적화된 파라미터 병합
     dynamic_manager = DynamicParamManager()
     best_params = dynamic_manager.merge_params(best_trial.params)
-    logger.info("최적의 파라미터 도출 완료: %s", best_params)
+    logger.debug("최적의 파라미터 도출 완료: %s", best_params)
     
     # 5. 각 종목별 백테스트 실행 및 성과 계산
     start_date = "2018-06-01"
@@ -35,7 +35,7 @@ def run_strategy_performance():
     symbols = ["BTC/USDT", "ETH/USDT", "XRP/USDT"]
     
     for symbol in symbols:
-        logger.info("심볼 %s 백테스트 시작", symbol)
+        logger.debug("심볼 %s 백테스트 시작", symbol)
         try:
             symbol_key = symbol.replace("/", "").lower()
             # use_weekly=True로 주간 데이터도 함께 로드하여 통합 환경을 구성함.
@@ -55,7 +55,7 @@ def run_strategy_performance():
         
         try:
             trades, trade_logs = backtester.run_backtest(dynamic_params=best_params)
-            logger.info("심볼 %s 백테스트 완료: 총 거래 횟수 = %d", symbol, len(trades))
+            logger.debug("심볼 %s 백테스트 완료: 총 거래 횟수 = %d", symbol, len(trades))
         except Exception as e:
             logger.error("심볼 %s 백테스트 실행 중 에러: %s", symbol, e)
             continue
@@ -63,12 +63,12 @@ def run_strategy_performance():
         if trades:
             # 주간 전략 성과 분석 반영: 주간 데이터(backtester.df_weekly)를 함께 전달
             performance_data = compute_performance(trades, weekly_data=backtester.df_weekly)
-            logger.info("심볼 %s 성과 보고 생성", symbol)
+            logger.debug("심볼 %s 성과 보고 생성", symbol)
             generate_final_report(performance_data, symbol=symbol)
         else:
-            logger.info("심볼 %s 백테스트 결과, 생성된 거래 내역이 없습니다.", symbol)
+            logger.debug("심볼 %s 백테스트 결과, 생성된 거래 내역이 없습니다.", symbol)
     
-    logger.info("전체 프로젝트 테스트 실행 완료.")
+    logger.debug("전체 프로젝트 테스트 실행 완료.")
 
 if __name__ == '__main__':
     run_strategy_performance()

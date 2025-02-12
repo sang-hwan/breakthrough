@@ -30,7 +30,7 @@ def collect_and_store_ohlcv_data(
     """
     for symbol in symbols:
         for tf in timeframes:
-            logger.info(f"[OHLCV PIPELINE] Fetching {symbol} - {tf} data...")
+            logger.debug(f"[OHLCV PIPELINE] Fetching {symbol} - {tf} data...")
             try:
                 if use_historical:
                     if not start_date:
@@ -56,7 +56,7 @@ def collect_and_store_ohlcv_data(
                 logger.error(f"[OHLCV PIPELINE] 데이터 수집 에러 ({symbol} - {tf}): {e}", exc_info=True)
                 continue
 
-            logger.info(f"[OHLCV PIPELINE] -> Total Rows Fetched for {symbol} - {tf}: {len(df)}")
+            logger.debug(f"[OHLCV PIPELINE] -> Total Rows Fetched for {symbol} - {tf}: {len(df)}")
             if df.empty:
                 logger.warning(f"[OHLCV PIPELINE] -> {symbol} - {tf} 데이터가 없습니다. 저장 건너뜁니다.")
                 continue
@@ -64,7 +64,7 @@ def collect_and_store_ohlcv_data(
             table_name = table_name_format.format(symbol=symbol.replace('/', '').lower(), timeframe=tf)
             try:
                 insert_ohlcv_records(df, table_name=table_name)
-                logger.info(f"[OHLCV PIPELINE] -> Saved to table: {table_name}")
+                logger.debug(f"[OHLCV PIPELINE] -> Saved to table: {table_name}")
             except Exception as e:
                 logger.error(f"[OHLCV PIPELINE] 데이터 저장 에러 ({table_name}): {e}", exc_info=True)
             time.sleep(pause_sec)

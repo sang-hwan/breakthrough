@@ -73,11 +73,11 @@ class EnsembleManager:
             final_signal = "hold"
         
         if self.last_final_signal != final_signal:
-            self.logger.info(f"신호 변경: 이전 신호={self.last_final_signal}, 새로운 신호={final_signal} at {current_time}")
+            self.logger.debug(f"신호 변경: 이전 신호={self.last_final_signal}, 새로운 신호={final_signal} at {current_time}")
             self.last_final_signal = final_signal
         else:
             # 신호 유지 로그의 레벨을 INFO로 승격하여 기록
-            self.logger.info(f"신호 유지: '{final_signal}' at {current_time}")
+            self.logger.debug(f"신호 유지: '{final_signal}' at {current_time}")
         
         return final_signal
 
@@ -90,4 +90,4 @@ class EnsembleManager:
                 self.strategy_weights[strat] *= 0.95
             else:
                 self.strategy_weights[strat] *= 1.05
-        self.logger.info(f"전략 가중치 업데이트: {self.strategy_weights}")
+        self.logger.debug(f"전략 가중치 업데이트: {self.strategy_weights}")

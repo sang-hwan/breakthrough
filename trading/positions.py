@@ -23,7 +23,7 @@ class TradePosition:
         self.executed_splits = 0
         self.allocation_plan = allocation_plan if allocation_plan is not None else []
         self.highest_price = initial_price if initial_price is not None else 0.0
-        logger.info(f"새 포지션 생성: ID={self.position_id}, side={self.side}, 초기가격={self.initial_price}")
+        logger.debug(f"새 포지션 생성: ID={self.position_id}, side={self.side}, 초기가격={self.initial_price}")
 
     def add_execution(self, entry_price: float, size: float, stop_loss: float = None, take_profit: float = None, entry_time=None, exit_targets: list = None, trade_type: str = "unknown", min_order_size: float = 1e-8):
         """
@@ -32,7 +32,7 @@ class TradePosition:
           - min_order_size: 최소 체결 수량
         """
         if size < min_order_size:
-            logger.info("체결 수량이 최소 주문 수량보다 작아 실행 건너뜀.")
+            logger.debug("체결 수량이 최소 주문 수량보다 작아 실행 건너뜀.")
             return
         exit_targets_flagged = []
         if exit_targets is not None:
@@ -54,7 +54,7 @@ class TradePosition:
             'closed': False
         })
         # INFO 레벨로 남기면 AggregatingHandler 가 동일 위치의 로그들을 누적하여 임계치 도달 시 요약합니다.
-        logger.info(f"실행 추가됨: entry_price={entry_price}, size={size}, trade_type={trade_type}")
+        logger.debug(f"실행 추가됨: entry_price={entry_price}, size={size}, trade_type={trade_type}")
 
     def get_total_size(self) -> float:
         return sum(exec_record['size'] for exec_record in self.executions if not exec_record.get('closed', False))
@@ -67,7 +67,7 @@ class TradePosition:
     def remove_execution(self, index: int):
         if 0 <= index < len(self.executions):
             self.executions.pop(index)
-            logger.info(f"실행 제거됨: index={index}")
+            logger.debug(f"실행 제거됨: index={index}")
 
     def is_empty(self) -> bool:
         return all(exec_record.get("closed", False) for exec_record in self.executions)
@@ -85,6 +85,6 @@ class TradePosition:
                 exec_record['exit_targets'] = [t for t in exec_record['exit_targets'] if not t.get('hit', False)]
             if exec_record['size'] < min_order_size:
                 exec_record['closed'] = True
-            logger.info(f"부분 청산 실행: index={index}, close_ratio={close_ratio}, 청산 수량={qty_to_close}")
+            logger.debug(f"부분 청산 실행: index={index}, close_ratio={close_ratio}, 청산 수량={qty_to_close}")
             return qty_to_close
         return 0.0

@@ -29,7 +29,7 @@ class LoggingUtil:
         :param event_message: 기록할 이벤트 메시지
         """
         with self.lock:
-            self.logger.info(f"[{self.module_name}] Event: {event_message}")
+            self.logger.debug(f"[{self.module_name}] Event: {event_message}")
 
     def log_summary(self) -> None:
         """
@@ -37,7 +37,7 @@ class LoggingUtil:
         필요 시 강제로 요약 로그를 남길 수 있도록 INFO 레벨 로그를 기록합니다.
         """
         with self.lock:
-            self.logger.info(f"[{self.module_name}] Summary requested.")
+            self.logger.debug(f"[{self.module_name}] Summary requested.")
 
     @staticmethod
     def clear_log_files():

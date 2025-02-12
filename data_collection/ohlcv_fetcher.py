@@ -9,7 +9,7 @@ import logging
 
 # 로거 설정 및 AggregatingHandler 추가 (INFO 레벨 이상의 로그 집계)
 logger = setup_logger(__name__)
-aggregating_handler = AggregatingHandler(threshold=10, level=logging.INFO)  # 임계치는 필요에 따라 조정 가능
+aggregating_handler = AggregatingHandler(threshold=10, level=logging.debug)  # 임계치는 필요에 따라 조정 가능
 logger.addHandler(aggregating_handler)
 
 def fetch_historical_ohlcv_data(symbol: str, timeframe: str, start_date: str, 
@@ -73,7 +73,7 @@ def fetch_historical_ohlcv_data(symbol: str, timeframe: str, start_date: str,
             df = pd.DataFrame(ohlcv_list, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
             df.set_index('timestamp', inplace=True)
-            logger.info(f"{symbol} {timeframe} historical data 수집 완료 (총 {len(df)} 행)")
+            logger.debug(f"{symbol} {timeframe} historical data 수집 완료 (총 {len(df)} 행)")
             return df
         except Exception as e:
             logger.error(f"DataFrame 변환 에러: {e}", exc_info=True)
@@ -105,7 +105,7 @@ def fetch_latest_ohlcv_data(symbol: str, timeframe: str, limit: int = 500, excha
             df = pd.DataFrame(ohlcvs, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
             df.set_index('timestamp', inplace=True)
-            logger.info(f"{symbol} {timeframe} 최신 데이터 수집 완료 (총 {len(df)} 행)")
+            logger.debug(f"{symbol} {timeframe} 최신 데이터 수집 완료 (총 {len(df)} 행)")
             return df
         except Exception as e:
             logger.error(f"DataFrame 변환 에러: {e}", exc_info=True)
@@ -147,16 +147,16 @@ def get_top_market_cap_symbols(exchange_id: str = 'binance', quote_currency: str
     
     valid_symbols = []
     for symbol, volume in symbol_volumes:
-        logger.info(f"심볼 {symbol}의 데이터 가용성 확인 중 (시작일: {required_start_date})...")
+        logger.debug(f"심볼 {symbol}의 데이터 가용성 확인 중 (시작일: {required_start_date})...")
         df = fetch_historical_ohlcv_data(symbol, '1d', required_start_date, 
                                          limit_per_request=1, pause_sec=pause_sec, 
                                          exchange_id=exchange_id, single_fetch=True)
         if df.empty:
-            logger.info(f"  → {symbol}은(는) {required_start_date} 이후 데이터만 존재하거나 데이터가 없음. 스킵합니다.")
+            logger.debug(f"  → {symbol}은(는) {required_start_date} 이후 데이터만 존재하거나 데이터가 없음. 스킵합니다.")
             continue
         first_timestamp = df.index.min()
         if first_timestamp > pd.to_datetime(required_start_date):
-            logger.info(f"  → {symbol}은(는) {required_start_date} 이후 상장됨 (최초 데이터: {first_timestamp}). 스킵합니다.")
+            logger.debug(f"  → {symbol}은(는) {required_start_date} 이후 상장됨 (최초 데이터: {first_timestamp}). 스킵합니다.")
             continue
         valid_symbols.append(symbol)
         if len(valid_symbols) >= count:

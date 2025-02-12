@@ -12,9 +12,9 @@ def auto_optimization_trigger(performance):
     for month, roi in monthly_roi.items():
         logger.debug(f"검사 중 - {month}: ROI = {roi}")
         if roi < 2.0:
-            logger.info(f"자동 최적화 트리거 활성화: {month}의 ROI({roi})가 2% 미만입니다.")
+            logger.debug(f"자동 최적화 트리거 활성화: {month}의 ROI({roi})가 2% 미만입니다.")
             return True
-    logger.info("자동 최적화 트리거 비활성화: 모든 월간 ROI가 2% 이상입니다.")
+    logger.debug("자동 최적화 트리거 비활성화: 모든 월간 ROI가 2% 이상입니다.")
     return False
 
 def test_auto_optimization_trigger():

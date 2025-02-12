@@ -50,7 +50,7 @@ class DynamicParameterOptimizer:
             for split in splits:
                 for asset in assets:
                     # 자산별 평가 상세 정보 (INFO 레벨로 출력)
-                    logger.info(f"[Optimizer] {asset} 평가, 스플릿: {split}")
+                    logger.debug(f"[Optimizer] {asset} 평가, 스플릿: {split}")
                     
                     # Training 백테스트 수행
                     backtester_train = Backtester(symbol=asset, account_size=10000)
@@ -67,7 +67,7 @@ class DynamicParameterOptimizer:
                         return 1e6
                     total_pnl_train = sum(trade["pnl"] for trade in trades_train)
                     roi_train = total_pnl_train / 10000 * 100
-                    logger.info(f"[Optimizer] {asset} Training ROI: {roi_train:.2f}%")
+                    logger.debug(f"[Optimizer] {asset} Training ROI: {roi_train:.2f}%")
 
                     # Test 백테스트 수행
                     backtester_test = Backtester(symbol=asset, account_size=10000)
@@ -84,7 +84,7 @@ class DynamicParameterOptimizer:
                         return 1e6
                     total_pnl_test = sum(trade["pnl"] for trade in trades_test)
                     roi_test = total_pnl_test / 10000 * 100
-                    logger.info(f"[Optimizer] {asset} Test ROI: {roi_test:.2f}%")
+                    logger.debug(f"[Optimizer] {asset} Test ROI: {roi_test:.2f}%")
 
                     # Holdout 백테스트 수행
                     backtester_holdout = Backtester(symbol=asset, account_size=10000)
@@ -101,13 +101,13 @@ class DynamicParameterOptimizer:
                         return 1e6
                     total_pnl_holdout = sum(trade["pnl"] for trade in trades_holdout)
                     roi_holdout = total_pnl_holdout / 10000 * 100
-                    logger.info(f"[Optimizer] {asset} Holdout ROI: {roi_holdout:.2f}%")
+                    logger.debug(f"[Optimizer] {asset} Holdout ROI: {roi_holdout:.2f}%")
 
                     # 평가 점수 계산 (Overfit, Holdout 페널티 포함)
                     overfit_penalty = abs(roi_train - roi_test)
                     holdout_penalty = 0 if roi_holdout >= 2.0 else (2.0 - roi_holdout) * 10
                     score = -roi_test + overfit_penalty + holdout_penalty
-                    logger.info(f"[Optimizer] {asset} Score: {score:.2f} (Overfit: {overfit_penalty:.2f}, Holdout: {holdout_penalty:.2f})")
+                    logger.debug(f"[Optimizer] {asset} Score: {score:.2f} (Overfit: {overfit_penalty:.2f}, Holdout: {holdout_penalty:.2f})")
                     
                     total_score += score
                     num_evaluations += 1
@@ -125,7 +125,7 @@ class DynamicParameterOptimizer:
             reg_penalty *= 0.1
 
             final_score = avg_score + reg_penalty
-            logger.info(f"[Optimizer] 최종 트라이얼 점수: {final_score:.2f} (Avg: {avg_score:.2f}, Reg: {reg_penalty:.2f})")
+            logger.debug(f"[Optimizer] 최종 트라이얼 점수: {final_score:.2f} (Avg: {avg_score:.2f}, Reg: {reg_penalty:.2f})")
             return final_score
 
         except Exception as e:
@@ -135,14 +135,14 @@ class DynamicParameterOptimizer:
     def optimize(self):
         sampler = optuna.samplers.TPESampler(seed=42)
         self.study = optuna.create_study(direction="minimize", sampler=sampler)
-        logger.info(f"[Optimizer] {self.n_trials} 트라이얼로 최적화 시작.")
+        logger.debug(f"[Optimizer] {self.n_trials} 트라이얼로 최적화 시작.")
         self.study.optimize(self.objective, n_trials=self.n_trials)
         
         trials_df = self.study.trials_dataframe()
         # 최종 요약 결과는 INFO 레벨로 출력
-        logger.info(f"[Optimizer] 트라이얼 결과:\n{trials_df.to_string()}")
+        logger.debug(f"[Optimizer] 트라이얼 결과:\n{trials_df.to_string()}")
         
         best_trial = self.study.best_trial
-        logger.info(f"[Optimizer] Best trial: {best_trial.number} (Value: {best_trial.value:.2f})")
-        logger.info(f"[Optimizer] Best parameters: {best_trial.params}")
+        logger.debug(f"[Optimizer] Best trial: {best_trial.number} (Value: {best_trial.value:.2f})")
+        logger.debug(f"[Optimizer] Best parameters: {best_trial.params}")
         return best_trial

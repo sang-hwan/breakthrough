@@ -50,7 +50,7 @@ class DynamicParamManager:
             "weekly_momentum_threshold"
         ]
         self.logger = setup_logger(__name__)
-        self.logger.info("DynamicParamManager 초기화 완료 (레짐 및 주간 전략 적용).")
+        self.logger.debug("DynamicParamManager 초기화 완료 (레짐 및 주간 전략 적용).")
         self._initialized = True
 
     def get_default_params(self) -> dict:
@@ -83,36 +83,36 @@ class DynamicParamManager:
             factor = 1 + 0.5 * ((volatility - base_volatility) / base_volatility)
             dynamic_params["atr_multiplier"] *= factor
             dynamic_params["volatility_multiplier"] = 1.2  # 고변동 시장에서는 보수적 접근
-            self.logger.info(f"높은 단기 변동성 감지 (volatility={volatility}): atr_multiplier 조정 계수={factor:.2f}")
+            self.logger.debug(f"높은 단기 변동성 감지 (volatility={volatility}): atr_multiplier 조정 계수={factor:.2f}")
         else:
             factor = 1 - 0.3 * ((base_volatility - volatility) / base_volatility)
             dynamic_params["atr_multiplier"] *= factor
             dynamic_params["volatility_multiplier"] = 1.0
-            self.logger.info(f"낮은 단기 변동성 감지 (volatility={volatility}): atr_multiplier 조정 계수={factor:.2f}")
+            self.logger.debug(f"낮은 단기 변동성 감지 (volatility={volatility}): atr_multiplier 조정 계수={factor:.2f}")
 
         # 주간 변동성 조정
         if weekly_volatility is not None:
             if weekly_volatility > 0.07:
                 dynamic_params["weekly_risk_coefficient"] *= 1.2
-                self.logger.info(f"높은 주간 변동성 감지 (weekly_volatility={weekly_volatility}): weekly_risk_coefficient 상향 조정.")
+                self.logger.debug(f"높은 주간 변동성 감지 (weekly_volatility={weekly_volatility}): weekly_risk_coefficient 상향 조정.")
             else:
                 dynamic_params["weekly_risk_coefficient"] *= 0.9
-                self.logger.info(f"낮은 주간 변동성 감지 (weekly_volatility={weekly_volatility}): weekly_risk_coefficient 하향 조정.")
+                self.logger.debug(f"낮은 주간 변동성 감지 (weekly_volatility={weekly_volatility}): weekly_risk_coefficient 하향 조정.")
 
         # 추세 조정: trend와 trend_strength를 모두 고려
         if trend_strength is not None:
             # trend_strength가 양수이면 상승 추세, 음수이면 하락 추세
             dynamic_params["profit_ratio"] *= (1 + trend_strength)
-            self.logger.info(f"추세 강도 반영: trend_strength={trend_strength}, profit_ratio 조정됨.")
+            self.logger.debug(f"추세 강도 반영: trend_strength={trend_strength}, profit_ratio 조정됨.")
         else:
             if trend == "bullish":
                 dynamic_params["profit_ratio"] *= 1.05
-                self.logger.info("Bullish 추세 감지: profit_ratio 상향 조정.")
+                self.logger.debug("Bullish 추세 감지: profit_ratio 상향 조정.")
             elif trend == "bearish":
                 dynamic_params["profit_ratio"] *= 0.95
-                self.logger.info("Bearish 추세 감지: profit_ratio 하향 조정.")
+                self.logger.debug("Bearish 추세 감지: profit_ratio 하향 조정.")
             else:
-                self.logger.info("중립 추세: profit_ratio 변경 없음.")
+                self.logger.debug("중립 추세: profit_ratio 변경 없음.")
 
         # 거래량(volume)에 따른 risk_per_trade 조정
         volume_threshold = 1000  # 기준 거래량
@@ -121,15 +121,15 @@ class DynamicParamManager:
                 # 예: volume 500이면 risk_per_trade를 500/1000 = 0.5배 적용
                 factor = volume / volume_threshold
                 dynamic_params["risk_per_trade"] *= factor
-                self.logger.info(f"낮은 거래량 감지 (volume={volume}): risk_per_trade 축소, 계수={factor:.2f}.")
+                self.logger.debug(f"낮은 거래량 감지 (volume={volume}): risk_per_trade 축소, 계수={factor:.2f}.")
             else:
                 # volume이 높으면 소폭 상향
                 dynamic_params["risk_per_trade"] *= 1.05
-                self.logger.info(f"높은 거래량 감지 (volume={volume}): risk_per_trade 소폭 상향 조정.")
+                self.logger.debug(f"높은 거래량 감지 (volume={volume}): risk_per_trade 소폭 상향 조정.")
 
-        self.logger.info(f"Market data: {market_data}")
-        self.logger.info(f"업데이트된 동적 파라미터: {dynamic_params}")
-        self.logger.info("동적 파라미터 업데이트 완료.")
+        self.logger.debug(f"Market data: {market_data}")
+        self.logger.debug(f"업데이트된 동적 파라미터: {dynamic_params}")
+        self.logger.debug("동적 파라미터 업데이트 완료.")
         return dynamic_params
 
     def merge_params(self, optimized_params: dict) -> dict:
@@ -155,7 +155,7 @@ class DynamicParamManager:
         for key, opt_value in optimized_params.items():
             if key not in self.sensitivity_params:
                 merged[key] = opt_value
-        self.logger.info(f"병합된 동적 파라미터: {merged}")
+        self.logger.debug(f"병합된 동적 파라미터: {merged}")
         return merged
 
 ---
@@ -212,7 +212,7 @@ class DynamicParameterOptimizer:
             for split in splits:
                 for asset in assets:
                     # 자산별 평가 상세 정보 (INFO 레벨로 출력)
-                    logger.info(f"[Optimizer] {asset} 평가, 스플릿: {split}")
+                    logger.debug(f"[Optimizer] {asset} 평가, 스플릿: {split}")
                     
                     # Training 백테스트 수행
                     backtester_train = Backtester(symbol=asset, account_size=10000)
@@ -229,7 +229,7 @@ class DynamicParameterOptimizer:
                         return 1e6
                     total_pnl_train = sum(trade["pnl"] for trade in trades_train)
                     roi_train = total_pnl_train / 10000 * 100
-                    logger.info(f"[Optimizer] {asset} Training ROI: {roi_train:.2f}%")
+                    logger.debug(f"[Optimizer] {asset} Training ROI: {roi_train:.2f}%")
 
                     # Test 백테스트 수행
                     backtester_test = Backtester(symbol=asset, account_size=10000)
@@ -246,7 +246,7 @@ class DynamicParameterOptimizer:
                         return 1e6
                     total_pnl_test = sum(trade["pnl"] for trade in trades_test)
                     roi_test = total_pnl_test / 10000 * 100
-                    logger.info(f"[Optimizer] {asset} Test ROI: {roi_test:.2f}%")
+                    logger.debug(f"[Optimizer] {asset} Test ROI: {roi_test:.2f}%")
 
                     # Holdout 백테스트 수행
                     backtester_holdout = Backtester(symbol=asset, account_size=10000)
@@ -263,13 +263,13 @@ class DynamicParameterOptimizer:
                         return 1e6
                     total_pnl_holdout = sum(trade["pnl"] for trade in trades_holdout)
                     roi_holdout = total_pnl_holdout / 10000 * 100
-                    logger.info(f"[Optimizer] {asset} Holdout ROI: {roi_holdout:.2f}%")
+                    logger.debug(f"[Optimizer] {asset} Holdout ROI: {roi_holdout:.2f}%")
 
                     # 평가 점수 계산 (Overfit, Holdout 페널티 포함)
                     overfit_penalty = abs(roi_train - roi_test)
                     holdout_penalty = 0 if roi_holdout >= 2.0 else (2.0 - roi_holdout) * 10
                     score = -roi_test + overfit_penalty + holdout_penalty
-                    logger.info(f"[Optimizer] {asset} Score: {score:.2f} (Overfit: {overfit_penalty:.2f}, Holdout: {holdout_penalty:.2f})")
+                    logger.debug(f"[Optimizer] {asset} Score: {score:.2f} (Overfit: {overfit_penalty:.2f}, Holdout: {holdout_penalty:.2f})")
                     
                     total_score += score
                     num_evaluations += 1
@@ -287,7 +287,7 @@ class DynamicParameterOptimizer:
             reg_penalty *= 0.1
 
             final_score = avg_score + reg_penalty
-            logger.info(f"[Optimizer] 최종 트라이얼 점수: {final_score:.2f} (Avg: {avg_score:.2f}, Reg: {reg_penalty:.2f})")
+            logger.debug(f"[Optimizer] 최종 트라이얼 점수: {final_score:.2f} (Avg: {avg_score:.2f}, Reg: {reg_penalty:.2f})")
             return final_score
 
         except Exception as e:
@@ -297,16 +297,16 @@ class DynamicParameterOptimizer:
     def optimize(self):
         sampler = optuna.samplers.TPESampler(seed=42)
         self.study = optuna.create_study(direction="minimize", sampler=sampler)
-        logger.info(f"[Optimizer] {self.n_trials} 트라이얼로 최적화 시작.")
+        logger.debug(f"[Optimizer] {self.n_trials} 트라이얼로 최적화 시작.")
         self.study.optimize(self.objective, n_trials=self.n_trials)
         
         trials_df = self.study.trials_dataframe()
         # 최종 요약 결과는 INFO 레벨로 출력
-        logger.info(f"[Optimizer] 트라이얼 결과:\n{trials_df.to_string()}")
+        logger.debug(f"[Optimizer] 트라이얼 결과:\n{trials_df.to_string()}")
         
         best_trial = self.study.best_trial
-        logger.info(f"[Optimizer] Best trial: {best_trial.number} (Value: {best_trial.value:.2f})")
-        logger.info(f"[Optimizer] Best parameters: {best_trial.params}")
+        logger.debug(f"[Optimizer] Best trial: {best_trial.number} (Value: {best_trial.value:.2f})")
+        logger.debug(f"[Optimizer] Best parameters: {best_trial.params}")
         return best_trial
 
 ---
@@ -358,7 +358,7 @@ def run_sensitivity_analysis(param_settings,
         dpm = DynamicParamManager()
         base_dynamic_params = dpm.get_default_params()
 
-    logger.info(f"Starting sensitivity analysis over assets {assets} and periods {periods}")
+    logger.debug(f"Starting sensitivity analysis over assets {assets} and periods {periods}")
     
     results = {}
     # param_settings는 반드시 dict 형식이어야 합니다.
@@ -366,7 +366,7 @@ def run_sensitivity_analysis(param_settings,
         raise ValueError("param_settings must be a dict of {parameter_name: [values]} for multi-parameter analysis.")
 
     for param_name, param_range in param_settings.items():
-        logger.info(f"Analyzing parameter: {param_name}")
+        logger.debug(f"Analyzing parameter: {param_name}")
         results[param_name] = {}
         for val in param_range:
             dynamic_params = base_dynamic_params.copy()
@@ -391,7 +391,7 @@ def run_sensitivity_analysis(param_settings,
                         trades, _ = bt.run_backtest(dynamic_params=dynamic_params)
                         perf = compute_performance(trades)
                         run_metrics.append(perf)
-                        logger.info(f"{param_name} = {val} | Asset: {asset} | Period: {s_date} ~ {e_date} => "
+                        logger.debug(f"{param_name} = {val} | Asset: {asset} | Period: {s_date} ~ {e_date} => "
                                     f"ROI: {perf.get('roi', 0):.2f}%, Sharpe: {perf.get('sharpe_ratio', 0):.2f}, "
                                     f"Max Drawdown: {perf.get('max_drawdown', 0):.2f}, Trade Count: {perf.get('trade_count', 0)}")
                     except Exception as e:
@@ -403,7 +403,7 @@ def run_sensitivity_analysis(param_settings,
                 for key in metric_keys:
                     aggregated[key] = np.mean([run.get(key, 0) for run in run_metrics])
                 results[param_name][val] = aggregated
-                logger.info(f"Aggregated result for {param_name} = {val}: {aggregated}")
+                logger.debug(f"Aggregated result for {param_name} = {val}: {aggregated}")
             else:
                 results[param_name][val] = None
                 logger.warning(f"No successful runs for {param_name} = {val}")

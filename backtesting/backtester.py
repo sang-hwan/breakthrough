@@ -64,7 +64,7 @@ class Backtester:
                 raise ValueError("No data loaded")
             self.df_short.sort_index(inplace=True)
             self.df_long.sort_index(inplace=True)
-            self.logger.info(f"데이터 로드 완료: short 데이터 {len(self.df_short)}행, long 데이터 {len(self.df_long)}행")
+            self.logger.debug(f"데이터 로드 완료: short 데이터 {len(self.df_short)}행, long 데이터 {len(self.df_long)}행")
         except Exception as e:
             self.logger.error(f"데이터 로드 중 에러 발생: {e}", exc_info=True)
             raise
@@ -77,7 +77,7 @@ class Backtester:
                     self.df_extra.sort_index(inplace=True)
                     self.df_extra = compute_bollinger_bands(self.df_extra, price_column='close', 
                                                             period=20, std_multiplier=2.0, fillna=True)
-                    self.logger.info(f"Extra 데이터 로드 완료: {len(self.df_extra)}행")
+                    self.logger.debug(f"Extra 데이터 로드 완료: {len(self.df_extra)}행")
             except Exception as e:
                 self.logger.error(f"Extra 데이터 로드 에러: {e}", exc_info=True)
         if use_weekly:
@@ -86,7 +86,7 @@ class Backtester:
                 if self.df_weekly.empty:
                     self.logger.warning("주간 데이터 집계 결과가 비어있습니다.")
                 else:
-                    self.logger.info(f"주간 데이터 집계 완료: {len(self.df_weekly)}행")
+                    self.logger.debug(f"주간 데이터 집계 완료: {len(self.df_weekly)}행")
             except Exception as e:
                 self.logger.error(f"주간 데이터 집계 에러: {e}", exc_info=True)
 
@@ -96,7 +96,7 @@ class Backtester:
             self.df_long = compute_rsi(self.df_long, price_column='close', period=14, fillna=True, output_col='rsi')
             self.df_long = compute_macd(self.df_long, price_column='close', slow_period=26, fast_period=12, 
                                          signal_period=9, fillna=True, prefix='macd_')
-            self.logger.info("인디케이터 적용 완료 (SMA, RSI, MACD)")
+            self.logger.debug("인디케이터 적용 완료 (SMA, RSI, MACD)")
         except Exception as e:
             self.logger.error(f"인디케이터 적용 중 에러 발생: {e}", exc_info=True)
             raise
@@ -112,7 +112,7 @@ class Backtester:
                 training_data = self.df_long if len(self.df_long) <= max_samples else self.df_long.tail(max_samples)
                 self.hmm_model.train(training_data, feature_columns=hmm_features)
                 self.last_hmm_training_datetime = current_dt
-                self.logger.info(f"HMM 모델 재학습 완료: {current_dt}")
+                self.logger.debug(f"HMM 모델 재학습 완료: {current_dt}")
             regime_predictions = self.hmm_model.predict(self.df_long, feature_columns=hmm_features)
             confidence_flags = filter_by_confidence(self.hmm_model, self.df_long, feature_columns=hmm_features, 
                                                       threshold=dynamic_params.get('hmm_confidence_threshold', 0.8))
@@ -126,7 +126,7 @@ class Backtester:
                     regime = regime_map.get(pred, "unknown")
                 adjusted_regimes.append(regime)
             regime_series = pd.Series(adjusted_regimes, index=self.df_long.index)
-            self.logger.info("HMM 레짐 업데이트 완료")
+            self.logger.debug("HMM 레짐 업데이트 완료")
             return regime_series
         except Exception as e:
             self.logger.error(f"HMM 레짐 업데이트 중 에러 발생: {e}", exc_info=True)
@@ -138,7 +138,7 @@ class Backtester:
             self.df_short = self.df_short.join(self.df_long[['sma', 'rsi', 'volatility']], how='left').ffill()
             self.df_short['market_regime'] = regime_series.reindex(self.df_short.index).ffill()
             self.df_short = TradeManager.compute_atr(self.df_short, period=dynamic_params.get("atr_period", 14))
-            self.logger.info("Short 데이터 프레임 업데이트 완료 (인디케이터, 레짐, ATR)")
+            self.logger.debug("Short 데이터 프레임 업데이트 완료 (인디케이터, 레짐, ATR)")
         except Exception as e:
             self.logger.error(f"Short 데이터 프레임 업데이트 에러: {e}", exc_info=True)
             raise
@@ -170,7 +170,7 @@ class Backtester:
                         self.trades.append(trade_detail)
                         self.account.update_after_trade(trade_detail)
             self.positions = []
-            self.logger.info(f"워크 포워드 종료 처리 완료 at {current_time}")
+            self.logger.debug(f"워크 포워드 종료 처리 완료 at {current_time}")
         except Exception as e:
             self.logger.error(f"Walk-forward window 처리 에러 at {current_time}: {e}", exc_info=True)
             raise
@@ -206,7 +206,7 @@ class Backtester:
                         self.account.update_after_trade(trade_detail)
                         exit_count += 1
             self.positions = []
-            self.logger.info(f"주간 종료 전량 청산 완료 at {current_time}: 총 {exit_count} 거래 실행됨")
+            self.logger.debug(f"주간 종료 전량 청산 완료 at {current_time}: 총 {exit_count} 거래 실행됨")
         except Exception as e:
             self.logger.error(f"Weekly end 처리 에러 at {current_time}: {e}", exc_info=True)
             raise
@@ -311,7 +311,7 @@ class Backtester:
                     freq[evt_type] = freq.get(evt_type, 0) + 1
                     price_sum += evt[2]
                 avg_price = price_sum / count
-                self.logger.info(f"{current_time} - Bullish Entry Summary: {count} events; " +
+                self.logger.debug(f"{current_time} - Bullish Entry Summary: {count} events; " +
                                  ", ".join([f"{k}: {v}" for k, v in freq.items()]) +
                                  f"; 평균 진입가: {avg_price:.2f}")
                 self.bullish_entry_events.clear()
@@ -414,7 +414,7 @@ class Backtester:
                     freq[evt_type] = freq.get(evt_type, 0) + 1
                     price_sum += evt[2]
                 avg_price = price_sum / count
-                self.logger.info(f"{self.df_short.index[-1]} - Bullish Entry Summary (final flush): {count} events; " +
+                self.logger.debug(f"{self.df_short.index[-1]} - Bullish Entry Summary (final flush): {count} events; " +
                                  ", ".join([f"{k}: {v}" for k, v in freq.items()]) +
                                  f"; 평균 진입가: {avg_price:.2f}")
                 self.bullish_entry_events.clear()
@@ -442,7 +442,7 @@ class Backtester:
                         self.trade_logs.append(trade_detail)
                         self.trades.append(trade_detail)
                         self.account.update_after_trade(trade_detail)
-            self.logger.info("모든 포지션 최종 청산 완료")
+            self.logger.debug("모든 포지션 최종 청산 완료")
         except Exception as e:
             self.logger.error(f"Finalizing positions error: {e}", exc_info=True)
 
@@ -492,7 +492,7 @@ class Backtester:
             window_start = None
         signal_cooldown = pd.Timedelta(minutes=dynamic_params.get("signal_cooldown_minutes", 5))
         rebalance_interval = pd.Timedelta(minutes=dynamic_params.get("rebalance_interval_minutes", 60))
-        self.logger.info("백테스트 시작")
+        self.logger.debug("백테스트 시작")
         for current_time, row in df_train.iterrows():
             # 주간 종료(금요일) 전량 청산: 금요일이며, 아직 청산하지 않은 경우 처리
             if current_time.weekday() == 4:
@@ -609,7 +609,7 @@ class Backtester:
                 except Exception as e:
                     self.logger.error(f"Order monitoring failed at {current_time}: {e}", exc_info=True)
         if df_holdout is not None:
-            self.logger.info("홀드아웃 구간 백테스트 시작.")
+            self.logger.debug("홀드아웃 구간 백테스트 시작.")
             for current_time, row in df_holdout.iterrows():
                 try:
                     action = self.ensemble_manager.get_final_signal(
@@ -659,7 +659,7 @@ class Backtester:
         self.finalize_all_positions()
         total_pnl = sum(trade["pnl"] for trade in self.trades)
         roi = total_pnl / self.account.initial_balance * 100
-        self.logger.info(f"백테스트 완료: 총 PnL={total_pnl:.2f}, ROI={roi:.2f}%")
+        self.logger.debug(f"백테스트 완료: 총 PnL={total_pnl:.2f}, ROI={roi:.2f}%")
         if roi < 2:
-            self.logger.info("ROI 미달: 매월 ROI가 2% 미만입니다. 페이퍼 트레이딩 전환 없이 백테스트만 진행합니다.")
+            self.logger.debug("ROI 미달: 매월 ROI가 2% 미만입니다. 페이퍼 트레이딩 전환 없이 백테스트만 진행합니다.")
         return self.trades, self.trade_logs

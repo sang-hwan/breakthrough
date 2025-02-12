@@ -94,7 +94,7 @@ class TradingStrategies:
         # (신호 유지의 경우 DEBUG로 남기지만, 프로젝트에서는 INFO 이상만 출력됨)
         key = "select_strategy"
         if self.previous_signals.get(key) != final_signal:
-            self.logger.info(f"select_strategy: 신호 변경, 최종 신호: {final_signal} at {current_time}")
+            self.logger.debug(f"select_strategy: 신호 변경, 최종 신호: {final_signal} at {current_time}")
             self.previous_signals[key] = final_signal
         else:
             self.logger.debug(f"select_strategy: 신호 유지: '{final_signal}' at {current_time}")
@@ -113,7 +113,7 @@ class TradingStrategies:
         final_signal = "enter_long" if sma is not None and price is not None and price > sma else "hold"
         
         if self.previous_signals.get(key) != final_signal:
-            self.logger.info(f"trend_following_strategy: 신호 변경, 최종 신호: {final_signal} at {current_time}")
+            self.logger.debug(f"trend_following_strategy: 신호 변경, 최종 신호: {final_signal} at {current_time}")
             self.previous_signals[key] = final_signal
         else:
             self.logger.debug(f"trend_following_strategy: 신호 유지: '{final_signal}' at {current_time}")
@@ -135,7 +135,7 @@ class TradingStrategies:
             final_signal = "hold"
         
         if self.previous_signals.get(key) != final_signal:
-            self.logger.info(f"breakout_strategy: 신호 변경, 최종 신호: {final_signal} at {current_time}")
+            self.logger.debug(f"breakout_strategy: 신호 변경, 최종 신호: {final_signal} at {current_time}")
             self.previous_signals[key] = final_signal
         else:
             self.logger.debug(f"breakout_strategy: 신호 유지: '{final_signal}' at {current_time}")
@@ -161,7 +161,7 @@ class TradingStrategies:
             final_signal = "hold"
         
         if self.previous_signals.get(key) != final_signal:
-            self.logger.info(f"counter_trend_strategy: 신호 변경, 최종 신호: {final_signal} at {current_time} (rsi: {rsi})")
+            self.logger.debug(f"counter_trend_strategy: 신호 변경, 최종 신호: {final_signal} at {current_time} (rsi: {rsi})")
             self.previous_signals[key] = final_signal
         else:
             self.logger.debug(f"counter_trend_strategy: 신호 유지: '{final_signal}' at {current_time} (rsi: {rsi})")
@@ -196,7 +196,7 @@ class TradingStrategies:
             final_signal = "hold"
         
         if self.previous_signals.get(key) != final_signal:
-            self.logger.info(f"high_frequency_strategy: 신호 변경, 최종 신호: {final_signal} at {current_time}")
+            self.logger.debug(f"high_frequency_strategy: 신호 변경, 최종 신호: {final_signal} at {current_time}")
             self.previous_signals[key] = final_signal
         else:
             self.logger.debug(f"high_frequency_strategy: 신호 유지: '{final_signal}' at {current_time}")
@@ -229,7 +229,7 @@ class TradingStrategies:
                 signal = "exit_all"
             else:
                 signal = "hold"
-            self.logger.info(f"weekly_breakout_strategy: prev_high={prev_high}, prev_low={prev_low}, current_close={current_close}, breakout_threshold={breakout_threshold}, signal={signal}")
+            self.logger.debug(f"weekly_breakout_strategy: prev_high={prev_high}, prev_low={prev_low}, current_close={current_close}, breakout_threshold={breakout_threshold}, signal={signal}")
             return signal
         except Exception as e:
             self.logger.error(f"weekly_breakout_strategy 에러: {e}", exc_info=True)
@@ -258,7 +258,7 @@ class TradingStrategies:
                 signal = "exit_all"
             else:
                 signal = "hold"
-            self.logger.info(f"weekly_momentum_strategy: momentum={momentum}, momentum_threshold={momentum_threshold}, signal={signal}")
+            self.logger.debug(f"weekly_momentum_strategy: momentum={momentum}, momentum_threshold={momentum_threshold}, signal={signal}")
             return signal
         except Exception as e:
             self.logger.error(f"weekly_momentum_strategy 에러: {e}", exc_info=True)

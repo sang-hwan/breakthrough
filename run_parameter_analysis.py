@@ -60,7 +60,7 @@ def run_parameter_analysis():
     # 2. 인자 파싱
     args = parse_args()
     logger = setup_logger(__name__)
-    logger.info("Starting parameter sensitivity analysis with external configuration.")
+    logger.debug("Starting parameter sensitivity analysis with external configuration.")
 
     assets = parse_assets(args.assets)
     periods = parse_periods(args.periods, args.start_date, args.end_date)
@@ -84,7 +84,7 @@ def run_parameter_analysis():
         start_val = default_val * 0.8
         end_val = default_val * 1.2
         param_values = np.linspace(start_val, end_val, args.param_steps)
-        logger.info(f"Analyzing parameter {pname} with range {start_val:.4f} to {end_val:.4f} in {args.param_steps} steps.")
+        logger.debug(f"Analyzing parameter {pname} with range {start_val:.4f} to {end_val:.4f} in {args.param_steps} steps.")
         param_settings[pname] = param_values
 
     # 3. 민감도 분석 실행 (다중 파라미터 모드)

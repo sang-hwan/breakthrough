@@ -9,11 +9,20 @@ load_dotenv()
 
 # 환경 변수 읽기 (프로젝트 전체에 통일된 로그 레벨)
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development").lower()
+
+# LOG_LEVEL은 파일 저장용 기본 레벨 (예: INFO)
 _LOG_LEVEL_FROM_ENV = os.getenv("LOG_LEVEL", None)
 if _LOG_LEVEL_FROM_ENV:
-    level = getattr(logging, _LOG_LEVEL_FROM_ENV.upper(), logging.INFO)
+    level = getattr(logging, _LOG_LEVEL_FROM_ENV.upper(), logging.DEBUG)
 else:
-    level = logging.INFO
+    level = logging.DEBUG
+
+# 파일에 저장할 로그는 INFO 레벨 이상의 메시지만 기록하도록 고정
+file_log_level = logging.INFO
+
+# 콘솔 출력용 상세 로그 레벨 (예: DEBUG)
+LOG_DETAIL_LEVEL = os.getenv("LOG_DETAIL_LEVEL", "DEBUG")
+detail_level = getattr(logging, LOG_DETAIL_LEVEL.upper(), logging.DEBUG)
 
 # 기본 로그 파일 이름 (최초 로그는 이 파일에 기록됨)
 BASE_LOG_FILE = os.path.join("logs", "project.log")
@@ -88,6 +97,7 @@ def initialize_root_logger():
     root_logger = logging.getLogger()
     root_logger.setLevel(level)
     
+    # 파일 핸들러: 파일에는 INFO 레벨 이상의 로그만 기록
     if not any(isinstance(handler, LineRotatingFileHandler) for handler in root_logger.handlers):
         file_handler = LineRotatingFileHandler(
             base_filename=BASE_LOG_FILE,
@@ -96,39 +106,26 @@ def initialize_root_logger():
             encoding="utf-8",
             delay=True
         )
-        file_handler.setLevel(level)
+        file_handler.setLevel(file_log_level)
         formatter = OneLineFormatter('[%(asctime)s] %(levelname)s:%(name)s:%(filename)s:%(funcName)s: %(message)s')
         file_handler.setFormatter(formatter)
         root_logger.addHandler(file_handler)
     
+    # 콘솔 핸들러: 콘솔에는 LOG_DETAIL_LEVEL (예: DEBUG) 이상의 로그를 출력
     if not any(isinstance(handler, logging.StreamHandler) for handler in root_logger.handlers):
         console_handler = logging.StreamHandler()
-        console_handler.setLevel(level)
+        console_handler.setLevel(detail_level)
         console_formatter = OneLineFormatter('[%(asctime)s] %(levelname)s:%(name)s:%(filename)s:%(funcName)s: %(message)s')
         console_handler.setFormatter(console_formatter)
         root_logger.addHandler(console_handler)
     
     if AggregatingHandler is not None and not any(isinstance(handler, AggregatingHandler) for handler in root_logger.handlers):
-        global_threshold_str = os.getenv("AGG_THRESHOLD_GLOBAL")
-        try:
-            global_threshold = int(global_threshold_str) if global_threshold_str and global_threshold_str.isdigit() else 2000
-        except Exception:
-            global_threshold = 2000
-        aggregator_handler = AggregatingHandler(threshold=global_threshold, level=level)
+        # 단일 AggregatingHandler를 추가하여 모든 로그를 중앙에서 집계
+        aggregator_handler = AggregatingHandler(level=file_log_level)
         aggregator_handler.addFilter(lambda record: not getattr(record, '_is_summary', False))
         aggregator_formatter = OneLineFormatter('[%(asctime)s] %(levelname)s:%(name)s:%(filename)s:%(funcName)s: %(message)s')
         aggregator_handler.setFormatter(aggregator_formatter)
         root_logger.addHandler(aggregator_handler)
-    
-    # 민감도 분석 관련 로그 집계를 위한 sensitivity AggregatingHandler 추가
-    sensitivity_threshold_str = os.getenv("AGG_THRESHOLD_SENSITIVITY")
-    if sensitivity_threshold_str and sensitivity_threshold_str.isdigit():
-        sensitivity_threshold = int(sensitivity_threshold_str)
-        sensitivity_handler = AggregatingHandler(threshold=global_threshold, level=level, sensitivity_threshold=sensitivity_threshold)
-        sensitivity_handler.addFilter(lambda record: getattr(record, "sensitivity_analysis", False))
-        sensitivity_formatter = OneLineFormatter('[%(asctime)s] %(levelname)s:%(name)s:%(filename)s:%(funcName)s: %(message)s')
-        sensitivity_handler.setFormatter(sensitivity_formatter)
-        root_logger.addHandler(sensitivity_handler)
     
 initialize_root_logger()
 
@@ -136,19 +133,12 @@ def setup_logger(module_name: str) -> logging.Logger:
     logger = logging.getLogger(module_name)
     logger.setLevel(level)
     
-    mod_key = module_name.split('.')[-1].upper()
-    env_threshold = os.getenv(f"AGG_THRESHOLD_{mod_key}")
-    if env_threshold is not None and env_threshold.isdigit():
-        threshold = int(env_threshold)
-        try:
-            agg_handler = AggregatingHandler(threshold=threshold, level=level, module_name=mod_key)
-            agg_handler.addFilter(lambda record: not getattr(record, '_is_summary', False))
-            formatter = OneLineFormatter('[%(asctime)s] %(levelname)s:%(name)s:%(filename)s:%(funcName)s: %(message)s')
-            agg_handler.setFormatter(formatter)
-            logger.addHandler(agg_handler)
-            logger.propagate = False
-        except Exception as e:
-            logger.error("모듈별 AggregatingHandler 추가 실패: %s", e)
-    else:
-        logger.propagate = True
+    try:
+        agg_handler = AggregatingHandler(level=file_log_level)
+        agg_handler.addFilter(lambda record: not getattr(record, '_is_summary', False))
+        formatter = OneLineFormatter('[%(asctime)s] %(levelname)s:%(name)s:%(filename)s:%(funcName)s: %(message)s')
+        agg_handler.setFormatter(formatter)
+        logger.addHandler(agg_handler)
+    except Exception as e:
+        logger.error("모듈별 AggregatingHandler 추가 실패: %s", e)
     return logger

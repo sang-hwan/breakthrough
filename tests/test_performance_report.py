@@ -21,7 +21,7 @@ def test_final_report_output():
     # generate_final_report()에서 사용되는 logger의 이름은 보통 "logs.final_report" 입니다.
     logger = logging.getLogger("logs.final_report")
     stream_handler = logging.StreamHandler(log_stream)
-    stream_handler.setLevel(logging.INFO)
+    stream_handler.setLevel(logging.debug)
     formatter = logging.Formatter('%(message)s')
     stream_handler.setFormatter(formatter)
     logger.addHandler(stream_handler)

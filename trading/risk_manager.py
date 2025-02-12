@@ -36,7 +36,7 @@ class RiskManager:
         computed_size = computed_size if computed_size >= min_order_size else 0.0
 
         # 핵심 계산 결과를 INFO 레벨로 기록
-        logger.info(
+        logger.debug(
             f"포지션 사이즈 계산: available_balance={available_balance}, risk_percentage={risk_percentage}, "
             f"entry_price={entry_price}, stop_loss={stop_loss}, fee_rate={fee_rate}, volatility={volatility}, "
             f"weekly_volatility={weekly_volatility}, weekly_risk_coefficient={weekly_risk_coefficient}, "
@@ -69,7 +69,7 @@ class RiskManager:
                                   base_multiplier: float = 1.0, dynamic_volatility: float = 1.0):
         if position is None or position.is_empty():
             # 운영상 중요한 이벤트로 기록
-            logger.info("스케일인 시도: 포지션이 없거나 비어있음")
+            logger.debug("스케일인 시도: 포지션이 없거나 비어있음")
             return
         while position.executed_splits < position.total_splits:
             next_split = position.executed_splits
@@ -86,7 +86,7 @@ class RiskManager:
             position.add_execution(entry_price=executed_price, size=chunk_size, stop_loss=stop_loss, take_profit=take_profit, entry_time=entry_time, trade_type=trade_type)
             position.executed_splits += 1
             logger.debug(f"스케일인 실행: 실행 가격={executed_price:.2f}, 크기={chunk_size:.4f}, 새로운 실행 횟수={position.executed_splits}")
-        logger.info(f"포지션 {position.position_id} 스케일인 시도 완료: 총 실행 횟수={position.executed_splits}")
+        logger.debug(f"포지션 {position.position_id} 스케일인 시도 완료: 총 실행 횟수={position.executed_splits}")
 
     @staticmethod
     def is_significant_change(new_params: dict, old_params: dict, threshold: float = 0.10) -> bool:
@@ -143,12 +143,12 @@ class RiskManager:
         if current_volatility is not None:
             if current_volatility > 0.05:
                 risk_params['risk_per_trade'] *= 0.8
-                logger.info(f"현재 변동성이 높음({current_volatility}), risk_per_trade 조정됨")
+                logger.debug(f"현재 변동성이 높음({current_volatility}), risk_per_trade 조정됨")
             else:
                 risk_params['risk_per_trade'] *= 1.1
-                logger.info(f"현재 변동성이 낮음({current_volatility}), risk_per_trade 조정됨")
+                logger.debug(f"현재 변동성이 낮음({current_volatility}), risk_per_trade 조정됨")
 
-        logger.info(f"최종 리스크 파라미터: {risk_params}")
+        logger.debug(f"최종 리스크 파라미터: {risk_params}")
         return risk_params
 
     @staticmethod
@@ -175,7 +175,7 @@ class RiskManager:
         else:
             candidate_stop = new_stop_intraday
         adjusted_stop = candidate_stop if candidate_stop > current_stop and candidate_stop < current_price else current_stop
-        logger.info(
+        logger.debug(
             f"트레일링 스탑 조정: current_price={current_price:.2f}, highest_price={highest_price:.2f}, "
             f"volatility={volatility:.4f}, trailing_percentage={trailing_percentage}, "
             f"weekly_high={weekly_high}, weekly_volatility={weekly_volatility}, "
@@ -206,7 +206,7 @@ class RiskManager:
             adjusted_final = final_profit_ratio
         partial_target = entry_price * (1.0 + adjusted_partial)
         final_target = entry_price * (1.0 + adjusted_final)
-        logger.info(
+        logger.debug(
             f"부분 청산 목표 계산: entry_price={entry_price}, 기본 partial_profit_ratio={partial_profit_ratio}, "
             f"final_profit_ratio={final_profit_ratio}, "
             f"{'주간 목표 반영: weekly_momentum=' + str(weekly_momentum) if use_weekly_target else '기본 계산'}, "

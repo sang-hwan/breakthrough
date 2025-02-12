@@ -24,7 +24,7 @@ class TradeManager:
         # ATR 계산
         if len(data) < atr_period:
             data[atr_col] = data[high_col] - data[low_col]
-            logger.info("ATR 계산: 데이터 길이가 짧아 high-low 차이 사용.")
+            logger.debug("ATR 계산: 데이터 길이가 짧아 high-low 차이 사용.")
         else:
             try:
                 atr_indicator = ta.volatility.AverageTrueRange(
@@ -35,7 +35,7 @@ class TradeManager:
                     fillna=True
                 )
                 data[atr_col] = atr_indicator.average_true_range()
-                logger.info(f"ATR 계산 성공: 첫 5행 {data[atr_col].head().tolist()}")
+                logger.debug(f"ATR 계산 성공: 첫 5행 {data[atr_col].head().tolist()}")
             except Exception as e:
                 logger.error(f"ATR 계산 에러: {e}", exc_info=True)
                 data[atr_col] = data[high_col] - data[low_col]
@@ -45,7 +45,7 @@ class TradeManager:
         data['close_std'] = data[close_col].rolling(window=atr_period, min_periods=1).std()
         data['std_ratio'] = data['close_std'] / data['close_ma']
         data['dynamic_multiplier'] = atr_multiplier * (1 + data['std_ratio'])
-        logger.info(
+        logger.debug(
             f"중간 계산 결과: close_ma 첫 5행={data['close_ma'].head().tolist()}, "
             f"close_std 첫 5행={data['close_std'].head().tolist()}, "
             f"std_ratio 첫 5행={data['std_ratio'].head().tolist()}, "
@@ -58,12 +58,12 @@ class TradeManager:
         
         # 스탑로스 가격 계산
         data[stop_loss_col] = data[entry_price_col] - (data[atr_col] * data['dynamic_multiplier'] * dynamic_sl_adjustment)
-        logger.info(f"스탑로스 계산: 첫 5행 {data[stop_loss_col].head().tolist()}")
+        logger.debug(f"스탑로스 계산: 첫 5행 {data[stop_loss_col].head().tolist()}")
         
         # 중간 계산에 사용한 임시 컬럼 제거
         data.drop(columns=['close_ma', 'close_std', 'std_ratio', 'dynamic_multiplier'], inplace=True)
 
-        logger.info(f"ATR 기반 스탑로스 계산 완료: 총 {len(data)} 행 처리")
+        logger.debug(f"ATR 기반 스탑로스 계산 완료: 총 {len(data)} 행 처리")
         return data
 
     @staticmethod
@@ -91,7 +91,7 @@ class TradeManager:
         else:
             candidate_stop = new_stop_intraday
         adjusted_stop = candidate_stop if candidate_stop > current_stop and candidate_stop < current_price else current_stop
-        logger.info(
+        logger.debug(
             f"트레일링 스탑 조정: current_price={current_price:.2f}, highest_price={highest_price:.2f}, "
             f"volatility={volatility:.4f}, trailing_percentage={trailing_percentage}, "
             f"weekly_high={weekly_high}, weekly_volatility={weekly_volatility}, "
@@ -107,7 +107,7 @@ class TradeManager:
         entry_price_col: str = 'entry_price'
     ) -> pd.DataFrame:
         data[take_profit_col] = data[entry_price_col] * (1 + profit_ratio)
-        logger.info(f"고정 테이크 프로핏 설정 완료: 총 {len(data)} 행 처리")
+        logger.debug(f"고정 테이크 프로핏 설정 완료: 총 {len(data)} 행 처리")
         return data
 
     @staticmethod
@@ -134,7 +134,7 @@ class TradeManager:
             else data.iloc[-1][price_column]
         )
         decision = current_price < recent_min
-        logger.info(
+        logger.debug(
             f"should_exit_trend 결정: current_price={current_price}, recent_min={recent_min}, exit_decision={decision}"
         )
         return decision
@@ -162,7 +162,7 @@ class TradeManager:
             adjusted_final = final_profit_ratio
         partial_target = entry_price * (1.0 + adjusted_partial)
         final_target = entry_price * (1.0 + adjusted_final)
-        logger.info(
+        logger.debug(
             f"부분 청산 목표 계산: entry_price={entry_price}, 기본 partial_profit_ratio={partial_profit_ratio}, "
             f"final_profit_ratio={final_profit_ratio}, "
             f"{'주간 목표 반영: weekly_momentum=' + str(weekly_momentum) if use_weekly_target else '기본 계산'}, "
@@ -181,11 +181,11 @@ class TradeManager:
                 fillna=True
             )
             data['atr'] = atr_indicator.average_true_range()
-            logger.info(f"compute_atr: 첫 5행 ATR 값: {data['atr'].head().tolist()}")
+            logger.debug(f"compute_atr: 첫 5행 ATR 값: {data['atr'].head().tolist()}")
         except Exception as e:
             logger.error(f"compute_atr 에러: {e}", exc_info=True)
             data['atr'] = data['high'] - data['low']
-        logger.info(f"ATR 계산 완료: 총 {len(data)} 행 처리")
+        logger.debug(f"ATR 계산 완료: 총 {len(data)} 행 처리")
         return data
 
     @staticmethod
@@ -199,7 +199,7 @@ class TradeManager:
         volatility_multiplier = risk_params.get("volatility_multiplier", 1.0)
         stop_loss_price = entry_price - (atr * atr_multiplier * volatility_multiplier)
         take_profit_price = entry_price * (1 + profit_ratio)
-        logger.info(
+        logger.debug(
             f"동적 스탑로스/테이크 프로핏 계산: entry_price={entry_price:.2f}, ATR={atr:.2f}, "
             f"atr_multiplier={atr_multiplier}, volatility_multiplier={volatility_multiplier}, profit_ratio={profit_ratio}, "
             f"계산된 stop_loss={stop_loss_price:.2f}, take_profit={take_profit_price:.2f}"
