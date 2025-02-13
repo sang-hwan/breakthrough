@@ -5,14 +5,8 @@ import atexit
 
 class AggregatingHandler(logging.Handler):
     """
-    AggregatingHandler는 각 로그 레코드를 (logger 이름, 파일명, 함수명) 단위로 집계합니다.
-    
-    실행 시작부터 종료 시까지 누적한 모든 (파일명: 함수명) 단위의 로그 발생 건수를
-    마지막에 한 번에 출력합니다.
-    
-    (주의: 로그 파일은 회전(backupCount=7)되어 중간 로그는 사라질 수 있으나,
-     이 집계는 메모리 내에서 실행 전체의 로그 발생 건수를 누적하므로 실행 종료 시점의
-     누적 결과를 확인할 수 있습니다.)
+    AggregatingHandler는 (logger 이름, 파일명, 함수명) 단위로 로그 발생 건수를 집계하여,
+    실행 종료 시 누적 결과를 한 번에 출력합니다.
     """
     def __init__(self, level=logging.DEBUG):
         super().__init__(level)
@@ -21,24 +15,20 @@ class AggregatingHandler(logging.Handler):
 
     def emit(self, record):
         try:
-            filename = os.path.basename(record.pathname)
-            key = (record.name, filename, record.funcName)
-            if key not in self.total_aggregation:
-                self.total_aggregation[key] = {"count": 0}
-            self.total_aggregation[key]["count"] += 1
+            key = (record.name, os.path.basename(record.pathname), record.funcName)
+            self.total_aggregation[key] = self.total_aggregation.get(key, 0) + 1
         except Exception:
             self.handleError(record)
 
     def flush_aggregation_summary(self):
         if not self.total_aggregation:
             return
-        summary_lines = []
-        for key, agg in self.total_aggregation.items():
-            logger_name, filename, funcname = key
-            count = agg.get("count", 0)
-            summary_lines.append(f"{filename}:{funcname} (logger: {logger_name}) - 총 {count}회 발생")
+        summary_lines = [
+            f"{filename}:{funcname} (logger: {logger_name}) - 총 {count}회 발생"
+            for (logger_name, filename, funcname), count in self.total_aggregation.items()
+        ]
         summary = "\n".join(summary_lines)
-        logging.getLogger().info("전체 누적 로그 집계:\n" + summary, extra={'_is_summary': True})
+        logging.getLogger().info("전체 누적 로그 집계:\n" + summary)
 
 ---
 
@@ -49,10 +39,8 @@ logger = setup_logger(__name__)
 
 def generate_final_report(performance_data, symbol=None):
     """
-    종목별 성과 리포트를 생성합니다.
-    symbol 인자가 전달되면 헤더에 심볼명을 포함합니다.
-    최종 성과 지표는 performance_data["overall"]에 저장되어 있으므로,
-    해당 서브 딕셔너리에서 값을 추출합니다.
+    종목별 백테스트 최종 성과 리포트를 생성합니다.
+    (symbol이 전달되면 헤더에 포함)
     """
     overall = performance_data.get("overall", {})
     report_lines = []
@@ -98,13 +86,12 @@ def generate_final_report(performance_data, symbol=None):
 
 def generate_parameter_sensitivity_report(param_name, results):
     """
-    Parameter Sensitivity Report 생성 (최종 로그용).
-    다중 파라미터 분석의 경우, results는 { (param, value) 튜플: { metric: {mean, std, min, max}, ... } } 형식입니다.
+    최종 파라미터 민감도 리포트를 생성합니다.
+    (다중 파라미터 분석 시, 각 조합에 대한 평균/표준편차/최소/최대 지표를 출력)
     """
     report_lines = []
     report_lines.append("=== FINAL PARAMETER SENSITIVITY REPORT ===")
     
-    # 다중 파라미터 조합인 경우 (키가 튜플인 경우)
     if all(isinstance(k, tuple) for k in results.keys()):
         report_lines.append("Multi-Parameter Analysis Results:")
         for combo_key, metrics in results.items():
@@ -117,7 +104,6 @@ def generate_parameter_sensitivity_report(param_name, results):
                 report_lines.append("  Error during backtesting for this combination.")
             report_lines.append("")
     else:
-        # 단일 파라미터 분석인 경우
         report_lines.append(f"Analyzed Parameter: {param_name}")
         report_lines.append("Results:")
         for val in sorted(results.keys()):
@@ -145,11 +131,7 @@ load_dotenv()
 
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development").lower()
 _LOG_LEVEL_FROM_ENV = os.getenv("LOG_LEVEL", None)
-if _LOG_LEVEL_FROM_ENV:
-    file_level = getattr(logging, _LOG_LEVEL_FROM_ENV.upper(), logging.INFO)
-else:
-    file_level = logging.INFO
-file_log_level = file_level
+file_level = getattr(logging, _LOG_LEVEL_FROM_ENV.upper(), logging.INFO) if _LOG_LEVEL_FROM_ENV else logging.INFO
 LOG_DETAIL_LEVEL = os.getenv("LOG_DETAIL_LEVEL", "DEBUG")
 detail_level = getattr(logging, LOG_DETAIL_LEVEL.upper(), logging.DEBUG)
 BASE_LOG_FILE = os.path.join("logs", "project.log")
@@ -170,10 +152,7 @@ class LineRotatingFileHandler(RotatingFileHandler):
 
     def _set_current_filename(self):
         base, ext = os.path.splitext(self.base_filename)
-        if self.current_index == 0:
-            self.current_filename = self.base_filename
-        else:
-            self.current_filename = f"{base}{self.current_index}{ext}"
+        self.current_filename = self.base_filename if self.current_index == 0 else f"{base}{self.current_index}{ext}"
         self.baseFilename = os.path.abspath(self.current_filename)
 
     def doRollover(self):
@@ -184,10 +163,7 @@ class LineRotatingFileHandler(RotatingFileHandler):
         if self.backupCount > 0 and self.current_index >= self.backupCount:
             base, ext = os.path.splitext(self.base_filename)
             oldest_index = self.current_index - self.backupCount
-            if oldest_index == 0:
-                old_file = self.base_filename
-            else:
-                old_file = f"{base}{oldest_index}{ext}"
+            old_file = self.base_filename if oldest_index == 0 else f"{base}{oldest_index}{ext}"
             if os.path.exists(old_file):
                 os.remove(old_file)
         self._set_current_filename()
@@ -228,7 +204,7 @@ def initialize_root_logger():
         encoding="utf-8",
         delay=True
     )
-    file_handler.setLevel(file_log_level)
+    file_handler.setLevel(file_level)
     formatter = OneLineFormatter('[%(asctime)s] %(levelname)s:%(name)s:%(filename)s:%(funcName)s: %(message)s')
     file_handler.setFormatter(formatter)
     root_logger.addHandler(file_handler)
@@ -277,11 +253,8 @@ from logs.logger_config import setup_logger
 
 class LoggingUtil:
     """
-    LoggingUtil는 이벤트 로깅과 로그 파일 관리 기능을 제공합니다.
-    
-    - 이벤트 로깅: 각 모듈별로 인스턴스를 생성하고, 이벤트 발생 시 INFO 레벨 로그를 기록하여
-      AggregatingHandler가 동일 기준으로 로그를 집계하도록 합니다.
-    - 로그 파일 관리: 정적 메서드 clear_log_files()를 통해 프로젝트 루트의 logs 폴더 내 모든 .log 파일을 삭제합니다.
+    LoggingUtil는 이벤트 로깅과 로그 파일 관리를 제공합니다.
+    이벤트 발생 시 INFO 레벨 로그를 기록하며, clear_log_files()로 logs 폴더 내 .log 파일을 삭제합니다.
     """
     def __init__(self, module_name: str):
         self.module_name = module_name

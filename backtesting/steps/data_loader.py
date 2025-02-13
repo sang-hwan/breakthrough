@@ -1,5 +1,4 @@
 # backtesting/steps/data_loader.py
-import pandas as pd
 from logs.logger_config import setup_logger
 from data.db.db_manager import fetch_ohlcv_records
 from data.ohlcv.ohlcv_aggregator import aggregate_to_weekly

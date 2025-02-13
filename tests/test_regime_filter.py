@@ -1,5 +1,4 @@
 # tests/test_regime_filter.py
-import pytest
 from markets.regime_filter import determine_market_regime, filter_regime
 
 def test_determine_market_regime_bullish():

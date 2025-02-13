@@ -4,22 +4,13 @@ import pandas as pd
 from datetime import datetime
 import time
 from logs.logger_config import setup_logger
-from logs.aggregating_handler import AggregatingHandler
-import logging
 
 logger = setup_logger(__name__)
-aggregating_handler = AggregatingHandler(threshold=10, level=logging.debug)
-logger.addHandler(aggregating_handler)
 
 def fetch_historical_ohlcv_data(symbol: str, timeframe: str, start_date: str, 
                                 limit_per_request: int = 1000, pause_sec: float = 1.0, 
                                 exchange_id: str = 'binance', single_fetch: bool = False,
                                 time_offset_ms: int = 1, max_retries: int = 3) -> pd.DataFrame:
-    """
-    ccxt를 이용해 지정 심볼, 타임프레임, 시작일 기준 OHLCV 데이터를 수집합니다.
-    single_fetch=True이면 한 번만 요청합니다.
-    반환 DataFrame은 'open', 'high', 'low', 'close', 'volume' 컬럼을 가지며, 인덱스는 timestamp입니다.
-    """
     try:
         exchange_class = getattr(ccxt, exchange_id)
         exchange = exchange_class({'enableRateLimit': True})
@@ -69,7 +60,6 @@ def fetch_historical_ohlcv_data(symbol: str, timeframe: str, start_date: str,
             df = pd.DataFrame(ohlcv_list, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
             df.set_index('timestamp', inplace=True)
-            logger.debug(f"{symbol} {timeframe} historical data 수집 완료 (총 {len(df)} 행)")
             return df
         except Exception as e:
             logger.error(f"DataFrame 변환 에러: {e}", exc_info=True)
@@ -79,9 +69,6 @@ def fetch_historical_ohlcv_data(symbol: str, timeframe: str, start_date: str,
         return pd.DataFrame()
 
 def fetch_latest_ohlcv_data(symbol: str, timeframe: str, limit: int = 500, exchange_id: str = 'binance') -> pd.DataFrame:
-    """
-    최신 OHLCV 데이터를 수집합니다.
-    """
     try:
         exchange_class = getattr(ccxt, exchange_id)
         exchange = exchange_class({'enableRateLimit': True})
@@ -101,7 +88,6 @@ def fetch_latest_ohlcv_data(symbol: str, timeframe: str, limit: int = 500, excha
             df = pd.DataFrame(ohlcvs, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
             df.set_index('timestamp', inplace=True)
-            logger.debug(f"{symbol} {timeframe} 최신 데이터 수집 완료 (총 {len(df)} 행)")
             return df
         except Exception as e:
             logger.error(f"DataFrame 변환 에러: {e}", exc_info=True)
@@ -113,10 +99,6 @@ def fetch_latest_ohlcv_data(symbol: str, timeframe: str, limit: int = 500, excha
 def get_top_market_cap_symbols(exchange_id: str = 'binance', quote_currency: str = 'USDT', 
                                required_start_date: str = "2018-01-01", count: int = 5, 
                                pause_sec: float = 1.0) -> list:
-    """
-    거래량(quoteVolume)을 기준으로 상위 심볼들을 선정합니다.
-    지정된 시작일 이전 데이터가 존재하는 심볼만 반환합니다.
-    """
     try:
         exchange_class = getattr(ccxt, exchange_id)
         exchange = exchange_class({'enableRateLimit': True})
@@ -143,16 +125,13 @@ def get_top_market_cap_symbols(exchange_id: str = 'binance', quote_currency: str
     
     valid_symbols = []
     for symbol, volume in symbol_volumes:
-        logger.debug(f"심볼 {symbol}의 데이터 가용성 확인 (시작일: {required_start_date})...")
         df = fetch_historical_ohlcv_data(symbol, '1d', required_start_date, 
                                          limit_per_request=1, pause_sec=pause_sec, 
                                          exchange_id=exchange_id, single_fetch=True)
         if df.empty:
-            logger.debug(f"  → {symbol}은 {required_start_date} 이후 데이터가 없거나 제한됨. 스킵합니다.")
             continue
         first_timestamp = df.index.min()
         if first_timestamp > pd.to_datetime(required_start_date):
-            logger.debug(f"  → {symbol}은 {required_start_date} 이후 상장됨 (최초 데이터: {first_timestamp}). 스킵합니다.")
             continue
         valid_symbols.append(symbol)
         if len(valid_symbols) >= count:

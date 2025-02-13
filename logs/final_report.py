@@ -5,10 +5,8 @@ logger = setup_logger(__name__)
 
 def generate_final_report(performance_data, symbol=None):
     """
-    종목별 성과 리포트를 생성합니다.
-    symbol 인자가 전달되면 헤더에 심볼명을 포함합니다.
-    최종 성과 지표는 performance_data["overall"]에 저장되어 있으므로,
-    해당 서브 딕셔너리에서 값을 추출합니다.
+    종목별 백테스트 최종 성과 리포트를 생성합니다.
+    (symbol이 전달되면 헤더에 포함)
     """
     overall = performance_data.get("overall", {})
     report_lines = []
@@ -54,13 +52,12 @@ def generate_final_report(performance_data, symbol=None):
 
 def generate_parameter_sensitivity_report(param_name, results):
     """
-    Parameter Sensitivity Report 생성 (최종 로그용).
-    다중 파라미터 분석의 경우, results는 { (param, value) 튜플: { metric: {mean, std, min, max}, ... } } 형식입니다.
+    최종 파라미터 민감도 리포트를 생성합니다.
+    (다중 파라미터 분석 시, 각 조합에 대한 평균/표준편차/최소/최대 지표를 출력)
     """
     report_lines = []
     report_lines.append("=== FINAL PARAMETER SENSITIVITY REPORT ===")
     
-    # 다중 파라미터 조합인 경우 (키가 튜플인 경우)
     if all(isinstance(k, tuple) for k in results.keys()):
         report_lines.append("Multi-Parameter Analysis Results:")
         for combo_key, metrics in results.items():
@@ -73,7 +70,6 @@ def generate_parameter_sensitivity_report(param_name, results):
                 report_lines.append("  Error during backtesting for this combination.")
             report_lines.append("")
     else:
-        # 단일 파라미터 분석인 경우
         report_lines.append(f"Analyzed Parameter: {param_name}")
         report_lines.append("Results:")
         for val in sorted(results.keys()):

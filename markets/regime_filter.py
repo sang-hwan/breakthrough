@@ -29,6 +29,7 @@ def determine_market_regime(price_data: dict) -> str:
         else:
             regime = "sideways"
         
+        # 필수 상태 변경 시에만 로깅합니다.
         logger.debug(f"시장 레짐 결정: {regime} (변화율: {change_percent:.2%})")
         return regime
     except Exception as e:

@@ -1,5 +1,4 @@
 # tests/test_base_strategy.py
-import pytest
 from strategies.base_strategy import BaseStrategy
 
 class DummyStrategy(BaseStrategy):

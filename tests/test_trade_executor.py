@@ -1,5 +1,4 @@
 # tests/test_trade_executor.py
-import pytest
 import pandas as pd
 from trading.trade_executor import TradeExecutor
 

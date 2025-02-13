@@ -83,7 +83,6 @@ def test_logging_summary_output():
 ---
 
 # tests/test_asset_manager.py
-import pytest
 from core.account import Account
 from trading.asset_manager import AssetManager
 
@@ -110,7 +109,6 @@ def test_rebalance_bearish():
 ---
 
 # tests/test_base_strategy.py
-import pytest
 from strategies.base_strategy import BaseStrategy
 
 class DummyStrategy(BaseStrategy):
@@ -126,7 +124,6 @@ def test_dummy_strategy():
 ---
 
 # tests/test_calculators.py
-import pytest
 import pandas as pd
 import numpy as np
 from trading.calculators import calculate_atr, calculate_dynamic_stop_and_take, calculate_partial_exit_targets
@@ -157,7 +154,6 @@ def test_partial_exit_targets():
 ---
 
 # tests/test_config_manager.py
-import pytest
 from config.config_manager import ConfigManager
 
 def test_get_defaults():
@@ -194,7 +190,6 @@ def test_merge_optimized():
 ---
 
 # tests/test_core_account.py
-import pytest
 from core.account import Account
 from core.position import Position
 
@@ -354,45 +349,35 @@ def test_aggregate_to_weekly():
 ---
 
 # tests/test_optimizer.py
-import pytest
 from strategies.optimizer import DynamicParameterOptimizer
 
-class DummyTrial:
-    # 간단한 dummy trial를 만들어 objective가 실행되도록 함
-    def suggest_float(self, name, low, high):
-        return (low + high) / 2
-    def suggest_categorical(self, name, choices):
-        return choices[0]
-
-def test_optimizer_objective():
-    optimizer = DynamicParameterOptimizer(n_trials=1)
-    dummy_trial = DummyTrial()
-    score = optimizer.objective(dummy_trial)
-    assert isinstance(score, float)
+def test_optimizer_returns_trial():
+    optimizer = DynamicParameterOptimizer(n_trials=2)
+    best_trial = optimizer.optimize()
+    assert best_trial is not None
+    assert isinstance(best_trial.params, dict)
 
 ---
 
 # tests/test_param_analysis.py
-import pytest
 import numpy as np
 from strategies.param_analysis import run_sensitivity_analysis
-from config.config_manager import ConfigManager
 
-def test_run_sensitivity_analysis():
+def test_sensitivity_analysis():
     param_settings = {
-        "profit_ratio": np.linspace(0.05, 0.15, 3)
+        "profit_ratio": np.linspace(0.07, 0.09, 3),
+        "atr_multiplier": np.linspace(2.0, 2.2, 3)
     }
-    cm = ConfigManager()
-    base_dynamic_params = cm.get_defaults()
-    results = run_sensitivity_analysis(param_settings, assets=["BTC/USDT"], short_tf="4h", long_tf="1d",
-                                       start_date="2023-01-01", end_date="2023-01-31",
-                                       periods=[("2023-01-01", "2023-01-31")],
-                                       base_dynamic_params=base_dynamic_params)
-    # 결과가 딕셔너리 형태이며, profit_ratio 값에 대한 결과가 존재해야 함
-    assert "profit_ratio" in results
-    for val, metrics in results["profit_ratio"].items():
-        # ROI 등의 지표가 포함되어 있으면 통과
-        assert metrics is None or "roi" in metrics
+    results = run_sensitivity_analysis(
+        param_settings,
+        assets=["BTC/USDT"],
+        short_tf="4h",
+        long_tf="1d",
+        start_date="2023-01-01",
+        end_date="2023-01-10",
+        periods=[("2023-01-01", "2023-01-10")]
+    )
+    assert isinstance(results, dict)
 
 ---
 
@@ -454,7 +439,6 @@ def test_final_report_output():
 ---
 
 # tests/test_regime_filter.py
-import pytest
 from markets.regime_filter import determine_market_regime, filter_regime
 
 def test_determine_market_regime_bullish():
@@ -505,7 +489,6 @@ def test_train_and_predict(sample_data):
 ---
 
 # tests/test_risk_manager.py
-import pytest
 from trading.risk_manager import RiskManager
 
 def test_compute_position_size():
@@ -523,8 +506,103 @@ def test_allocate_position_splits():
 
 ---
 
-# tests/test_trade_executor.py
+# tests/test_strategies.py
+import pandas as pd
 import pytest
+from strategies.trading_strategies import (
+    SelectStrategy, TrendFollowingStrategy, BreakoutStrategy,
+    CounterTrendStrategy, HighFrequencyStrategy,
+    WeeklyBreakoutStrategy, WeeklyMomentumStrategy,
+    TradingStrategies
+)
+
+@pytest.fixture
+def sample_data():
+    # 간단한 테스트용 데이터프레임 (일별 데이터)
+    dates = pd.date_range(start="2023-01-01", periods=5, freq="D")
+    data = pd.DataFrame({
+        "open": [100, 102, 103, 104, 105],
+        "high": [105, 107, 108, 109, 110],
+        "low": [95, 97, 98, 99, 100],
+        "close": [102, 104, 103, 107, 108],
+        "sma": [100, 101, 102, 103, 104],
+        "rsi": [30, 35, 40, 25, 45],
+        "bb_lband": [98, 99, 100, 101, 102],
+    }, index=dates)
+    return data
+
+@pytest.fixture
+def sample_weekly_data():
+    # 간단한 주간 데이터프레임
+    dates = pd.date_range(start="2023-01-01", periods=3, freq="W-MON")
+    data = pd.DataFrame({
+        "open": [100, 110, 120],
+        "high": [105, 115, 125],
+        "low": [95, 105, 115],
+        "close": [102, 112, 122],
+        "weekly_momentum": [0.5, 0.6, 0.4],
+    }, index=dates)
+    return data
+
+def test_select_strategy(sample_data):
+    strat = SelectStrategy()
+    current_time = sample_data.index[-1]
+    signal = strat.get_signal(sample_data, current_time)
+    assert signal in ["enter_long", "hold"]
+
+def test_trend_following_strategy(sample_data):
+    strat = TrendFollowingStrategy()
+    current_time = sample_data.index[-1]
+    signal = strat.get_signal(sample_data, current_time)
+    assert signal in ["enter_long", "hold"]
+
+def test_breakout_strategy(sample_data):
+    strat = BreakoutStrategy(window=3)
+    current_time = sample_data.index[-1]
+    signal = strat.get_signal(sample_data, current_time)
+    assert signal in ["enter_long", "hold"]
+
+def test_counter_trend_strategy(sample_data):
+    strat = CounterTrendStrategy()
+    current_time = sample_data.index[-1]
+    # RSI 낮은 경우 -> 진입 신호
+    sample_data.loc[current_time, 'rsi'] = 25
+    signal = strat.get_signal(sample_data, current_time)
+    assert signal == "enter_long"
+    # RSI 높은 경우 -> 청산 신호
+    sample_data.loc[current_time, 'rsi'] = 75
+    signal = strat.get_signal(sample_data, current_time)
+    assert signal == "exit_all"
+
+def test_high_frequency_strategy():
+    # 2분 단위의 간단한 데이터 생성
+    dates = pd.date_range(start="2023-01-01", periods=2, freq="T")
+    data = pd.DataFrame({"close": [100, 100.5]}, index=dates)
+    strat = HighFrequencyStrategy()
+    signal = strat.get_signal(data, data.index[-1])
+    assert signal in ["enter_long", "exit_all", "hold"]
+
+def test_weekly_breakout_strategy(sample_weekly_data):
+    strat = WeeklyBreakoutStrategy()
+    current_time = sample_weekly_data.index[-1]
+    signal = strat.get_signal(sample_weekly_data, current_time, breakout_threshold=0.01)
+    assert signal in ["enter_long", "exit_all", "hold"]
+
+def test_weekly_momentum_strategy(sample_weekly_data):
+    strat = WeeklyMomentumStrategy()
+    current_time = sample_weekly_data.index[-1]
+    signal = strat.get_signal(sample_weekly_data, current_time, momentum_threshold=0.5)
+    assert signal in ["enter_long", "exit_all", "hold"]
+
+def test_trading_strategies_ensemble(sample_data, sample_weekly_data):
+    ensemble = TradingStrategies()
+    current_time = sample_data.index[-1]
+    signal = ensemble.get_final_signal("bullish", "high", sample_data, current_time, data_weekly=sample_weekly_data)
+    assert signal in ["enter_long", "exit_all", "hold"]
+
+---
+
+# tests/test_trade_executor.py
 import pandas as pd
 from trading.trade_executor import TradeExecutor
 

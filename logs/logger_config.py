@@ -9,11 +9,7 @@ load_dotenv()
 
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development").lower()
 _LOG_LEVEL_FROM_ENV = os.getenv("LOG_LEVEL", None)
-if _LOG_LEVEL_FROM_ENV:
-    file_level = getattr(logging, _LOG_LEVEL_FROM_ENV.upper(), logging.INFO)
-else:
-    file_level = logging.INFO
-file_log_level = file_level
+file_level = getattr(logging, _LOG_LEVEL_FROM_ENV.upper(), logging.INFO) if _LOG_LEVEL_FROM_ENV else logging.INFO
 LOG_DETAIL_LEVEL = os.getenv("LOG_DETAIL_LEVEL", "DEBUG")
 detail_level = getattr(logging, LOG_DETAIL_LEVEL.upper(), logging.DEBUG)
 BASE_LOG_FILE = os.path.join("logs", "project.log")
@@ -34,10 +30,7 @@ class LineRotatingFileHandler(RotatingFileHandler):
 
     def _set_current_filename(self):
         base, ext = os.path.splitext(self.base_filename)
-        if self.current_index == 0:
-            self.current_filename = self.base_filename
-        else:
-            self.current_filename = f"{base}{self.current_index}{ext}"
+        self.current_filename = self.base_filename if self.current_index == 0 else f"{base}{self.current_index}{ext}"
         self.baseFilename = os.path.abspath(self.current_filename)
 
     def doRollover(self):
@@ -48,10 +41,7 @@ class LineRotatingFileHandler(RotatingFileHandler):
         if self.backupCount > 0 and self.current_index >= self.backupCount:
             base, ext = os.path.splitext(self.base_filename)
             oldest_index = self.current_index - self.backupCount
-            if oldest_index == 0:
-                old_file = self.base_filename
-            else:
-                old_file = f"{base}{oldest_index}{ext}"
+            old_file = self.base_filename if oldest_index == 0 else f"{base}{oldest_index}{ext}"
             if os.path.exists(old_file):
                 os.remove(old_file)
         self._set_current_filename()
@@ -92,7 +82,7 @@ def initialize_root_logger():
         encoding="utf-8",
         delay=True
     )
-    file_handler.setLevel(file_log_level)
+    file_handler.setLevel(file_level)
     formatter = OneLineFormatter('[%(asctime)s] %(levelname)s:%(name)s:%(filename)s:%(funcName)s: %(message)s')
     file_handler.setFormatter(formatter)
     root_logger.addHandler(file_handler)

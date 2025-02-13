@@ -1,5 +1,4 @@
 # tests/test_calculators.py
-import pytest
 import pandas as pd
 import numpy as np
 from trading.calculators import calculate_atr, calculate_dynamic_stop_and_take, calculate_partial_exit_targets

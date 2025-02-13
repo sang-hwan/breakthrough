@@ -1,5 +1,4 @@
 # tests/test_asset_manager.py
-import pytest
 from core.account import Account
 from trading.asset_manager import AssetManager
 

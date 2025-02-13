@@ -1,18 +1,13 @@
 # data/db/db_manager.py
-import logging
 from sqlalchemy import create_engine, text
 from psycopg2.extras import execute_values
 import pandas as pd
-from data.db.db_config import DATABASE  # 경로 변경됨
+from data.db.db_config import DATABASE
 from logs.logger_config import setup_logger
 
 logger = setup_logger(__name__)
 
 def insert_on_conflict(table, conn, keys, data_iter):
-    """
-    데이터를 삽입할 때, timestamp 컬럼을 기준으로 중복 발생 시 삽입하지 않습니다.
-    pandas.to_sql() 의 method 인자로 사용되며, 각 청크 단위로 호출됩니다.
-    """
     try:
         raw_conn = conn.connection
         cur = raw_conn.cursor()
@@ -21,16 +16,11 @@ def insert_on_conflict(table, conn, keys, data_iter):
         sql = f"INSERT INTO {table.name} ({columns}) VALUES %s ON CONFLICT (timestamp) DO NOTHING"
         execute_values(cur, sql, values)
         cur.close()
-        logger.debug(f"[DB] insert_on_conflict: {len(values)} records processed for table {table.name}")
     except Exception as e:
         logger.error(f"insert_on_conflict 에러: {e}", exc_info=True)
 
 def insert_ohlcv_records(df: pd.DataFrame, table_name: str = 'ohlcv_data', conflict_action: str = "DO NOTHING",
                          db_config: dict = None, chunk_size: int = 10000) -> None:
-    """
-    OHLCV 데이터를 지정된 테이블에 저장합니다.
-    - 대용량 데이터 처리를 위해 chunk_size 단위로 나누어 저장합니다.
-    """
     if db_config is None:
         db_config = DATABASE
 
@@ -69,16 +59,11 @@ def insert_ohlcv_records(df: pd.DataFrame, table_name: str = 'ohlcv_data', confl
             method=insert_on_conflict,
             chunksize=chunk_size
         )
-        logger.debug(f"데이터 저장 완료: {table_name} (총 {len(df)} 행)")
     except Exception as e:
         logger.error(f"데이터 저장 에러 ({table_name}): {e}", exc_info=True)
 
 def fetch_ohlcv_records(table_name: str = 'ohlcv_data', start_date: str = None, end_date: str = None,
                         db_config: dict = None) -> pd.DataFrame:
-    """
-    지정된 테이블에서 OHLCV 데이터를 읽어옵니다.
-    에러 발생 시 빈 DataFrame을 반환하며, 에러 내용을 로깅합니다.
-    """
     if db_config is None:
         db_config = DATABASE
 
@@ -105,7 +90,6 @@ def fetch_ohlcv_records(table_name: str = 'ohlcv_data', start_date: str = None, 
     try:
         df = pd.read_sql(query, engine, params=params, parse_dates=['timestamp'])
         df.set_index('timestamp', inplace=True)
-        logger.debug(f"데이터 로드 완료: {table_name} (총 {len(df)} 행)")
         return df
     except Exception as e:
         logger.error(f"데이터 로드 에러 ({table_name}): {e}", exc_info=True)

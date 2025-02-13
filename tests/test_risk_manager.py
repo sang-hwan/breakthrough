@@ -1,5 +1,4 @@
 # tests/test_risk_manager.py
-import pytest
 from trading.risk_manager import RiskManager
 
 def test_compute_position_size():

@@ -6,112 +6,74 @@ logger = setup_logger(__name__)
 class Account:
     def __init__(self, initial_balance: float, fee_rate: float = 0.001):
         """
-        계좌 생성:
-          - 초기 잔고는 현물(spot) 자산으로 간주합니다.
-          - fee_rate는 거래 시 적용되는 수수료율입니다.
+        계좌 생성: 초기 잔고는 현물(spot) 자산으로 간주하며, fee_rate는 거래 시 적용되는 수수료율입니다.
         """
         self.initial_balance = initial_balance
         self.spot_balance = initial_balance
         self.stablecoin_balance = 0.0
         self.fee_rate = fee_rate
         self.positions = []  # 보유 중인 포지션 객체 리스트
-        logger.debug(f"Account 초기화 완료: 초기 잔고 {initial_balance:.2f}")
+        logger.debug(f"Account initialized with balance: {initial_balance:.2f}")
 
     def add_position(self, position) -> None:
-        """
-        새로운 포지션을 추가합니다.
-        """
+        """새로운 포지션을 추가합니다."""
         self.positions.append(position)
-        logger.debug(f"포지션 추가됨: ID={position.position_id}")
+        logger.debug(f"Position added: ID={position.position_id}")
 
     def remove_position(self, position) -> None:
-        """
-        보유 포지션 목록에서 지정된 포지션을 제거합니다.
-        """
+        """보유 포지션 목록에서 지정된 포지션을 제거합니다."""
         if position in self.positions:
             self.positions.remove(position)
-            logger.debug(f"포지션 제거됨: ID={position.position_id}")
+            logger.debug(f"Position removed: ID={position.position_id}")
         else:
-            logger.warning(f"포지션 제거 실패: ID={position.position_id} not found")
+            logger.warning(f"Failed to remove position: ID={position.position_id}")
 
     def get_used_balance(self) -> float:
-        """
-        미체결 포지션으로 인해 사용 중인 금액(수수료 포함)을 계산합니다.
-        """
+        """미체결 포지션으로 인해 사용 중인 금액(수수료 포함)을 계산합니다."""
         used = 0.0
         for pos in self.positions:
-            for exec_record in pos.executions:
-                if not exec_record.get("closed", False):
-                    calc = exec_record["entry_price"] * exec_record["size"] * (1 + self.fee_rate)
-                    used += calc
-                    logger.debug(
-                        f"계산 중: 포지션 ID={pos.position_id}, "
-                        f"entry_price={exec_record['entry_price']}, size={exec_record['size']}, "
-                        f"fee_rate={self.fee_rate}, 계산값={calc:.2f}"
-                    )
-        logger.debug(f"총 사용 금액 계산: {used:.2f}")
+            for record in pos.executions:
+                if not record.get("closed", False):
+                    used += record["entry_price"] * record["size"] * (1 + self.fee_rate)
         return used
 
     def get_available_balance(self) -> float:
-        """
-        현재 현물 잔고에서 사용 중 금액을 차감한 가용 잔액을 반환합니다.
-        """
-        used = self.get_used_balance()
-        available = self.spot_balance - used
-        logger.debug(
-            f"가용 잔고 계산: spot_balance={self.spot_balance:.2f} - used={used:.2f} = available={available:.2f}"
-        )
-        return available
+        """현재 현물 잔고에서 사용 중 금액을 차감한 가용 잔액을 반환합니다."""
+        return self.spot_balance - self.get_used_balance()
 
     def update_after_trade(self, trade: dict) -> None:
-        """
-        체결된 거래의 PnL을 반영하여 계좌 잔고를 업데이트합니다.
-        """
+        """체결된 거래의 PnL을 반영하여 계좌 잔고를 업데이트합니다."""
         pnl = trade.get("pnl", 0.0)
-        previous_balance = self.spot_balance
         self.spot_balance += pnl
-        logger.debug(
-            f"거래 체결 업데이트: pnl={pnl:.2f}, 현물 잔고={self.spot_balance:.2f}"
-        )
-        logger.debug(
-            f"업데이트 상세: 이전 잔고={previous_balance:.2f} → {self.spot_balance:.2f}"
-        )
+        logger.debug(f"Trade executed: PnL={pnl:.2f}, Updated spot balance={self.spot_balance:.2f}")
 
     def convert_to_stablecoin(self, amount: float, conversion_fee: float = 0.001) -> float:
         """
         현물 자산의 일부를 스테이블코인으로 전환합니다.
+        가용 잔액보다 큰 금액 요청 시 가용 잔액으로 자동 조정됩니다.
         """
         available = self.get_available_balance()
-        logger.debug(f"전환 요청: amount={amount:.2f}, 가용 잔고={available:.2f}")
         if amount > available:
-            logger.debug(f"요청 금액 {amount:.2f}이 가용 잔고 {available:.2f}보다 큽니다. 조정합니다.")
             amount = available
         fee = amount * conversion_fee
         net_amount = amount - fee
         self.spot_balance -= amount
         self.stablecoin_balance += net_amount
-        logger.debug(
-            f"현물 → 스테이블코인 전환: amount={amount:.2f}, fee={fee:.2f}, "
-            f"전환 후 현물 잔고={self.spot_balance:.2f}"
-        )
+        logger.debug(f"Converted {amount:.2f} from spot to stablecoin (net {net_amount:.2f})")
         return net_amount
 
     def convert_to_spot(self, amount: float, conversion_fee: float = 0.001) -> float:
         """
         스테이블코인을 현물 자산으로 전환합니다.
+        요청 금액이 잔고보다 클 경우 잔고로 자동 조정됩니다.
         """
-        logger.debug(f"현물 전환 요청: amount={amount:.2f}, 스테이블코인 잔고={self.stablecoin_balance:.2f}")
         if amount > self.stablecoin_balance:
-            logger.debug(f"요청 금액 {amount:.2f}이 잔고 {self.stablecoin_balance:.2f}보다 큽니다. 조정합니다.")
             amount = self.stablecoin_balance
         fee = amount * conversion_fee
         net_amount = amount - fee
         self.stablecoin_balance -= amount
         self.spot_balance += net_amount
-        logger.debug(
-            f"스테이블코인 → 현물 전환: amount={amount:.2f}, fee={fee:.2f}, "
-            f"전환 후 현물 잔고={self.spot_balance:.2f}"
-        )
+        logger.debug(f"Converted {amount:.2f} from stablecoin to spot (net {net_amount:.2f})")
         return net_amount
 
     def __str__(self) -> str:
@@ -149,85 +111,70 @@ class Position:
         self.executed_splits = 0
         self.allocation_plan = allocation_plan if allocation_plan is not None else []
         self.highest_price = initial_price if initial_price is not None else 0.0
-        logger.debug(f"새 포지션 생성: ID={self.position_id}, side={self.side}, 초기 가격={self.initial_price}")
+        logger.debug(f"New position created: ID={self.position_id}, side={self.side}, entry price={self.initial_price}")
 
     def add_execution(self, entry_price: float, size: float, stop_loss: float = None,
-                      take_profit: float = None, entry_time = None, exit_targets: list = None,
+                      take_profit: float = None, entry_time=None, exit_targets: list = None,
                       trade_type: str = "unknown", min_order_size: float = 1e-8) -> None:
         """
         포지션 실행 추가:
           - exit_targets: [(target_price, exit_ratio), ...] 형식의 리스트
-          - min_order_size: 최소 체결 수량
         """
         if size < min_order_size:
-            logger.debug("체결 수량이 최소 주문 수량보다 작아 실행 건너뜀.")
             return
-        flagged_targets = []
+        targets = []
         if exit_targets:
             for target_price, exit_ratio in exit_targets:
-                flagged_targets.append({
-                    'price': target_price,
-                    'exit_ratio': exit_ratio,
-                    'hit': False
-                })
+                targets.append({'price': target_price, 'exit_ratio': exit_ratio, 'hit': False})
         execution = {
             'entry_price': entry_price,
             'size': size,
             'stop_loss': stop_loss,
             'take_profit': take_profit,
             'entry_time': entry_time,
-            'exit_targets': flagged_targets,
+            'exit_targets': targets,
             'trade_type': trade_type,
             'highest_price_since_entry': entry_price,
             'closed': False
         }
         self.executions.append(execution)
-        logger.debug(f"실행 추가됨: entry_price={entry_price}, size={size}, trade_type={trade_type}")
+        logger.debug(f"Execution added: entry_price={entry_price}, size={size}, type={trade_type}")
 
     def get_total_size(self) -> float:
-        """
-        미체결 실행의 총 사이즈를 반환합니다.
-        """
-        return sum(exec_record['size'] for exec_record in self.executions if not exec_record.get("closed", False))
+        """미체결 실행의 총 사이즈를 반환합니다."""
+        return sum(record['size'] for record in self.executions if not record.get("closed", False))
 
     def get_average_entry_price(self) -> float:
-        """
-        미체결 실행의 평균 진입 가격을 계산하여 반환합니다.
-        """
-        total_cost = sum(exec_record['entry_price'] * exec_record['size'] for exec_record in self.executions if not exec_record.get("closed", False))
+        """미체결 실행의 평균 진입 가격을 계산하여 반환합니다."""
+        total_cost = sum(record['entry_price'] * record['size'] for record in self.executions if not record.get("closed", False))
         total_qty = self.get_total_size()
-        return (total_cost / total_qty) if total_qty > 0 else 0.0
+        return total_cost / total_qty if total_qty > 0 else 0.0
 
     def remove_execution(self, index: int) -> None:
-        """
-        지정한 인덱스의 실행 내역을 제거합니다.
-        """
+        """지정한 인덱스의 실행 내역을 제거합니다."""
         if 0 <= index < len(self.executions):
             self.executions.pop(index)
-            logger.debug(f"실행 제거됨: index={index}")
+            logger.debug(f"Execution removed at index {index}")
 
     def is_empty(self) -> bool:
-        """
-        모든 실행이 종료(closed)되었는지 확인합니다.
-        """
-        return all(exec_record.get("closed", False) for exec_record in self.executions)
+        """모든 실행이 종료되었는지 확인합니다."""
+        return all(record.get("closed", False) for record in self.executions)
 
     def partial_close_execution(self, index: int, close_ratio: float, min_order_size: float = 1e-8) -> float:
         """
-        부분 청산:
-          - 지정된 비율(close_ratio)만큼 실행의 사이즈를 감소시키며,
-            남은 수량이 최소 주문 수량보다 작으면 해당 실행을 종료(closed 처리)합니다.
+        부분 청산: 지정된 비율(close_ratio)만큼 실행의 사이즈를 감소시키며,
+        남은 수량이 최소 주문 수량보다 작으면 해당 실행을 종료합니다.
         Returns:
           - 청산된 수량
         """
         if 0 <= index < len(self.executions):
-            exec_record = self.executions[index]
-            qty_to_close = exec_record['size'] * close_ratio
-            exec_record['size'] -= qty_to_close
-            if exec_record.get('exit_targets'):
-                exec_record['exit_targets'] = [t for t in exec_record['exit_targets'] if not t.get('hit', False)]
-            if exec_record['size'] < min_order_size:
-                exec_record['closed'] = True
-            logger.debug(f"부분 청산 실행: index={index}, close_ratio={close_ratio}, 청산 수량={qty_to_close}")
+            record = self.executions[index]
+            qty_to_close = record['size'] * close_ratio
+            record['size'] -= qty_to_close
+            if record.get('exit_targets'):
+                record['exit_targets'] = [t for t in record['exit_targets'] if not t.get('hit', False)]
+            if record['size'] < min_order_size:
+                record['closed'] = True
+            logger.debug(f"Partial close executed: index={index}, ratio={close_ratio}, closed qty={qty_to_close}")
             return qty_to_close
         return 0.0

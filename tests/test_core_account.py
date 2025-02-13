@@ -1,5 +1,4 @@
 # tests/test_core_account.py
-import pytest
 from core.account import Account
 from core.position import Position
 

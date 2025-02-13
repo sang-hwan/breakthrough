@@ -1,5 +1,4 @@
 # tests/test_config_manager.py
-import pytest
 from config.config_manager import ConfigManager
 
 def test_get_defaults():

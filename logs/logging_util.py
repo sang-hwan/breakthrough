@@ -6,11 +6,8 @@ from logs.logger_config import setup_logger
 
 class LoggingUtil:
     """
-    LoggingUtil는 이벤트 로깅과 로그 파일 관리 기능을 제공합니다.
-    
-    - 이벤트 로깅: 각 모듈별로 인스턴스를 생성하고, 이벤트 발생 시 INFO 레벨 로그를 기록하여
-      AggregatingHandler가 동일 기준으로 로그를 집계하도록 합니다.
-    - 로그 파일 관리: 정적 메서드 clear_log_files()를 통해 프로젝트 루트의 logs 폴더 내 모든 .log 파일을 삭제합니다.
+    LoggingUtil는 이벤트 로깅과 로그 파일 관리를 제공합니다.
+    이벤트 발생 시 INFO 레벨 로그를 기록하며, clear_log_files()로 logs 폴더 내 .log 파일을 삭제합니다.
     """
     def __init__(self, module_name: str):
         self.module_name = module_name

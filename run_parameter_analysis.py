@@ -13,9 +13,9 @@ def parse_args():
     )
     parser.add_argument("--param_names", type=str, 
                         default="profit_ratio,atr_multiplier,risk_per_trade,scale_in_threshold,weekly_breakout_threshold,weekly_momentum_threshold",
-                        help="Comma-separated list of parameter names to analyze. Multi-parameter mode is activated.")
-    parser.add_argument("--param_steps", type=int, default=10, 
-                        help="Number of steps for each parameter (default: 10)")
+                        help="Comma-separated list of parameter names to analyze.")
+    parser.add_argument("--param_steps", type=int, default=3, 
+                        help="Number of steps for each parameter (default: 3)")
     parser.add_argument("--assets", type=str, default="BTC/USDT", 
                         help="Comma-separated list of assets (default: BTC/USDT)")
     parser.add_argument("--short_tf", type=str, default="4h", 
@@ -44,19 +44,16 @@ def parse_periods(periods_str, default_start, default_end):
                 period_list.append((s.strip(), e.strip()))
             except Exception as e:
                 logging.getLogger(__name__).error(f"Error parsing period pair '{pair}': {e}", exc_info=True)
-    if not period_list:
-        period_list = [(default_start, default_end)]
-    return period_list
+    return period_list if period_list else [(default_start, default_end)]
 
 def run_parameter_analysis():
-    # 기존 로그 재설정
+    # 기존 로그 파일 삭제 및 루트 로거 초기화
     LoggingUtil.clear_log_files()
     initialize_root_logger()
 
-    # 인자 파싱 후 로거 생성
     args = parse_args()
     logger = setup_logger(__name__)
-    logger.debug("Starting parameter sensitivity analysis with external configuration.")
+    logger.debug("Starting parameter sensitivity analysis.")
 
     assets = parse_assets(args.assets)
     periods = parse_periods(args.periods, args.start_date, args.end_date)
@@ -72,17 +69,18 @@ def run_parameter_analysis():
             continue
         try:
             default_val = float(defaults[pname])
-        except Exception as e:
+        except Exception:
             logger.warning(f"Parameter {pname} is not numeric. Skipping.")
             continue
-        start_val = default_val * 0.8
-        end_val = default_val * 1.2
-        param_values = np.linspace(start_val, end_val, args.param_steps)
-        logger.debug(f"Analyzing parameter {pname} with range {start_val:.4f} to {end_val:.4f} in {args.param_steps} steps.")
-        param_settings[pname] = param_values
+        start_val = default_val * 0.9
+        end_val = default_val * 1.1
+        param_settings[pname] = np.linspace(start_val, end_val, args.param_steps)
+        logger.info(f"Analyzing {pname} over range {start_val:.4f} to {end_val:.4f}")
 
-    results_all = run_sensitivity_analysis(param_settings, assets, args.short_tf, args.long_tf, args.start_date, args.end_date, periods)
-    report_title = "Multi-Parameter Analysis: " + ", ".join(results_all.keys())
+    results_all = run_sensitivity_analysis(
+        param_settings, assets, args.short_tf, args.long_tf, args.start_date, args.end_date, periods
+    )
+    report_title = "Multi-Parameter Analysis: " + ", ".join([str(k) for k in results_all.keys()])
     generate_parameter_sensitivity_report(report_title, results_all)
 
 if __name__ == "__main__":
