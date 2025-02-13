@@ -1,0 +1,564 @@
+# strategies/base_strategy.py
+from logs.logger_config import setup_logger
+
+class BaseStrategy:
+    def __init__(self):
+        self.logger = setup_logger(self.__class__.__name__)
+    
+    def get_signal(self, data, current_time, **kwargs):
+        """
+        각 전략이 구현해야 하는 신호 산출 메서드.
+        """
+        raise NotImplementedError("Subclasses must implement get_signal()")
+
+---
+
+# strategies/optimizer.py
+import optuna
+from logs.logger_config import setup_logger
+from backtesting.backtester import Backtester
+from config.config_manager import ConfigManager  # 이전 DynamicParamManager → ConfigManager
+
+logger = setup_logger(__name__)
+
+class DynamicParameterOptimizer:
+    def __init__(self, n_trials=50):
+        self.n_trials = n_trials
+        self.study = None
+        self.config_manager = ConfigManager()  # ConfigManager 인스턴스 생성
+
+    def objective(self, trial):
+        try:
+            base_params = self.config_manager.get_defaults()  # 메서드명 변경됨
+            suggested_params = {
+                "hmm_confidence_threshold": trial.suggest_float("hmm_confidence_threshold", 0.7, 0.95),
+                "liquidity_info": trial.suggest_categorical("liquidity_info", ["high", "low"]),
+                "atr_multiplier": trial.suggest_float("atr_multiplier", 1.5, 3.0),
+                "profit_ratio": trial.suggest_float("profit_ratio", 0.05, 0.15),
+                "risk_per_trade": trial.suggest_float("risk_per_trade", 0.005, 0.02),
+                "scale_in_threshold": trial.suggest_float("scale_in_threshold", 0.01, 0.03),
+                "partial_exit_ratio": trial.suggest_float("partial_exit_ratio", 0.4, 0.6),
+                "partial_profit_ratio": trial.suggest_float("partial_profit_ratio", 0.02, 0.04),
+                "final_profit_ratio": trial.suggest_float("final_profit_ratio", 0.05, 0.1),
+                "weekly_breakout_threshold": trial.suggest_float("weekly_breakout_threshold", 0.005, 0.02),
+                "weekly_momentum_threshold": trial.suggest_float("weekly_momentum_threshold", 0.3, 0.7)
+            }
+            dynamic_params = {**base_params, **suggested_params}
+            logger.debug(f"[Optimizer] Merged parameters: {dynamic_params}")
+
+            assets = ["BTC/USDT", "ETH/USDT", "XRP/USDT"]
+            splits = [
+                {
+                    "train_start": "2018-06-01",
+                    "train_end": "2020-12-31",
+                    "test_start": "2021-01-01",
+                    "test_end": "2023-12-31"
+                }
+            ]
+            holdout = {"holdout_start": "2024-01-01", "holdout_end": "2025-02-01"}
+
+            total_score = 0.0
+            num_evaluations = 0
+
+            for split in splits:
+                for asset in assets:
+                    logger.debug(f"[Optimizer] Evaluating {asset} with split: {split}")
+
+                    # Training backtest
+                    backtester_train = Backtester(symbol=asset, account_size=10000)
+                    symbol_key = asset.replace("/", "").lower()
+                    backtester_train.load_data(
+                        short_table_format=f"ohlcv_{symbol_key}_{{timeframe}}",
+                        long_table_format=f"ohlcv_{symbol_key}_{{timeframe}}",
+                        short_tf="4h", long_tf="1d",
+                        start_date=split["train_start"], end_date=split["train_end"]
+                    )
+                    try:
+                        trades_train, _ = backtester_train.run_backtest(dynamic_params)
+                    except Exception as e:
+                        logger.error(f"[Optimizer] Training backtest failed: {asset}, split {split}: {e}", exc_info=True)
+                        return 1e6
+                    total_pnl_train = sum(trade["pnl"] for trade in trades_train)
+                    roi_train = total_pnl_train / 10000 * 100
+                    logger.debug(f"[Optimizer] {asset} Training ROI: {roi_train:.2f}%")
+
+                    # Test backtest
+                    backtester_test = Backtester(symbol=asset, account_size=10000)
+                    backtester_test.load_data(
+                        short_table_format=f"ohlcv_{symbol_key}_{{timeframe}}",
+                        long_table_format=f"ohlcv_{symbol_key}_{{timeframe}}",
+                        short_tf="4h", long_tf="1d",
+                        start_date=split["test_start"], end_date=split["test_end"]
+                    )
+                    try:
+                        trades_test, _ = backtester_test.run_backtest(dynamic_params)
+                    except Exception as e:
+                        logger.error(f"[Optimizer] Test backtest failed: {asset}, split {split}: {e}", exc_info=True)
+                        return 1e6
+                    total_pnl_test = sum(trade["pnl"] for trade in trades_test)
+                    roi_test = total_pnl_test / 10000 * 100
+                    logger.debug(f"[Optimizer] {asset} Test ROI: {roi_test:.2f}%")
+
+                    # Holdout backtest
+                    backtester_holdout = Backtester(symbol=asset, account_size=10000)
+                    backtester_holdout.load_data(
+                        short_table_format=f"ohlcv_{symbol_key}_{{timeframe}}",
+                        long_table_format=f"ohlcv_{symbol_key}_{{timeframe}}",
+                        short_tf="4h", long_tf="1d",
+                        start_date=holdout["holdout_start"], end_date=holdout["holdout_end"]
+                    )
+                    try:
+                        trades_holdout, _ = backtester_holdout.run_backtest(dynamic_params)
+                    except Exception as e:
+                        logger.error(f"[Optimizer] Holdout backtest failed: {asset}: {e}", exc_info=True)
+                        return 1e6
+                    total_pnl_holdout = sum(trade["pnl"] for trade in trades_holdout)
+                    roi_holdout = total_pnl_holdout / 10000 * 100
+                    logger.debug(f"[Optimizer] {asset} Holdout ROI: {roi_holdout:.2f}%")
+
+                    overfit_penalty = abs(roi_train - roi_test)
+                    holdout_penalty = 0 if roi_holdout >= 2.0 else (2.0 - roi_holdout) * 10
+                    score = -roi_test + overfit_penalty + holdout_penalty
+                    logger.debug(f"[Optimizer] {asset} Score: {score:.2f} (Overfit: {overfit_penalty:.2f}, Holdout: {holdout_penalty:.2f})")
+
+                    total_score += score
+                    num_evaluations += 1
+
+            avg_score = total_score / num_evaluations if num_evaluations > 0 else total_score
+
+            # Regularization penalty
+            reg_penalty = 0.0
+            regularization_keys = ["atr_multiplier", "profit_ratio", "risk_per_trade", "scale_in_threshold",
+                                   "weekly_breakout_threshold", "weekly_momentum_threshold"]
+            for key in regularization_keys:
+                default_value = base_params.get(key, 1.0)
+                diff = dynamic_params.get(key, default_value) - default_value
+                reg_penalty += (diff ** 2)
+            reg_penalty *= 0.1
+
+            final_score = avg_score + reg_penalty
+            logger.debug(f"[Optimizer] Final trial score: {final_score:.2f} (Avg: {avg_score:.2f}, Reg: {reg_penalty:.2f})")
+            return final_score
+
+        except Exception as e:
+            logger.error(f"[Optimizer] Objective error: {e}", exc_info=True)
+            return 1e6
+
+    def optimize(self):
+        sampler = optuna.samplers.TPESampler(seed=42)
+        self.study = optuna.create_study(direction="minimize", sampler=sampler)
+        logger.debug(f"[Optimizer] Starting optimization with {self.n_trials} trials.")
+        self.study.optimize(self.objective, n_trials=self.n_trials)
+        trials_df = self.study.trials_dataframe()
+        logger.debug(f"[Optimizer] Trial results:\n{trials_df.to_string()}")
+        best_trial = self.study.best_trial
+        logger.debug(f"[Optimizer] Best trial: {best_trial.number} (Value: {best_trial.value:.2f})")
+        logger.debug(f"[Optimizer] Best parameters: {best_trial.params}")
+        return best_trial
+
+---
+
+# strategies/param_analysis.py
+import numpy as np
+from itertools import product
+from logs.logger_config import setup_logger
+from backtesting.backtester import Backtester
+from config.config_manager import ConfigManager  # 기존 DynamicParamManager → ConfigManager
+
+logger = setup_logger(__name__)
+
+def run_sensitivity_analysis(param_settings,
+                             assets=None,
+                             short_tf="4h", long_tf="1d",
+                             start_date="2018-06-01", end_date="2020-12-31",
+                             periods=None,
+                             base_dynamic_params=None):
+    """
+    다중 파라미터 값 변화에 따른 백테스트 성과를 평가합니다.
+    파라미터 간 상호작용을 고려하기 위해 모든 조합을 테스트하며,
+    각 조합에 대해 각 성과 지표(ROI, Sharpe 등)의 평균, 표준편차, 최소, 최대를 산출합니다.
+    """
+    if assets is None:
+        assets = ["BTC/USDT"]
+    if periods is None:
+        periods = [(start_date, end_date)]
+    if base_dynamic_params is None:
+        config_manager = ConfigManager()
+        base_dynamic_params = config_manager.get_defaults()  # ConfigManager의 기본 설정 불러오기
+
+    logger.debug(f"Starting multi-parameter sensitivity analysis over assets {assets} and periods {periods}")
+
+    results = {}
+    if not isinstance(param_settings, dict):
+        raise ValueError("param_settings must be a dict of {parameter_name: [values]} for multi-parameter analysis.")
+
+    param_names = list(param_settings.keys())
+    # 모든 파라미터 조합 생성 (파라미터 간 상호작용 고려)
+    combinations = list(product(*(param_settings[name] for name in param_names)))
+    logger.debug(f"Total combinations to test: {len(combinations)}")
+
+    for combo in combinations:
+        # combo는 param_names 순서에 따른 값들의 튜플입니다.
+        dynamic_params = base_dynamic_params.copy()
+        # 키를 정렬된 튜플로 생성 (예: (("atr_multiplier", 2.0), ("profit_ratio", 0.08)))
+        combo_key = tuple(sorted(zip(param_names, combo)))
+        logger.debug(f"Testing combination: {combo_key}")
+        run_metrics = []
+        for asset in assets:
+            for period in periods:
+                s_date, e_date = period
+                try:
+                    bt = Backtester(symbol=asset, account_size=10000)
+                    symbol_key = asset.replace("/", "").lower()
+                    short_table_format = f"ohlcv_{symbol_key}_{{timeframe}}"
+                    long_table_format = f"ohlcv_{symbol_key}_{{timeframe}}"
+                    bt.load_data(short_table_format=short_table_format,
+                                 long_table_format=long_table_format,
+                                 short_tf=short_tf,
+                                 long_tf=long_tf,
+                                 start_date=s_date,
+                                 end_date=e_date)
+                    # 조합에 해당하는 파라미터 값 적용
+                    for name, val in combo_key:
+                        dynamic_params[name] = val
+                    trades, _ = bt.run_backtest(dynamic_params=dynamic_params)
+                    from backtesting.performance import compute_performance
+                    perf = compute_performance(trades)
+                    run_metrics.append(perf)
+                    logger.debug(f"Combination {combo_key} | Asset: {asset} | Period: {s_date} ~ {e_date} => ROI: {perf.get('roi', 0):.2f}%, Sharpe: {perf.get('sharpe_ratio', 0):.2f}, Max Drawdown: {perf.get('max_drawdown', 0):.2f}, Trade Count: {perf.get('trade_count', 0)}")
+                except Exception as e:
+                    logger.error(f"Error during backtest for combination {combo_key}, Asset: {asset}, Period: {s_date} ~ {e_date}: {e}", exc_info=True)
+        if run_metrics:
+            aggregated = {}
+            metric_keys = ["roi", "sharpe_ratio", "max_drawdown", "trade_count", "cumulative_return", "total_pnl"]
+            for key in metric_keys:
+                values = [run.get(key, 0) for run in run_metrics]
+                aggregated[key] = {
+                    "mean": np.mean(values),
+                    "std": np.std(values),
+                    "min": np.min(values),
+                    "max": np.max(values)
+                }
+            results[combo_key] = aggregated
+            logger.debug(f"Aggregated result for combination {combo_key}: {aggregated}")
+        else:
+            results[combo_key] = None
+            logger.warning(f"No successful runs for combination {combo_key}")
+    return results
+
+---
+
+# strategies/trading_strategies.py
+from logs.logger_config import setup_logger
+from strategies.base_strategy import BaseStrategy
+
+class SelectStrategy(BaseStrategy):
+    """
+    캔들 패턴, SMA+RSI, Bollinger Bands 신호를 결합하여 최종 진입 신호를 산출합니다.
+    """
+    def __init__(self):
+        super().__init__()
+        self.previous_signal = None
+
+    def _get_candle_pattern_signal(self, row):
+        try:
+            open_price = row.get('open')
+            close_price = row.get('close')
+            if open_price is None or close_price is None:
+                return None
+            if close_price > open_price * 1.005:
+                return "bullish"
+            elif close_price < open_price * 0.99:
+                return "bearish"
+        except Exception as e:
+            self.logger.error(f"_get_candle_pattern_signal error: {e}", exc_info=True)
+        return None
+
+    def _get_sma_rsi_signal(self, row, previous_sma):
+        try:
+            sma = row.get('sma')
+            rsi = row.get('rsi')
+            if sma is not None and previous_sma is not None and sma > previous_sma and rsi is not None and rsi < 35:
+                return "enter_long"
+        except Exception as e:
+            self.logger.error(f"_get_sma_rsi_signal error: {e}", exc_info=True)
+        return "hold"
+
+    def _get_bb_signal(self, row):
+        try:
+            bb_lband = row.get('bb_lband')
+            close_price = row.get('close', 0)
+            if bb_lband is not None and close_price <= bb_lband * 1.002:
+                return "enter_long"
+        except Exception as e:
+            self.logger.error(f"_get_bb_signal error: {e}", exc_info=True)
+        return "hold"
+
+    def get_signal(self, data, current_time, **kwargs):
+        try:
+            current_row = data.loc[current_time]
+        except Exception as e:
+            self.logger.error(f"SelectStrategy: 데이터 조회 실패 for time {current_time}: {e}", exc_info=True)
+            return "hold"
+
+        signals = []
+        # 캔들 패턴 신호
+        candle_signal = self._get_candle_pattern_signal(current_row)
+        signals.append("enter_long" if candle_signal == "bullish" else "hold")
+        
+        # SMA+RSI 신호 (이전 행의 SMA 사용)
+        try:
+            previous_rows = data.loc[:current_time]
+            if len(previous_rows) > 1:
+                previous_sma = previous_rows.iloc[-2].get('sma', current_row.get('sma'))
+            else:
+                previous_sma = current_row.get('sma')
+        except Exception as e:
+            self.logger.error(f"SelectStrategy: 이전 데이터 조회 실패: {e}", exc_info=True)
+            previous_sma = current_row.get('sma')
+        sma_rsi_signal = self._get_sma_rsi_signal(current_row, previous_sma)
+        signals.append(sma_rsi_signal)
+
+        # Bollinger Bands 신호
+        bb_signal = self._get_bb_signal(current_row)
+        signals.append(bb_signal)
+
+        final_signal = "enter_long" if "enter_long" in signals else "hold"
+
+        if self.previous_signal != final_signal:
+            self.logger.debug(f"SelectStrategy: 신호 변경, 최종 신호: {final_signal} at {current_time}")
+            self.previous_signal = final_signal
+        else:
+            self.logger.debug(f"SelectStrategy: 신호 유지: '{final_signal}' at {current_time}")
+
+        return final_signal
+
+class TrendFollowingStrategy(BaseStrategy):
+    def __init__(self):
+        super().__init__()
+        self.previous_signal = None
+
+    def get_signal(self, data, current_time, **kwargs):
+        try:
+            row = data.loc[current_time]
+        except Exception as e:
+            self.logger.error(f"TrendFollowingStrategy: 데이터 조회 실패 for time {current_time}: {e}", exc_info=True)
+            return "hold"
+        sma = row.get('sma')
+        price = row.get('close')
+        final_signal = "enter_long" if sma is not None and price is not None and price > sma else "hold"
+        if self.previous_signal != final_signal:
+            self.logger.debug(f"TrendFollowingStrategy: 신호 변경, 최종 신호: {final_signal} at {current_time}")
+            self.previous_signal = final_signal
+        else:
+            self.logger.debug(f"TrendFollowingStrategy: 신호 유지: '{final_signal}' at {current_time}")
+        return final_signal
+
+class BreakoutStrategy(BaseStrategy):
+    def __init__(self, window=20):
+        super().__init__()
+        self.window = window
+        self.previous_signal = None
+
+    def get_signal(self, data, current_time, **kwargs):
+        try:
+            data_sub = data.loc[:current_time]
+            if len(data_sub) < self.window:
+                final_signal = "hold"
+            else:
+                recent_high = data_sub['high'].iloc[-self.window:].max()
+                price = data.loc[current_time, 'close']
+                final_signal = "enter_long" if price > recent_high else "hold"
+        except Exception as e:
+            self.logger.error(f"BreakoutStrategy: 데이터 조회 실패 for time {current_time}: {e}", exc_info=True)
+            final_signal = "hold"
+        if self.previous_signal != final_signal:
+            self.logger.debug(f"BreakoutStrategy: 신호 변경, 최종 신호: {final_signal} at {current_time}")
+            self.previous_signal = final_signal
+        else:
+            self.logger.debug(f"BreakoutStrategy: 신호 유지: '{final_signal}' at {current_time}")
+        return final_signal
+
+class CounterTrendStrategy(BaseStrategy):
+    def __init__(self):
+        super().__init__()
+        self.previous_signal = None
+
+    def get_signal(self, data, current_time, **kwargs):
+        try:
+            row = data.loc[current_time]
+        except Exception as e:
+            self.logger.error(f"CounterTrendStrategy: 데이터 조회 실패 for time {current_time}: {e}", exc_info=True)
+            return "hold"
+        rsi = row.get('rsi')
+        if rsi is not None:
+            if rsi < 30:
+                final_signal = "enter_long"
+            elif rsi > 70:
+                final_signal = "exit_all"
+            else:
+                final_signal = "hold"
+        else:
+            final_signal = "hold"
+        if self.previous_signal != final_signal:
+            self.logger.debug(f"CounterTrendStrategy: 신호 변경, 최종 신호: {final_signal} at {current_time} (rsi: {rsi})")
+            self.previous_signal = final_signal
+        else:
+            self.logger.debug(f"CounterTrendStrategy: 신호 유지: '{final_signal}' at {current_time} (rsi: {rsi})")
+        return final_signal
+
+class HighFrequencyStrategy(BaseStrategy):
+    def __init__(self):
+        super().__init__()
+        self.previous_signal = None
+
+    def get_signal(self, data, current_time, **kwargs):
+        try:
+            current_index = data.index.get_loc(current_time)
+            if current_index == 0:
+                final_signal = "hold"
+            else:
+                prev_time = data.index[current_index - 1]
+                current_row = data.loc[current_time]
+                prev_row = data.loc[prev_time]
+                current_price = current_row.get('close')
+                prev_price = prev_row.get('close')
+                if current_price is None or prev_price is None:
+                    final_signal = "hold"
+                else:
+                    threshold = 0.002  # 0.2%
+                    price_change = (current_price - prev_price) / prev_price
+                    if price_change > threshold:
+                        final_signal = "enter_long"
+                    elif price_change < -threshold:
+                        final_signal = "exit_all"
+                    else:
+                        final_signal = "hold"
+        except Exception as e:
+            self.logger.error(f"HighFrequencyStrategy: 데이터 조회 실패 for time {current_time}: {e}", exc_info=True)
+            final_signal = "hold"
+        if self.previous_signal != final_signal:
+            self.logger.debug(f"HighFrequencyStrategy: 신호 변경, 최종 신호: {final_signal} at {current_time}")
+            self.previous_signal = final_signal
+        else:
+            self.logger.debug(f"HighFrequencyStrategy: 신호 유지: '{final_signal}' at {current_time}")
+        return final_signal
+
+class WeeklyBreakoutStrategy(BaseStrategy):
+    def __init__(self):
+        super().__init__()
+
+    def get_signal(self, data_weekly, current_time, breakout_threshold=0.01, **kwargs):
+        try:
+            weekly_data = data_weekly.loc[data_weekly.index <= current_time]
+            if len(weekly_data) < 2:
+                self.logger.debug("주간 데이터 부족: 최소 2주 이상의 데이터 필요")
+                return "hold"
+            prev_week = weekly_data.iloc[-2]
+            current_week = weekly_data.iloc[-1]
+            prev_high = prev_week.get('high')
+            prev_low = prev_week.get('low')
+            current_close = current_week.get('close')
+            if current_close is None or prev_high is None or prev_low is None:
+                self.logger.error("주간 데이터에 필요한 컬럼 누락")
+                return "hold"
+            if current_close >= prev_high * (1 + breakout_threshold):
+                signal = "enter_long"
+            elif current_close <= prev_low * (1 - breakout_threshold):
+                signal = "exit_all"
+            else:
+                signal = "hold"
+            self.logger.debug(f"WeeklyBreakoutStrategy: prev_high={prev_high}, prev_low={prev_low}, current_close={current_close}, breakout_threshold={breakout_threshold}, signal={signal}")
+            return signal
+        except Exception as e:
+            self.logger.error(f"WeeklyBreakoutStrategy 에러: {e}", exc_info=True)
+            return "hold"
+
+class WeeklyMomentumStrategy(BaseStrategy):
+    def __init__(self):
+        super().__init__()
+
+    def get_signal(self, data_weekly, current_time, momentum_threshold=0.5, **kwargs):
+        try:
+            weekly_data = data_weekly.loc[data_weekly.index <= current_time]
+            if weekly_data.empty:
+                self.logger.debug("주간 데이터가 없습니다.")
+                return "hold"
+            current_week = weekly_data.iloc[-1]
+            momentum = current_week.get('weekly_momentum')
+            if momentum is None:
+                self.logger.debug("weekly_momentum 컬럼이 누락되어 기본 'hold' 적용")
+                return "hold"
+            if momentum >= momentum_threshold:
+                signal = "enter_long"
+            elif momentum <= -momentum_threshold:
+                signal = "exit_all"
+            else:
+                signal = "hold"
+            self.logger.debug(f"WeeklyMomentumStrategy: momentum={momentum}, momentum_threshold={momentum_threshold}, signal={signal}")
+            return signal
+        except Exception as e:
+            self.logger.error(f"WeeklyMomentumStrategy 에러: {e}", exc_info=True)
+            return "hold"
+
+class TradingStrategies:
+    """
+    종합 전략 관리 클래스.
+    개별 전략들을 인스턴스화하고, 단기 및 주간 신호를 가중치 기반으로 종합하여 최종 신호를 산출합니다.
+    """
+    def __init__(self):
+        self.logger = setup_logger(self.__class__.__name__)
+        self.select_strategy = SelectStrategy()
+        self.trend_following_strategy = TrendFollowingStrategy()
+        self.breakout_strategy = BreakoutStrategy()
+        self.counter_trend_strategy = CounterTrendStrategy()
+        self.high_frequency_strategy = HighFrequencyStrategy()
+        self.weekly_breakout_strategy = WeeklyBreakoutStrategy()
+        self.weekly_momentum_strategy = WeeklyMomentumStrategy()
+
+    def get_final_signal(self, market_regime, liquidity_info, data, current_time, data_weekly=None):
+        # 단기 전략 신호
+        signals = {
+            "select": self.select_strategy.get_signal(data, current_time),
+            "trend_following": self.trend_following_strategy.get_signal(data, current_time),
+            "breakout": self.breakout_strategy.get_signal(data, current_time),
+            "counter_trend": self.counter_trend_strategy.get_signal(data, current_time),
+            "high_frequency": self.high_frequency_strategy.get_signal(data, current_time)
+        }
+        # 주간 전략 신호 (데이터 제공 시)
+        if data_weekly is not None:
+            signals["weekly_breakout"] = self.weekly_breakout_strategy.get_signal(data_weekly, current_time)
+            signals["weekly_momentum"] = self.weekly_momentum_strategy.get_signal(data_weekly, current_time)
+        
+        self.logger.debug(f"각 전략 원시 신호: {signals}")
+
+        # 가중치 적용 (단기: 0.7, 주간: 0.3)
+        short_term_weight = 0.7
+        weekly_weight = 0.3 if data_weekly is not None else 0.0
+
+        vote_enter = 0.0
+        vote_exit = 0.0
+
+        for key in ["select", "trend_following", "breakout", "counter_trend", "high_frequency"]:
+            sig = signals.get(key)
+            if sig == "enter_long":
+                vote_enter += short_term_weight
+            elif sig == "exit_all":
+                vote_exit += short_term_weight
+
+        for key in ["weekly_breakout", "weekly_momentum"]:
+            sig = signals.get(key)
+            if sig == "enter_long":
+                vote_enter += weekly_weight
+            elif sig == "exit_all":
+                vote_exit += weekly_weight
+
+        if vote_exit > vote_enter:
+            final_signal = "exit_all"
+        elif vote_enter > vote_exit:
+            final_signal = "enter_long"
+        else:
+            final_signal = "hold"
+
+        self.logger.debug(f"최종 종합 신호: {final_signal} (vote_enter={vote_enter}, vote_exit={vote_exit})")
+        return final_signal

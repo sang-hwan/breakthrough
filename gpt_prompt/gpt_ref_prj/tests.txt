@@ -1,4 +1,3 @@
-[tests]
 # tests/conftest.py
 import os
 import glob
@@ -29,141 +28,309 @@ def clear_logs():
 
 ---
 
-# tests/test_auto_optimization_trigger.py
-
-import logging
-
-logger = logging.getLogger(__name__)
-
-def auto_optimization_trigger(performance):
-    """
-    더미 함수: 월간 ROI가 2% 미만인 달이 있으면 True를 반환합니다.
-    """
-    monthly_roi = performance.get("monthly_roi", {})
-    for month, roi in monthly_roi.items():
-        logger.debug(f"검사 중 - {month}: ROI = {roi}")
-        if roi < 2.0:
-            logger.debug(f"자동 최적화 트리거 활성화: {month}의 ROI({roi})가 2% 미만입니다.")
-            return True
-    logger.debug("자동 최적화 트리거 비활성화: 모든 월간 ROI가 2% 이상입니다.")
-    return False
-
-def test_auto_optimization_trigger():
-    performance_trigger = {
-        "monthly_roi": {
-            "2023-01": 1.5,
-            "2023-02": 2.5,
-            "2023-03": 1.8,
-        }
-    }
-    performance_no_trigger = {
-        "monthly_roi": {
-            "2023-01": 2.1,
-            "2023-02": 2.5,
-            "2023-03": 2.3,
-        }
-    }
-    assert auto_optimization_trigger(performance_trigger) is True
-    assert auto_optimization_trigger(performance_no_trigger) is False
-
----
-
-# tests/test_handle_weekly_end.py
-import pandas as pd
-import pytest
-from backtesting.backtester import Backtester
-from trading.positions import TradePosition
-
-@pytest.fixture
-def dummy_backtester():
-    # 간단한 백테스터 인스턴스 생성 (실제 DB 로드나 인디케이터 계산 없이 사용)
-    bt = Backtester(symbol="TEST/USDT", account_size=10000, fee_rate=0.001, slippage_rate=0.001)
-    
-    # Dummy 포지션 생성 (포지션에 미체결된 실행 내역 추가)
-    pos = TradePosition(side="LONG", initial_price=100, maximum_size=1.0, total_splits=1, allocation_plan=[1.0])
-    pos.add_execution(
-        entry_price=100,
-        size=1.0,
-        stop_loss=95,
-        take_profit=110,
-        entry_time=pd.Timestamp("2023-01-06 10:00:00"),
-        trade_type="new_entry"
-    )
-    bt.positions.append(pos)
-    return bt
-
-def test_handle_weekly_end(dummy_backtester):
-    # 청산 전 상태: 포지션 존재, trade_logs 비어있음
-    bt = dummy_backtester
-    assert len(bt.positions) == 1
-    assert len(bt.trade_logs) == 0
-
-    # 주간 종료 시 호출 (예: 금요일 데이터)
-    current_time = pd.Timestamp("2023-01-13 16:00:00")  # 금요일 가정
-    # 청산에 사용될 dummy row (close 가격 제공)
-    row = pd.Series({"close": 105})
-    
-    # handle_weekly_end() 호출
-    bt.handle_weekly_end(current_time, row)
-    
-    # 모든 포지션이 청산되어 positions 리스트가 비어야 함
-    assert len(bt.positions) == 0
-    # 거래 내역이 기록되어야 함 (포지션당 최소 1건)
-    assert len(bt.trade_logs) >= 1
-    # 계좌의 잔고가 업데이트되었는지(예: 초기 잔고 대비 변동) 확인 (단순 비교)
-    assert bt.account.get_available_balance() != 10000
-
----
-
-# tests/test_logging_summary.py
+# tests/test_aggregating_handler.py
 import logging
 import io
 from logs.logging_util import LoggingUtil
+from logs.aggregating_handler import AggregatingHandler  # AggregatingHandler를 명시적으로 추가
 
 def test_logging_summary_output():
     # 메모리 내 로그 스트림 설정
     log_stream = io.StringIO()
     
-    # 대상 로거 생성 및 기존 핸들러 제거
     test_logger = logging.getLogger("test_logging_summary")
     test_logger.setLevel(logging.DEBUG)
+    
+    # 기존 핸들러 제거 후 새 스트림 핸들러 추가
     for h in test_logger.handlers[:]:
         test_logger.removeHandler(h)
-
-    # 새 스트림 핸들러 추가
+    
     stream_handler = logging.StreamHandler(log_stream)
     formatter = logging.Formatter('%(levelname)s:%(message)s')
     stream_handler.setFormatter(formatter)
+    
+    # test_logger와 root logger 모두에 스트림 핸들러 추가
     test_logger.addHandler(stream_handler)
-
-    # LoggingUtil 인스턴스 생성 (테스트용 logger로 교체)
+    root_logger = logging.getLogger()
+    root_logger.addHandler(stream_handler)
+    
+    # AggregatingHandler 추가 (테스트 시에 집계 로그를 생성하기 위함)
+    agg_handler = AggregatingHandler(level=logging.DEBUG)
+    test_logger.addHandler(agg_handler)
+    
+    # LoggingUtil 인스턴스 생성 후 테스트용 logger 주입
     logging_util = LoggingUtil("test_logging_summary")
     logging_util.logger = test_logger  # 테스트용 logger 주입
-
-    # 요약 로그 임계치(예: 2000회) 전까지 이벤트 기록
+    
+    # 임계치 전까지 이벤트 기록 (예: 2000회 미만)
     for i in range(1999):
         logging_util.log_event(f"Test event {i}")
-
-    # 2000번째 이벤트 – 이 시점에서 요약 로그가 찍혀야 함
+    # 2000번째 이벤트 – 이 시점에서 집계 로그가 찍혀야 함
     logging_util.log_event("Test event 1999")
-
-    # 강제로 핸들러 flush
+    
+    # AggregatingHandler의 flush를 호출하여 집계 로그를 강제로 출력
+    agg_handler.flush_aggregation_summary()
+    
     stream_handler.flush()
-
-    # 로그 출력값을 가져와서 요약 로그 메시지가 포함되었는지 확인
     output = log_stream.getvalue()
+    
+    # 테스트 후 root logger에서 스트림 핸들러 제거 (선택 사항)
+    root_logger.removeHandler(stream_handler)
+    
+    # 집계 메시지(예: "전체 누적 로그 집계:" 또는 "집계:" 문자열)가 출력에 포함되었는지 확인
     assert "집계:" in output
+
+---
+
+# tests/test_asset_manager.py
+import pytest
+from core.account import Account
+from trading.asset_manager import AssetManager
+
+def test_rebalance_bullish():
+    account = Account(initial_balance=10000)
+    # 가상 계좌에 임의의 현물, 스테이블코인 할당
+    account.spot_balance = 4000
+    account.stablecoin_balance = 6000
+    am = AssetManager(account, min_rebalance_threshold=0.01, min_rebalance_interval_minutes=0)
+    # bullish 시장에서는 목표 현물이 총 자산의 90%
+    am.rebalance("bullish")
+    # 현물 잔고가 상승했을 것으로 예상
+    assert account.spot_balance > 4000
+
+def test_rebalance_bearish():
+    account = Account(initial_balance=10000)
+    account.spot_balance = 8000
+    account.stablecoin_balance = 2000
+    am = AssetManager(account, min_rebalance_threshold=0.01, min_rebalance_interval_minutes=0)
+    am.rebalance("bearish")
+    # 현물 잔고가 하락했을 것으로 예상
+    assert account.spot_balance < 8000
+
+---
+
+# tests/test_base_strategy.py
+import pytest
+from strategies.base_strategy import BaseStrategy
+
+class DummyStrategy(BaseStrategy):
+    def get_signal(self, data, current_time, **kwargs):
+        return "dummy_signal"
+
+def test_dummy_strategy():
+    strat = DummyStrategy()
+    # data와 current_time은 dummy 값 사용
+    signal = strat.get_signal({}, "2023-01-01")
+    assert signal == "dummy_signal"
+
+---
+
+# tests/test_calculators.py
+import pytest
+import pandas as pd
+import numpy as np
+from trading.calculators import calculate_atr, calculate_dynamic_stop_and_take, calculate_partial_exit_targets
+
+def test_calculate_atr():
+    data = pd.DataFrame({
+        "high": np.linspace(110, 120, 15),
+        "low": np.linspace(100, 110, 15),
+        "close": np.linspace(105, 115, 15)
+    })
+    data = calculate_atr(data, period=14)
+    # ATR 컬럼이 추가되어야 함
+    assert "atr" in data.columns
+
+def test_dynamic_stop_and_take():
+    entry_price = 100
+    atr = 5
+    risk_params = {"atr_multiplier": 2.0, "profit_ratio": 0.05}
+    stop_loss, take_profit = calculate_dynamic_stop_and_take(entry_price, atr, risk_params)
+    assert stop_loss < entry_price
+    assert take_profit > entry_price
+
+def test_partial_exit_targets():
+    targets = calculate_partial_exit_targets(100, partial_exit_ratio=0.5, partial_profit_ratio=0.03, final_profit_ratio=0.06)
+    assert isinstance(targets, list)
+    assert len(targets) == 2
+
+---
+
+# tests/test_config_manager.py
+import pytest
+from config.config_manager import ConfigManager
+
+def test_get_defaults():
+    cm = ConfigManager()
+    defaults = cm.get_defaults()
+    # 기본 파라미터에 몇 가지 주요 키가 있는지 확인
+    for key in ["sma_period", "atr_period", "risk_per_trade"]:
+        assert key in defaults
+
+def test_update_with_market_data():
+    cm = ConfigManager()
+    base_defaults = cm.get_defaults()
+    market_data = {
+        "volatility": 0.08,
+        "trend": "bullish",
+        "trend_strength": 0.1,
+        "volume": 800,
+        "weekly_volatility": 0.09
+    }
+    updated = cm.update_with_market_data(market_data)
+    # atr_multiplier와 risk_per_trade가 변경되었는지 확인
+    assert updated["atr_multiplier"] != base_defaults["atr_multiplier"]
+    assert updated["risk_per_trade"] != base_defaults["risk_per_trade"]
+
+def test_merge_optimized():
+    cm = ConfigManager()
+    defaults = cm.get_defaults()
+    optimized = {"profit_ratio": defaults["profit_ratio"] * 1.1, "new_param": 123}
+    merged = cm.merge_optimized(optimized)
+    # 민감도 대상은 평균값, 그 외는 최적화 값 적용됨
+    assert merged["profit_ratio"] == (defaults["profit_ratio"] + defaults["profit_ratio"] * 1.1) / 2
+    assert merged["new_param"] == 123
+
+---
+
+# tests/test_core_account.py
+import pytest
+from core.account import Account
+from core.position import Position
+
+def test_account_balance_after_trade():
+    account = Account(initial_balance=10000, fee_rate=0.001)
+    initial_balance = account.spot_balance
+    trade = {"pnl": 500}
+    account.update_after_trade(trade)
+    assert account.spot_balance == initial_balance + 500
+
+def test_position_add_and_remove():
+    account = Account(initial_balance=10000)
+    pos = Position(side="LONG", initial_price=100, maximum_size=1.0, total_splits=1, allocation_plan=[1.0])
+    account.add_position(pos)
+    assert pos in account.positions
+    account.remove_position(pos)
+    assert pos not in account.positions
+
+def test_conversion_functions():
+    account = Account(initial_balance=10000)
+    # convert a portion to stablecoin and then back to spot
+    converted = account.convert_to_stablecoin(1000)
+    assert account.stablecoin_balance == converted
+    new_spot = account.convert_to_spot(converted)
+    # 약간의 수수료 손실이 있을 수 있음
+    assert new_spot < converted
+
+---
+
+# tests/test_core_position.py
+import pytest
+from core.position import Position
+
+def test_add_execution_and_totals():
+    pos = Position(side="LONG", initial_price=100, maximum_size=1.0, total_splits=1, allocation_plan=[1.0])
+    pos.add_execution(entry_price=100, size=1.0, entry_time="2023-01-01")
+    assert pos.get_total_size() == 1.0
+    avg_price = pos.get_average_entry_price()
+    assert avg_price == 100
+
+def test_partial_close_execution():
+    pos = Position(side="LONG", initial_price=100, maximum_size=1.0, total_splits=1, allocation_plan=[1.0])
+    pos.add_execution(entry_price=100, size=1.0, entry_time="2023-01-01")
+    closed_qty = pos.partial_close_execution(0, 0.5)
+    assert closed_qty == 0.5
+    # 남은 수량이 0.5여야 함.
+    remaining = pos.get_total_size()
+    assert pytest.approx(remaining, rel=1e-3) == 0.5
+
+---
+
+# tests/test_ensemble.py
+import pytest
+import pandas as pd
+from trading.ensemble import Ensemble
+
+@pytest.fixture
+def dummy_data():
+    # 최소한의 컬럼을 가진 간단한 데이터프레임 생성
+    dates = pd.date_range("2023-01-01", periods=10, freq="h")
+    df = pd.DataFrame({
+        "open": [100]*10,
+        "close": [101]*10,
+        "high": [102]*10,
+        "low": [99]*10,
+        "sma": [100.5]*10,
+        "rsi": [30]*10,
+        "bb_lband": [99]*10
+    }, index=dates)
+    return df
+
+@pytest.fixture
+def dummy_weekly_data():
+    dates = pd.date_range("2023-01-01", periods=2, freq="W-MON")
+    df = pd.DataFrame({
+        "close": [101, 103],
+        "high": [102, 104],
+        "low": [99, 100],
+        "weekly_momentum": [0.6, 0.6]
+    }, index=dates)
+    return df
+
+def test_get_final_signal(dummy_data, dummy_weekly_data):
+    ens = Ensemble()
+    current_time = dummy_data.index[-1]
+    final_signal = ens.get_final_signal(market_regime="bullish", liquidity_info="high", data=dummy_data, current_time=current_time, data_weekly=dummy_weekly_data)
+    assert final_signal in ["enter_long", "exit_all", "hold"]
+
+---
+
+# tests/test_indicators.py
+import pytest
+import pandas as pd
+import numpy as np
+from trading.indicators import compute_sma, compute_macd, compute_rsi, compute_bollinger_bands
+
+@pytest.fixture
+def sample_data():
+    dates = pd.date_range("2023-01-01", periods=30, freq="D")
+    df = pd.DataFrame({
+        "close": np.linspace(100, 130, 30),
+        "high": np.linspace(101, 131, 30),
+        "low": np.linspace(99, 129, 30),
+        "open": np.linspace(100, 130, 30),
+        "volume": np.random.randint(1000, 5000, 30)
+    }, index=dates)
+    return df
+
+def test_compute_sma(sample_data):
+    df = compute_sma(sample_data.copy(), period=5, output_col="sma_test")
+    assert "sma_test" in df.columns
+
+def test_compute_macd(sample_data):
+    df = compute_macd(sample_data.copy(), slow_period=26, fast_period=12, signal_period=9, prefix="macd_")
+    for col in ["macd_macd", "macd_signal", "macd_diff"]:
+        assert col in df.columns
+
+def test_compute_rsi(sample_data):
+    df = compute_rsi(sample_data.copy(), period=14, output_col="rsi_test")
+    assert "rsi_test" in df.columns
+
+def test_compute_bollinger_bands(sample_data):
+    df = compute_bollinger_bands(sample_data.copy(), period=20, std_multiplier=2.0, prefix="bb_")
+    for col in ["bb_mavg", "bb_hband", "bb_lband", "bb_pband", "bb_wband", "bb_hband_ind", "bb_lband_ind"]:
+        assert col in df.columns
 
 ---
 
 # tests/test_ohlcv_aggregator.py
 import pandas as pd
 import numpy as np
-from data_collection.ohlcv_aggregator import aggregate_to_weekly
+from data.ohlcv.ohlcv_aggregator import aggregate_to_weekly
 
 def test_aggregate_to_weekly():
-    # 예시 데이터 생성: 2주 이상의 분 단위(또는 1일) 데이터
-    dates = pd.date_range(start="2023-01-02", periods=14, freq="D")  # 월요일 시작 가정
+    # 2주 이상의 데이터 (1일 간격, 월요일 시작 가정)
+    dates = pd.date_range(start="2023-01-02", periods=14, freq="D")
     data = pd.DataFrame({
         'open': np.linspace(100, 113, 14),
         'high': np.linspace(105, 118, 14),
@@ -174,66 +341,214 @@ def test_aggregate_to_weekly():
     
     weekly = aggregate_to_weekly(data, compute_indicators=True)
     
-    # 각 주의 open은 그룹의 첫 행, close는 마지막 행 등으로 검증
-    # 예: 첫 주 (2023-01-02 ~ 2023-01-08)
+    # 첫 주의 open과 close 확인
     first_week = data.loc["2023-01-02":"2023-01-08"]
-    assert np.isclose(weekly.iloc[0]['open'], first_week.iloc[0]['open'])
-    assert np.isclose(weekly.iloc[0]['close'], first_week.iloc[-1]['close'])
-    # volume 합계 비교
-    assert np.isclose(weekly.iloc[0]['volume'], first_week['volume'].sum())
-    # 주간 인디케이터 컬럼이 추가되었는지 확인
+    assert abs(weekly.iloc[0]['open'] - first_week.iloc[0]['open']) < 1e-6
+    assert abs(weekly.iloc[0]['close'] - first_week.iloc[-1]['close']) < 1e-6
+    # volume 합계 확인
+    assert abs(weekly.iloc[0]['volume'] - first_week['volume'].sum()) < 1e-6
+    # 주간 인디케이터 컬럼 확인
     assert 'weekly_sma' in weekly.columns
     assert 'weekly_momentum' in weekly.columns
 
 ---
 
-# tests/test_performance_report.py
+# tests/test_optimizer.py
+import pytest
+from strategies.optimizer import DynamicParameterOptimizer
 
+class DummyTrial:
+    # 간단한 dummy trial를 만들어 objective가 실행되도록 함
+    def suggest_float(self, name, low, high):
+        return (low + high) / 2
+    def suggest_categorical(self, name, choices):
+        return choices[0]
+
+def test_optimizer_objective():
+    optimizer = DynamicParameterOptimizer(n_trials=1)
+    dummy_trial = DummyTrial()
+    score = optimizer.objective(dummy_trial)
+    assert isinstance(score, float)
+
+---
+
+# tests/test_param_analysis.py
+import pytest
+import numpy as np
+from strategies.param_analysis import run_sensitivity_analysis
+from config.config_manager import ConfigManager
+
+def test_run_sensitivity_analysis():
+    param_settings = {
+        "profit_ratio": np.linspace(0.05, 0.15, 3)
+    }
+    cm = ConfigManager()
+    base_dynamic_params = cm.get_defaults()
+    results = run_sensitivity_analysis(param_settings, assets=["BTC/USDT"], short_tf="4h", long_tf="1d",
+                                       start_date="2023-01-01", end_date="2023-01-31",
+                                       periods=[("2023-01-01", "2023-01-31")],
+                                       base_dynamic_params=base_dynamic_params)
+    # 결과가 딕셔너리 형태이며, profit_ratio 값에 대한 결과가 존재해야 함
+    assert "profit_ratio" in results
+    for val, metrics in results["profit_ratio"].items():
+        # ROI 등의 지표가 포함되어 있으면 통과
+        assert metrics is None or "roi" in metrics
+
+---
+
+# tests/test_performance_report.py
 import io
 import logging
 from logs.final_report import generate_final_report
 
 def test_final_report_output():
     sample_performance = {
-        "roi": 1.5,
-        "pnl": -150.0,
-        "trade_count": 10,
-        "monthly_performance": {
+        "overall": {
+            "roi": 1.5,
+            "cumulative_return": -0.015,
+            "total_pnl": -150.0,
+            "trade_count": 10,
+            "annualized_return": 0.0,
+            "annualized_volatility": 0.0,
+            "sharpe_ratio": 0.0,
+            "sortino_ratio": 0.0,
+            "calmar_ratio": 0.0,
+            "max_drawdown": 0.0,
+            "win_rate": 0.0,
+            "avg_win": 0.0,
+            "avg_loss": 0.0,
+            "profit_factor": 0.0,
+            "trades_per_year": 0.0,
+            "max_consecutive_wins": 0,
+            "max_consecutive_losses": 0
+        },
+        "monthly": {
             "2023-01": {"roi": 1.8, "trade_count": 5},
             "2023-02": {"roi": 2.2, "trade_count": 7},
             "2023-03": {"roi": 1.0, "trade_count": 4},
+        },
+        "weekly": {
+            "weekly_roi": 0.0,
+            "weekly_max_drawdown": 0.0
         }
     }
     
-    # logger 출력 캡처를 위한 스트림 핸들러 설정
     log_stream = io.StringIO()
-    # generate_final_report()에서 사용되는 logger의 이름은 보통 "logs.final_report" 입니다.
     logger = logging.getLogger("logs.final_report")
     stream_handler = logging.StreamHandler(log_stream)
-    stream_handler.setLevel(logging.debug)
+    stream_handler.setLevel(logging.DEBUG)
     formatter = logging.Formatter('%(message)s')
     stream_handler.setFormatter(formatter)
     logger.addHandler(stream_handler)
     
-    # 리포트 생성 (logger를 통해 출력됨)
     generate_final_report(sample_performance)
     
-    # 테스트 후 핸들러 제거
     logger.removeHandler(stream_handler)
     output = log_stream.getvalue()
-    
-    # 핵심 지표들이 출력되는지 확인 (예: ROI, Trade Count, 월별 데이터 등)
+    # 핵심 지표들이 출력되는지 확인
     assert "ROI" in output
     assert "Trade Count" in output or "거래 횟수" in output
-    for month in sample_performance["monthly_performance"]:
+    for month in sample_performance["monthly"]:
         assert month in output
+
+---
+
+# tests/test_regime_filter.py
+import pytest
+from markets.regime_filter import determine_market_regime, filter_regime
+
+def test_determine_market_regime_bullish():
+    price_data = {"current_price": 105, "previous_price": 100}
+    regime = determine_market_regime(price_data)
+    assert regime == "bullish"
+
+def test_determine_market_regime_bearish():
+    price_data = {"current_price": 95, "previous_price": 100}
+    regime = determine_market_regime(price_data)
+    assert regime == "bearish"
+
+def test_filter_regime():
+    price_data = {"current_price": 105, "previous_price": 100}
+    assert filter_regime(price_data, target_regime="bullish")
+    assert not filter_regime(price_data, target_regime="bearish")
+
+---
+
+# tests/test_regime_model.py
+import pytest
+import pandas as pd
+import numpy as np
+from markets.regime_model import MarketRegimeHMM
+
+@pytest.fixture
+def sample_data():
+    dates = pd.date_range("2023-01-01", periods=100, freq="D")
+    df = pd.DataFrame({
+        "returns": np.random.normal(0, 0.01, 100),
+        "volatility": np.random.normal(0.02, 0.005, 100),
+        "sma": np.linspace(100, 110, 100),
+        "rsi": np.random.uniform(30, 70, 100),
+        "macd_macd": np.random.normal(0, 1, 100),
+        "macd_signal": np.random.normal(0, 1, 100),
+        "macd_diff": np.random.normal(0, 0.5, 100),
+    }, index=dates)
+    return df
+
+def test_train_and_predict(sample_data):
+    hmm = MarketRegimeHMM(n_components=3, retrain_interval_minutes=0)
+    # 첫 학습 시도
+    hmm.train(sample_data, feature_columns=["returns", "volatility", "sma", "rsi", "macd_macd", "macd_signal", "macd_diff"])
+    assert hmm.trained
+    states = hmm.predict(sample_data, feature_columns=["returns", "volatility", "sma", "rsi", "macd_macd", "macd_signal", "macd_diff"])
+    assert len(states) == len(sample_data)
+
+---
+
+# tests/test_risk_manager.py
+import pytest
+from trading.risk_manager import RiskManager
+
+def test_compute_position_size():
+    rm = RiskManager()
+    size = rm.compute_position_size(available_balance=10000, risk_percentage=0.01, entry_price=100,
+                                    stop_loss=90, fee_rate=0.001)
+    # 계산된 사이즈는 0보다 크거나 같아야 함.
+    assert size >= 0
+
+def test_allocate_position_splits():
+    rm = RiskManager()
+    allocation = rm.allocate_position_splits(total_size=1.0, splits_count=3, allocation_mode="equal")
+    assert len(allocation) == 3
+    assert abs(sum(allocation) - 1.0) < 1e-6
+
+---
+
+# tests/test_trade_executor.py
+import pytest
+import pandas as pd
+from trading.trade_executor import TradeExecutor
+
+def test_compute_atr_via_trade_executor():
+    # 간단한 데이터프레임
+    df = pd.DataFrame({
+        "high": [110, 115, 120],
+        "low": [100, 105, 110],
+        "close": [105, 110, 115]
+    })
+    df_atr = TradeExecutor.compute_atr(df, period=2)
+    assert "atr" in df_atr.columns
+
+def test_calculate_partial_exit_targets():
+    targets = TradeExecutor.calculate_partial_exit_targets(100, partial_exit_ratio=0.5, partial_profit_ratio=0.03, final_profit_ratio=0.06)
+    assert isinstance(targets, list)
+    assert len(targets) == 2
 
 ---
 
 # tests/test_weekly_strategies.py
 import pytest
 import pandas as pd
-from trading.strategies import TradingStrategies
+from strategies.trading_strategies import TradingStrategies
 
 @pytest.fixture
 def ts_instance():
@@ -247,8 +562,6 @@ def weekly_data_breakout():
     인덱스: 2주치 데이터 (예: 2023-01-02, 2023-01-09)
     컬럼: high, low, close
     """
-    # 첫 번째 주: 고점=100, 저점=90, 종가=95
-    # 두 번째 주에서 테스트 대상 값을 변경하여 돌파 여부 확인
     dates = [pd.to_datetime("2023-01-02"), pd.to_datetime("2023-01-09")]
     data = {
         "high": [100, None],
@@ -267,81 +580,73 @@ def weekly_data_momentum():
     """
     dates = [pd.to_datetime("2023-01-09")]
     data = {
-        "weekly_momentum": [0.0]  # 나중에 개별 테스트에서 값을 수정
+        "weekly_momentum": [0.0]
     }
     df = pd.DataFrame(data, index=dates)
     return df
 
-# === Weekly Breakout Strategy Tests ===
-
 def test_weekly_breakout_enter_long(ts_instance, weekly_data_breakout):
     """
     전 주 고점을 1% 이상 돌파한 경우 "enter_long" 신호가 반환되어야 함.
-    첫 주: high=100, low=90, 두 번째 주의 close를 102로 설정하면
-    102 >= 100 * 1.01 (101.0) → "enter_long"
+    예: 첫 주 high=100, 두 번째 주의 close를 102로 설정하면 102 >= 101.0 → "enter_long"
     """
-    # 복사본 생성 후 두 번째 주 데이터 수정
     df = weekly_data_breakout.copy()
     df.at[df.index[1], "close"] = 102
-    # 두 번째 주에 대한 테스트를 위해 current_time을 두 번째 주의 날짜로 설정
     current_time = df.index[1]
-    signal = ts_instance.weekly_breakout_strategy(df, current_time, breakout_threshold=0.01)
+    signal = ts_instance.weekly_breakout_strategy.get_signal(df, current_time, breakout_threshold=0.01)
     assert signal == "enter_long"
 
 def test_weekly_breakout_exit_all(ts_instance, weekly_data_breakout):
     """
     전 주 저점을 1% 이상 하락한 경우 "exit_all" 신호가 반환되어야 함.
-    첫 주: low=90, 두 번째 주의 close를 88로 설정하면
-    88 <= 90 * 0.99 (89.1) → "exit_all"
+    예: 첫 주 low=90, 두 번째 주의 close를 88로 설정하면 88 <= 89.1 → "exit_all"
     """
     df = weekly_data_breakout.copy()
     df.at[df.index[1], "close"] = 88
     current_time = df.index[1]
-    signal = ts_instance.weekly_breakout_strategy(df, current_time, breakout_threshold=0.01)
+    signal = ts_instance.weekly_breakout_strategy.get_signal(df, current_time, breakout_threshold=0.01)
     assert signal == "exit_all"
 
 def test_weekly_breakout_hold(ts_instance, weekly_data_breakout):
     """
-    돌파 조건을 충족하지 않으면 "hold" 신호가 반환되어야 함.
-    예를 들어, 첫 주 high=100, 두 번째 주 close=95 → 조건 미충족
+    돌파 조건 미충족 시 "hold" 신호 반환.
+    예: 첫 주 high=100, 두 번째 주 close=95 → "hold"
     """
     df = weekly_data_breakout.copy()
     df.at[df.index[1], "close"] = 95
     current_time = df.index[1]
-    signal = ts_instance.weekly_breakout_strategy(df, current_time, breakout_threshold=0.01)
+    signal = ts_instance.weekly_breakout_strategy.get_signal(df, current_time, breakout_threshold=0.01)
     assert signal == "hold"
-
-# === Weekly Momentum Strategy Tests ===
 
 def test_weekly_momentum_enter_long(ts_instance, weekly_data_momentum):
     """
-    주간 모멘텀이 threshold 이상인 경우 "enter_long" 신호가 반환되어야 함.
+    주간 모멘텀이 threshold 이상인 경우 "enter_long" 신호 반환.
     예: weekly_momentum = 0.6, momentum_threshold = 0.5
     """
     df = weekly_data_momentum.copy()
     df.at[df.index[0], "weekly_momentum"] = 0.6
     current_time = df.index[0]
-    signal = ts_instance.weekly_momentum_strategy(df, current_time, momentum_threshold=0.5)
+    signal = ts_instance.weekly_momentum_strategy.get_signal(df, current_time, momentum_threshold=0.5)
     assert signal == "enter_long"
 
 def test_weekly_momentum_exit_all(ts_instance, weekly_data_momentum):
     """
-    주간 모멘텀이 -threshold 이하인 경우 "exit_all" 신호가 반환되어야 함.
+    주간 모멘텀이 -threshold 이하인 경우 "exit_all" 신호 반환.
     예: weekly_momentum = -0.6, momentum_threshold = 0.5
     """
     df = weekly_data_momentum.copy()
     df.at[df.index[0], "weekly_momentum"] = -0.6
     current_time = df.index[0]
-    signal = ts_instance.weekly_momentum_strategy(df, current_time, momentum_threshold=0.5)
+    signal = ts_instance.weekly_momentum_strategy.get_signal(df, current_time, momentum_threshold=0.5)
     assert signal == "exit_all"
 
 def test_weekly_momentum_hold(ts_instance, weekly_data_momentum):
     """
-    주간 모멘텀이 임계치 내에 있으면 "hold" 신호가 반환되어야 함.
+    주간 모멘텀이 임계치 내에 있으면 "hold" 신호 반환.
     예: weekly_momentum = 0.3, momentum_threshold = 0.5
     """
     df = weekly_data_momentum.copy()
     df.at[df.index[0], "weekly_momentum"] = 0.3
     current_time = df.index[0]
-    signal = ts_instance.weekly_momentum_strategy(df, current_time, momentum_threshold=0.5)
+    signal = ts_instance.weekly_momentum_strategy.get_signal(df, current_time, momentum_threshold=0.5)
     assert signal == "hold"

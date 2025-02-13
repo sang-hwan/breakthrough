@@ -1,8 +1,6 @@
-[logs]
 # logs/aggregating_handler.py
 import logging
 import os
-from datetime import datetime
 import atexit
 
 class AggregatingHandler(logging.Handler):
@@ -16,11 +14,9 @@ class AggregatingHandler(logging.Handler):
      이 집계는 메모리 내에서 실행 전체의 로그 발생 건수를 누적하므로 실행 종료 시점의
      누적 결과를 확인할 수 있습니다.)
     """
-    def __init__(self, level=logging.DEBUG):  # 기본 레벨을 DEBUG로 설정
+    def __init__(self, level=logging.DEBUG):
         super().__init__(level)
-        # 누적 집계: 실행 시작부터 종료까지의 전체 로그 발생 건수를 누적
         self.total_aggregation = {}
-        # 프로그램 종료 시 누적 집계 요약을 출력하도록 flush_aggregation_summary()를 atexit에 등록
         atexit.register(self.flush_aggregation_summary)
 
     def emit(self, record):
@@ -29,27 +25,20 @@ class AggregatingHandler(logging.Handler):
             key = (record.name, filename, record.funcName)
             if key not in self.total_aggregation:
                 self.total_aggregation[key] = {"count": 0}
-            total_agg = self.total_aggregation[key]
-            total_agg["count"] += 1
+            self.total_aggregation[key]["count"] += 1
         except Exception:
             self.handleError(record)
 
     def flush_aggregation_summary(self):
-        """
-        실행 시작부터 종료 시까지 누적된 (파일명: 함수명) 단위의 로그 발생 건수를
-        한 번에 출력합니다.
-        """
         if not self.total_aggregation:
             return
         summary_lines = []
         for key, agg in self.total_aggregation.items():
             logger_name, filename, funcname = key
             count = agg.get("count", 0)
-            summary_lines.append(
-                f"{filename}:{funcname} (logger: {logger_name}) - 총 {count}회 발생"
-            )
+            summary_lines.append(f"{filename}:{funcname} (logger: {logger_name}) - 총 {count}회 발생")
         summary = "\n".join(summary_lines)
-        logging.getLogger().info("전체 누적 로그 집계:\n" + summary)
+        logging.getLogger().info("전체 누적 로그 집계:\n" + summary, extra={'_is_summary': True})
 
 ---
 
@@ -63,7 +52,7 @@ def generate_final_report(performance_data, symbol=None):
     종목별 성과 리포트를 생성합니다.
     symbol 인자가 전달되면 헤더에 심볼명을 포함합니다.
     최종 성과 지표는 performance_data["overall"]에 저장되어 있으므로,
-    해당 서브 딕셔너리에서 값을 추출하도록 수정합니다.
+    해당 서브 딕셔너리에서 값을 추출합니다.
     """
     overall = performance_data.get("overall", {})
     report_lines = []
@@ -105,30 +94,30 @@ def generate_final_report(performance_data, symbol=None):
     report_lines.append("=========================================")
     
     report_str = "\n".join(report_lines)
-    logger.debug(report_str)
+    logger.info(report_str)
 
 def generate_parameter_sensitivity_report(param_name, results):
     """
     Parameter Sensitivity Report 생성 (최종 로그용).
-    다중 파라미터 분석의 경우, results는 {param1: {value: metrics, ...}, param2: {value: metrics, ...}, ...} 형식입니다.
+    다중 파라미터 분석의 경우, results는 { (param, value) 튜플: { metric: {mean, std, min, max}, ... } } 형식입니다.
     """
     report_lines = []
     report_lines.append("=== FINAL PARAMETER SENSITIVITY REPORT ===")
     
-    if isinstance(results, dict) and all(isinstance(v, dict) for v in results.values()):
-        # 다중 파라미터 모드
-        for p, res in results.items():
-            report_lines.append(f"Parameter: {p}")
-            for val in sorted(res.keys()):
-                result = res[val]
-                if result is not None:
-                    roi = result.get("roi", 0)
-                    report_lines.append(f"  {p} = {val:.4f} -> ROI: {roi:.2f}%")
-                else:
-                    report_lines.append(f"  {p} = {val:.4f} -> ROI: Error")
-            report_lines.append("")  # 파라미터 간 빈 줄 추가
+    # 다중 파라미터 조합인 경우 (키가 튜플인 경우)
+    if all(isinstance(k, tuple) for k in results.keys()):
+        report_lines.append("Multi-Parameter Analysis Results:")
+        for combo_key, metrics in results.items():
+            combo_str = ", ".join([f"{p}={v:.4f}" for p, v in combo_key])
+            report_lines.append(f"Combination: {combo_str}")
+            if metrics is not None:
+                for metric_name, stats in metrics.items():
+                    report_lines.append(f"  {metric_name}: mean={stats['mean']:.2f}, std={stats['std']:.2f}, min={stats['min']:.2f}, max={stats['max']:.2f}")
+            else:
+                report_lines.append("  Error during backtesting for this combination.")
+            report_lines.append("")
     else:
-        # 단일 파라미터 모드 (지원하지 않음)
+        # 단일 파라미터 분석인 경우
         report_lines.append(f"Analyzed Parameter: {param_name}")
         report_lines.append("Results:")
         for val in sorted(results.keys()):
@@ -141,53 +130,36 @@ def generate_parameter_sensitivity_report(param_name, results):
     report_lines.append("==========================================")
     
     report_str = "\n".join(report_lines)
-    logger.debug(report_str)
+    logger.info(report_str)
 
 ---
 
 # logs/logger_config.py
 import logging
 import os
-from logging.handlers import RotatingFileHandler
+import queue
+from logging.handlers import RotatingFileHandler, QueueHandler, QueueListener
 from dotenv import load_dotenv
 
-# .env 파일 로드
 load_dotenv()
 
-# 환경 변수 읽기 (프로젝트 전체에 통일된 로그 레벨)
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development").lower()
-
-# LOG_LEVEL은 파일 저장용 기본 레벨 (예: INFO)
 _LOG_LEVEL_FROM_ENV = os.getenv("LOG_LEVEL", None)
 if _LOG_LEVEL_FROM_ENV:
-    level = getattr(logging, _LOG_LEVEL_FROM_ENV.upper(), logging.DEBUG)
+    file_level = getattr(logging, _LOG_LEVEL_FROM_ENV.upper(), logging.INFO)
 else:
-    level = logging.DEBUG
-
-# 파일에 저장할 로그는 INFO 레벨 이상의 메시지만 기록하도록 고정
-file_log_level = logging.INFO
-
-# 콘솔 출력용 상세 로그 레벨 (예: DEBUG)
+    file_level = logging.INFO
+file_log_level = file_level
 LOG_DETAIL_LEVEL = os.getenv("LOG_DETAIL_LEVEL", "DEBUG")
 detail_level = getattr(logging, LOG_DETAIL_LEVEL.upper(), logging.DEBUG)
-
-# 기본 로그 파일 이름 (최초 로그는 이 파일에 기록됨)
 BASE_LOG_FILE = os.path.join("logs", "project.log")
 
 class OneLineFormatter(logging.Formatter):
-    """
-    로그 메시지 내 개행 문자를 제거하여 한 로그 이벤트가 한 줄로 기록되도록 합니다.
-    """
     def format(self, record):
         formatted = super().format(record)
         return formatted.replace("\n", " | ")
 
 class LineRotatingFileHandler(RotatingFileHandler):
-    """
-    지정된 라인 수(max_lines)를 초과하면 현재 로그 파일을 닫고,
-    새로운 로그 파일을 'project.log', 'project1.log', 'project2.log', … 
-    와 같이 순차적으로 생성하는 핸들러입니다.
-    """
     def __init__(self, base_filename, mode='a', max_lines=1000, backupCount=7, encoding=None, delay=False):
         self.base_filename = base_filename
         self.current_index = 0
@@ -234,54 +206,59 @@ class LineRotatingFileHandler(RotatingFileHandler):
         except Exception:
             self.handleError(record)
 
-# 전역 AggregatingHandler를 추가합니다.
 try:
     from logs.aggregating_handler import AggregatingHandler
 except ImportError:
     AggregatingHandler = None
 
+log_queue = queue.Queue(-1)
+queue_listener = None
+
 def initialize_root_logger():
     root_logger = logging.getLogger()
-    root_logger.setLevel(level)
+    root_logger.setLevel(detail_level)
     
-    # 파일 핸들러: 파일에는 INFO 레벨 이상의 로그만 기록
-    if not any(isinstance(handler, LineRotatingFileHandler) for handler in root_logger.handlers):
-        file_handler = LineRotatingFileHandler(
-            base_filename=BASE_LOG_FILE,
-            max_lines=1000,
-            backupCount=7,
-            encoding="utf-8",
-            delay=True
-        )
-        file_handler.setLevel(file_log_level)
-        formatter = OneLineFormatter('[%(asctime)s] %(levelname)s:%(name)s:%(filename)s:%(funcName)s: %(message)s')
-        file_handler.setFormatter(formatter)
-        root_logger.addHandler(file_handler)
+    for handler in root_logger.handlers[:]:
+        root_logger.removeHandler(handler)
     
-    # 콘솔 핸들러: 콘솔에는 LOG_DETAIL_LEVEL (예: DEBUG) 이상의 로그를 출력
-    if not any(isinstance(handler, logging.StreamHandler) for handler in root_logger.handlers):
-        console_handler = logging.StreamHandler()
-        console_handler.setLevel(detail_level)
-        console_formatter = OneLineFormatter('[%(asctime)s] %(levelname)s:%(name)s:%(filename)s:%(funcName)s: %(message)s')
-        console_handler.setFormatter(console_formatter)
-        root_logger.addHandler(console_handler)
+    file_handler = LineRotatingFileHandler(
+        base_filename=BASE_LOG_FILE,
+        max_lines=1000,
+        backupCount=7,
+        encoding="utf-8",
+        delay=True
+    )
+    file_handler.setLevel(file_log_level)
+    formatter = OneLineFormatter('[%(asctime)s] %(levelname)s:%(name)s:%(filename)s:%(funcName)s: %(message)s')
+    file_handler.setFormatter(formatter)
+    root_logger.addHandler(file_handler)
     
-    if AggregatingHandler is not None and not any(isinstance(handler, AggregatingHandler) for handler in root_logger.handlers):
-        # 단일 AggregatingHandler를 추가하여 모든 로그를 중앙에서 집계
-        aggregator_handler = AggregatingHandler(level=file_log_level)
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(detail_level)
+    console_formatter = OneLineFormatter('[%(asctime)s] %(levelname)s:%(name)s:%(filename)s:%(funcName)s: %(message)s')
+    console_handler.setFormatter(console_formatter)
+    console_handler.addFilter(lambda record: not getattr(record, '_is_summary', False))
+    
+    q_handler = QueueHandler(log_queue)
+    root_logger.addHandler(q_handler)
+    
+    global queue_listener
+    queue_listener = QueueListener(log_queue, console_handler)
+    queue_listener.start()
+    
+    if AggregatingHandler is not None:
+        aggregator_handler = AggregatingHandler(level=detail_level)
         aggregator_handler.addFilter(lambda record: not getattr(record, '_is_summary', False))
         aggregator_formatter = OneLineFormatter('[%(asctime)s] %(levelname)s:%(name)s:%(filename)s:%(funcName)s: %(message)s')
         aggregator_handler.setFormatter(aggregator_formatter)
         root_logger.addHandler(aggregator_handler)
-    
-initialize_root_logger()
 
 def setup_logger(module_name: str) -> logging.Logger:
     logger = logging.getLogger(module_name)
-    logger.setLevel(level)
-    
+    logger.setLevel(detail_level)
+    logger.propagate = True
     try:
-        agg_handler = AggregatingHandler(level=file_log_level)
+        agg_handler = AggregatingHandler(level=detail_level)
         agg_handler.addFilter(lambda record: not getattr(record, '_is_summary', False))
         formatter = OneLineFormatter('[%(asctime)s] %(levelname)s:%(name)s:%(filename)s:%(funcName)s: %(message)s')
         agg_handler.setFormatter(formatter)
@@ -303,41 +280,24 @@ class LoggingUtil:
     LoggingUtil는 이벤트 로깅과 로그 파일 관리 기능을 제공합니다.
     
     - 이벤트 로깅: 각 모듈별로 인스턴스를 생성하고, 이벤트 발생 시 INFO 레벨 로그를 기록하여
-      AggregatingHandler가 동일 (logger 이름, 파일, 함수) 기준으로 로그를 집계하도록 합니다.
+      AggregatingHandler가 동일 기준으로 로그를 집계하도록 합니다.
     - 로그 파일 관리: 정적 메서드 clear_log_files()를 통해 프로젝트 루트의 logs 폴더 내 모든 .log 파일을 삭제합니다.
     """
     def __init__(self, module_name: str):
-        """
-        :param module_name: 해당 로거가 속한 모듈의 이름 (예: "Account", "AssetManager" 등)
-        """
         self.module_name = module_name
         self.lock = threading.RLock()
         self.logger = setup_logger(module_name)
 
     def log_event(self, event_message: str) -> None:
-        """
-        단일 이벤트를 기록합니다.
-        이벤트 발생 시마다 INFO 레벨로 로그를 남기면 AggregatingHandler가 동일 기준의 로그들을 집계하여
-        임계치 도달 시 요약 메시지를 출력합니다.
-        
-        :param event_message: 기록할 이벤트 메시지
-        """
         with self.lock:
             self.logger.debug(f"[{self.module_name}] Event: {event_message}")
 
     def log_summary(self) -> None:
-        """
-        AggregatingHandler가 자동으로 요약 로그를 출력하므로,
-        필요 시 강제로 요약 로그를 남길 수 있도록 INFO 레벨 로그를 기록합니다.
-        """
         with self.lock:
             self.logger.debug(f"[{self.module_name}] Summary requested.")
 
     @staticmethod
     def clear_log_files():
-        """
-        실행 시 프로젝트 루트의 logs 폴더 내 모든 .log 파일을 삭제합니다.
-        """
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         log_dir = os.path.join(base_dir, "logs")
         log_files = glob.glob(os.path.join(log_dir, "*.log"))
@@ -347,5 +307,3 @@ class LoggingUtil:
                 print(f"Deleted log file: {log_file}")
             except Exception as e:
                 print(f"Failed to remove log file {log_file}: {e}")
-
-# 테스트 코드에서 요구하는 alias는 LoggingUtil 그대로 사용하면 됩니다.

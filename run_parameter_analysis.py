@@ -2,18 +2,15 @@
 import argparse
 import logging
 import numpy as np
-from logs.logger_config import setup_logger
+from logs.logger_config import setup_logger, initialize_root_logger
 from logs.logging_util import LoggingUtil
-from strategy_tuning.parameter_analysis import run_sensitivity_analysis
+from strategies.param_analysis import run_sensitivity_analysis
 from logs.final_report import generate_parameter_sensitivity_report
-
-logger = setup_logger(__name__)
 
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Run parameter sensitivity analysis for trading strategies."
     )
-    # 다중 파라미터 분석용 인자 (기본값 지정)
     parser.add_argument("--param_names", type=str, 
                         default="profit_ratio,atr_multiplier,risk_per_trade,scale_in_threshold,weekly_breakout_threshold,weekly_momentum_threshold",
                         help="Comma-separated list of parameter names to analyze. Multi-parameter mode is activated.")
@@ -31,7 +28,6 @@ def parse_args():
                         help="End date for data")
     parser.add_argument("--periods", type=str, default="", 
                         help="Optional multiple periods in format start1:end1;start2:end2, etc.")
-    # sample_rate 인자는 더 이상 사용하지 않습니다.
     return parser.parse_args()
 
 def parse_assets(asset_str):
@@ -47,17 +43,17 @@ def parse_periods(periods_str, default_start, default_end):
                 s, e = pair.split(":")
                 period_list.append((s.strip(), e.strip()))
             except Exception as e:
-                logger.error(f"Error parsing period pair '{pair}': {e}", exc_info=True)
+                logging.getLogger(__name__).error(f"Error parsing period pair '{pair}': {e}", exc_info=True)
     if not period_list:
         period_list = [(default_start, default_end)]
     return period_list
 
 def run_parameter_analysis():
-    # 1. 기존 로그 핸들러 종료 및 로그 파일 삭제
-    logging.shutdown()
+    # 기존 로그 재설정
     LoggingUtil.clear_log_files()
+    initialize_root_logger()
 
-    # 2. 인자 파싱
+    # 인자 파싱 후 로거 생성
     args = parse_args()
     logger = setup_logger(__name__)
     logger.debug("Starting parameter sensitivity analysis with external configuration.")
@@ -65,10 +61,9 @@ def run_parameter_analysis():
     assets = parse_assets(args.assets)
     periods = parse_periods(args.periods, args.start_date, args.end_date)
 
-    # 다중 파라미터 분석: --param_names 인자를 기반으로 분석할 파라미터와 그 범위를 dict로 구성합니다.
-    from strategy_tuning.dynamic_param_manager import DynamicParamManager
-    dpm = DynamicParamManager()
-    defaults = dpm.get_default_params()
+    from config.config_manager import ConfigManager
+    cm = ConfigManager()
+    defaults = cm.get_defaults()
     param_names = [p.strip() for p in args.param_names.split(",") if p.strip()]
     param_settings = {}
     for pname in param_names:
@@ -80,17 +75,13 @@ def run_parameter_analysis():
         except Exception as e:
             logger.warning(f"Parameter {pname} is not numeric. Skipping.")
             continue
-        # 기본값의 ±20% 범위로 분석 (필요에 따라 조정 가능)
         start_val = default_val * 0.8
         end_val = default_val * 1.2
         param_values = np.linspace(start_val, end_val, args.param_steps)
         logger.debug(f"Analyzing parameter {pname} with range {start_val:.4f} to {end_val:.4f} in {args.param_steps} steps.")
         param_settings[pname] = param_values
 
-    # 3. 민감도 분석 실행 (다중 파라미터 모드)
     results_all = run_sensitivity_analysis(param_settings, assets, args.short_tf, args.long_tf, args.start_date, args.end_date, periods)
-
-    # 4. 최종 결과 리포트 생성: 다중 파라미터 분석 결과 리포트를 생성합니다.
     report_title = "Multi-Parameter Analysis: " + ", ".join(results_all.keys())
     generate_parameter_sensitivity_report(report_title, results_all)
 

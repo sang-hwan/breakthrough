@@ -8,7 +8,7 @@ def generate_final_report(performance_data, symbol=None):
     종목별 성과 리포트를 생성합니다.
     symbol 인자가 전달되면 헤더에 심볼명을 포함합니다.
     최종 성과 지표는 performance_data["overall"]에 저장되어 있으므로,
-    해당 서브 딕셔너리에서 값을 추출하도록 수정합니다.
+    해당 서브 딕셔너리에서 값을 추출합니다.
     """
     overall = performance_data.get("overall", {})
     report_lines = []
@@ -55,25 +55,25 @@ def generate_final_report(performance_data, symbol=None):
 def generate_parameter_sensitivity_report(param_name, results):
     """
     Parameter Sensitivity Report 생성 (최종 로그용).
-    다중 파라미터 분석의 경우, results는 {param1: {value: metrics, ...}, param2: {value: metrics, ...}, ...} 형식입니다.
+    다중 파라미터 분석의 경우, results는 { (param, value) 튜플: { metric: {mean, std, min, max}, ... } } 형식입니다.
     """
     report_lines = []
     report_lines.append("=== FINAL PARAMETER SENSITIVITY REPORT ===")
     
-    if isinstance(results, dict) and all(isinstance(v, dict) for v in results.values()):
-        # 다중 파라미터 모드
-        for p, res in results.items():
-            report_lines.append(f"Parameter: {p}")
-            for val in sorted(res.keys()):
-                result = res[val]
-                if result is not None:
-                    roi = result.get("roi", 0)
-                    report_lines.append(f"  {p} = {val:.4f} -> ROI: {roi:.2f}%")
-                else:
-                    report_lines.append(f"  {p} = {val:.4f} -> ROI: Error")
-            report_lines.append("")  # 파라미터 간 빈 줄 추가
+    # 다중 파라미터 조합인 경우 (키가 튜플인 경우)
+    if all(isinstance(k, tuple) for k in results.keys()):
+        report_lines.append("Multi-Parameter Analysis Results:")
+        for combo_key, metrics in results.items():
+            combo_str = ", ".join([f"{p}={v:.4f}" for p, v in combo_key])
+            report_lines.append(f"Combination: {combo_str}")
+            if metrics is not None:
+                for metric_name, stats in metrics.items():
+                    report_lines.append(f"  {metric_name}: mean={stats['mean']:.2f}, std={stats['std']:.2f}, min={stats['min']:.2f}, max={stats['max']:.2f}")
+            else:
+                report_lines.append("  Error during backtesting for this combination.")
+            report_lines.append("")
     else:
-        # 단일 파라미터 모드 (지원하지 않음)
+        # 단일 파라미터 분석인 경우
         report_lines.append(f"Analyzed Parameter: {param_name}")
         report_lines.append("Results:")
         for val in sorted(results.keys()):
