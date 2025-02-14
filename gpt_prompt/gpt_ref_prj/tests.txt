@@ -576,7 +576,7 @@ def test_counter_trend_strategy(sample_data):
 
 def test_high_frequency_strategy():
     # 2분 단위의 간단한 데이터 생성
-    dates = pd.date_range(start="2023-01-01", periods=2, freq="T")
+    dates = pd.date_range(start="2023-01-01", periods=2, freq="min")
     data = pd.DataFrame({"close": [100, 100.5]}, index=dates)
     strat = HighFrequencyStrategy()
     signal = strat.get_signal(data, data.index[-1])
@@ -671,7 +671,7 @@ def test_weekly_breakout_enter_long(ts_instance, weekly_data_breakout):
     df = weekly_data_breakout.copy()
     df.at[df.index[1], "close"] = 102
     current_time = df.index[1]
-    signal = ts_instance.weekly_breakout_strategy.get_signal(df, current_time, breakout_threshold=0.01)
+    signal = ts_instance.weekly_breakout.get_signal(df, current_time, breakout_threshold=0.01)
     assert signal == "enter_long"
 
 def test_weekly_breakout_exit_all(ts_instance, weekly_data_breakout):
@@ -682,7 +682,7 @@ def test_weekly_breakout_exit_all(ts_instance, weekly_data_breakout):
     df = weekly_data_breakout.copy()
     df.at[df.index[1], "close"] = 88
     current_time = df.index[1]
-    signal = ts_instance.weekly_breakout_strategy.get_signal(df, current_time, breakout_threshold=0.01)
+    signal = ts_instance.weekly_breakout.get_signal(df, current_time, breakout_threshold=0.01)
     assert signal == "exit_all"
 
 def test_weekly_breakout_hold(ts_instance, weekly_data_breakout):
@@ -693,7 +693,7 @@ def test_weekly_breakout_hold(ts_instance, weekly_data_breakout):
     df = weekly_data_breakout.copy()
     df.at[df.index[1], "close"] = 95
     current_time = df.index[1]
-    signal = ts_instance.weekly_breakout_strategy.get_signal(df, current_time, breakout_threshold=0.01)
+    signal = ts_instance.weekly_breakout.get_signal(df, current_time, breakout_threshold=0.01)
     assert signal == "hold"
 
 def test_weekly_momentum_enter_long(ts_instance, weekly_data_momentum):
@@ -704,7 +704,7 @@ def test_weekly_momentum_enter_long(ts_instance, weekly_data_momentum):
     df = weekly_data_momentum.copy()
     df.at[df.index[0], "weekly_momentum"] = 0.6
     current_time = df.index[0]
-    signal = ts_instance.weekly_momentum_strategy.get_signal(df, current_time, momentum_threshold=0.5)
+    signal = ts_instance.weekly_momentum.get_signal(df, current_time, momentum_threshold=0.5)
     assert signal == "enter_long"
 
 def test_weekly_momentum_exit_all(ts_instance, weekly_data_momentum):
@@ -715,7 +715,7 @@ def test_weekly_momentum_exit_all(ts_instance, weekly_data_momentum):
     df = weekly_data_momentum.copy()
     df.at[df.index[0], "weekly_momentum"] = -0.6
     current_time = df.index[0]
-    signal = ts_instance.weekly_momentum_strategy.get_signal(df, current_time, momentum_threshold=0.5)
+    signal = ts_instance.weekly_momentum.get_signal(df, current_time, momentum_threshold=0.5)
     assert signal == "exit_all"
 
 def test_weekly_momentum_hold(ts_instance, weekly_data_momentum):
@@ -726,5 +726,5 @@ def test_weekly_momentum_hold(ts_instance, weekly_data_momentum):
     df = weekly_data_momentum.copy()
     df.at[df.index[0], "weekly_momentum"] = 0.3
     current_time = df.index[0]
-    signal = ts_instance.weekly_momentum_strategy.get_signal(df, current_time, momentum_threshold=0.5)
+    signal = ts_instance.weekly_momentum.get_signal(df, current_time, momentum_threshold=0.5)
     assert signal == "hold"

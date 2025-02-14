@@ -2,7 +2,7 @@
 import argparse
 import logging
 import numpy as np
-from logs.logger_config import setup_logger, initialize_root_logger
+from logs.logger_config import setup_logger, initialize_root_logger, shutdown_logging
 from logs.logging_util import LoggingUtil
 from strategies.param_analysis import run_sensitivity_analysis
 from logs.final_report import generate_parameter_sensitivity_report
@@ -82,6 +82,7 @@ def run_parameter_analysis():
     )
     report_title = "Multi-Parameter Analysis: " + ", ".join([str(k) for k in results_all.keys()])
     generate_parameter_sensitivity_report(report_title, results_all)
+    shutdown_logging()
 
 if __name__ == "__main__":
     run_parameter_analysis()

@@ -1,6 +1,5 @@
 # backtesting/backtester.py
 import pandas as pd
-from datetime import timedelta
 from logs.logger_config import setup_logger
 from trading.risk_manager import RiskManager 
 from trading.trade_executor import TradeExecutor
@@ -165,7 +164,6 @@ class Backtester:
         )
         required_amount = close_price * total_size * (1 + self.fee_rate)
         if self.account.get_available_balance() >= required_amount:
-            from core.position import Position
             new_position = Position(
                 side="LONG",
                 initial_price=close_price,

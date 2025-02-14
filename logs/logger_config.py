@@ -4,6 +4,7 @@ import os
 import queue
 from logging.handlers import RotatingFileHandler, QueueHandler, QueueListener
 from dotenv import load_dotenv
+from logs.aggregating_handler import AggregatingHandler
 
 load_dotenv()
 
@@ -60,11 +61,6 @@ class LineRotatingFileHandler(RotatingFileHandler):
         except Exception:
             self.handleError(record)
 
-try:
-    from logs.aggregating_handler import AggregatingHandler
-except ImportError:
-    AggregatingHandler = None
-
 log_queue = queue.Queue(-1)
 queue_listener = None
 
@@ -120,3 +116,17 @@ def setup_logger(module_name: str) -> logging.Logger:
     except Exception as e:
         logger.error("모듈별 AggregatingHandler 추가 실패: %s", e)
     return logger
+
+def shutdown_logging():
+    root_logger = logging.getLogger()
+    for handler in root_logger.handlers:
+        try:
+            if hasattr(handler, 'flush_aggregation_summary'):
+                handler.flush_aggregation_summary()
+        except Exception:
+            pass
+    global queue_listener
+    if queue_listener is not None:
+        queue_listener.stop()
+        queue_listener = None
+    logging.shutdown()

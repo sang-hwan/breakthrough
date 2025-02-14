@@ -1,5 +1,5 @@
 # run_strategy_performance.py
-from logs.logger_config import setup_logger, initialize_root_logger
+from logs.logger_config import setup_logger, initialize_root_logger, shutdown_logging
 from logs.logging_util import LoggingUtil
 from strategies.optimizer import DynamicParameterOptimizer
 from backtesting.backtester import Backtester
@@ -62,6 +62,7 @@ def run_strategy_performance():
             logger.debug(f"No trades executed for {symbol}.")
 
     logger.debug("Project test complete.")
+    shutdown_logging()
 
 if __name__ == "__main__":
     run_strategy_performance()

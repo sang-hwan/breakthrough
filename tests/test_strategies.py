@@ -68,7 +68,7 @@ def test_counter_trend_strategy(sample_data):
 
 def test_high_frequency_strategy():
     # 2분 단위의 간단한 데이터 생성
-    dates = pd.date_range(start="2023-01-01", periods=2, freq="T")
+    dates = pd.date_range(start="2023-01-01", periods=2, freq="min")
     data = pd.DataFrame({"close": [100, 100.5]}, index=dates)
     strat = HighFrequencyStrategy()
     signal = strat.get_signal(data, data.index[-1])

@@ -1,7 +1,6 @@
 # logs/aggregating_handler.py
 import logging
 import os
-import atexit
 
 class AggregatingHandler(logging.Handler):
     """
@@ -11,7 +10,6 @@ class AggregatingHandler(logging.Handler):
     def __init__(self, level=logging.DEBUG):
         super().__init__(level)
         self.total_aggregation = {}
-        atexit.register(self.flush_aggregation_summary)
 
     def emit(self, record):
         try:
@@ -28,7 +26,10 @@ class AggregatingHandler(logging.Handler):
             for (logger_name, filename, funcname), count in self.total_aggregation.items()
         ]
         summary = "\n".join(summary_lines)
-        logging.getLogger().info("전체 누적 로그 집계:\n" + summary)
+        try:
+            logging.getLogger().info("전체 누적 로그 집계:\n" + summary)
+        except Exception:
+            pass
 
 ---
 
@@ -126,6 +127,7 @@ import os
 import queue
 from logging.handlers import RotatingFileHandler, QueueHandler, QueueListener
 from dotenv import load_dotenv
+from logs.aggregating_handler import AggregatingHandler
 
 load_dotenv()
 
@@ -182,11 +184,6 @@ class LineRotatingFileHandler(RotatingFileHandler):
         except Exception:
             self.handleError(record)
 
-try:
-    from logs.aggregating_handler import AggregatingHandler
-except ImportError:
-    AggregatingHandler = None
-
 log_queue = queue.Queue(-1)
 queue_listener = None
 
@@ -242,6 +239,20 @@ def setup_logger(module_name: str) -> logging.Logger:
     except Exception as e:
         logger.error("모듈별 AggregatingHandler 추가 실패: %s", e)
     return logger
+
+def shutdown_logging():
+    root_logger = logging.getLogger()
+    for handler in root_logger.handlers:
+        try:
+            if hasattr(handler, 'flush_aggregation_summary'):
+                handler.flush_aggregation_summary()
+        except Exception:
+            pass
+    global queue_listener
+    if queue_listener is not None:
+        queue_listener.stop()
+        queue_listener = None
+    logging.shutdown()
 
 ---
 

@@ -1,7 +1,6 @@
 # logs/aggregating_handler.py
 import logging
 import os
-import atexit
 
 class AggregatingHandler(logging.Handler):
     """
@@ -11,7 +10,6 @@ class AggregatingHandler(logging.Handler):
     def __init__(self, level=logging.DEBUG):
         super().__init__(level)
         self.total_aggregation = {}
-        atexit.register(self.flush_aggregation_summary)
 
     def emit(self, record):
         try:
@@ -28,4 +26,7 @@ class AggregatingHandler(logging.Handler):
             for (logger_name, filename, funcname), count in self.total_aggregation.items()
         ]
         summary = "\n".join(summary_lines)
-        logging.getLogger().info("전체 누적 로그 집계:\n" + summary)
+        try:
+            logging.getLogger().info("전체 누적 로그 집계:\n" + summary)
+        except Exception:
+            pass
