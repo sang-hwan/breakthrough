@@ -5,6 +5,26 @@ from strategies.trading_strategies import (
     CounterTrendStrategy, HighFrequencyStrategy, WeeklyBreakoutStrategy, WeeklyMomentumStrategy
 )
 
+def compute_dynamic_weights(market_volatility: float, liquidity_info: str, volume: float = None):
+    if market_volatility is None:
+        market_volatility = 0.02
+    if liquidity_info.lower() == "high":
+        short_weight = 0.8
+        weekly_weight = 0.2
+    else:
+        short_weight = 0.6
+        weekly_weight = 0.4
+
+    if market_volatility > 0.05:
+        short_weight = 0.6
+        weekly_weight = 0.4
+
+    if volume is not None and volume < 1000:
+        short_weight *= 0.8
+        weekly_weight = 1 - short_weight
+
+    return short_weight, weekly_weight
+
 class Ensemble:
     def __init__(self):
         self.logger = setup_logger(__name__)
@@ -17,7 +37,10 @@ class Ensemble:
         self.weekly_momentum_strategy = WeeklyMomentumStrategy()
         self.last_final_signal = None
 
-    def get_final_signal(self, market_regime, liquidity_info, data, current_time, data_weekly=None):
+    def get_final_signal(self, market_regime, liquidity_info, data, current_time, data_weekly=None, 
+                         market_volatility: float = None, volume: float = None):
+        short_weight, weekly_weight = compute_dynamic_weights(market_volatility, liquidity_info, volume)
+
         signals = {
             "select": self.select_strategy.get_signal(data, current_time),
             "trend": self.trend_following_strategy.get_signal(data, current_time),
@@ -29,9 +52,6 @@ class Ensemble:
             signals["weekly_breakout"] = self.weekly_breakout_strategy.get_signal(data_weekly, current_time)
             signals["weekly_momentum"] = self.weekly_momentum_strategy.get_signal(data_weekly, current_time)
 
-        short_weight = 0.7
-        weekly_weight = 0.3 if data_weekly is not None else 0.0
-
         vote_enter = sum(short_weight for key in ["select", "trend", "breakout", "counter", "hf"] if signals.get(key) == "enter_long")
         vote_exit = sum(short_weight for key in ["select", "trend", "breakout", "counter", "hf"] if signals.get(key) == "exit_all")
         if data_weekly is not None:
@@ -40,6 +60,10 @@ class Ensemble:
 
         final_signal = "exit_all" if vote_exit > vote_enter else ("enter_long" if vote_enter > vote_exit else "hold")
         if self.last_final_signal != final_signal:
-            self.logger.debug(f"Ensemble final signal changed to {final_signal} at {current_time}")
+            self.logger.debug(
+                f"Ensemble final signal changed to {final_signal} at {current_time} "
+                f"with dynamic weights: short={short_weight}, weekly={weekly_weight}, "
+                f"signals: {signals}"
+            )
             self.last_final_signal = final_signal
         return final_signal

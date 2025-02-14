@@ -226,10 +226,12 @@ class SelectStrategy(BaseStrategy):
             current_row = data.loc[current_time]
         except Exception:
             return "hold"
-        # 최소한 신호가 변경될 때만 로깅
         signals = [
             "enter_long" if self._get_candle_pattern_signal(current_row) == "bullish" else "hold",
-            self._get_sma_rsi_signal(current_row, data.loc[:current_time].iloc[-2].get('sma') if len(data.loc[:current_time]) > 1 else current_row.get('sma')),
+            self._get_sma_rsi_signal(
+                current_row,
+                data.loc[:current_time].iloc[-2].get('sma') if len(data.loc[:current_time]) > 1 else current_row.get('sma')
+            ),
             self._get_bb_signal(current_row)
         ]
         final_signal = "enter_long" if "enter_long" in signals else "hold"
@@ -364,35 +366,10 @@ class WeeklyMomentumStrategy(BaseStrategy):
 class TradingStrategies:
     def __init__(self):
         self.logger = setup_logger(self.__class__.__name__)
-        self.select = SelectStrategy()
-        self.trend = TrendFollowingStrategy()
-        self.breakout = BreakoutStrategy()
-        self.counter = CounterTrendStrategy()
-        self.hf = HighFrequencyStrategy()
-        self.weekly_breakout = WeeklyBreakoutStrategy()
-        self.weekly_momentum = WeeklyMomentumStrategy()
-        self.last_final_signal = None
+        from trading.ensemble import Ensemble
+        self.ensemble = Ensemble()
+        self.weekly_breakout = self.ensemble.weekly_breakout_strategy
+        self.weekly_momentum = self.ensemble.weekly_momentum_strategy
 
-    def get_final_signal(self, market_regime, liquidity_info, data, current_time, data_weekly=None):
-        signals = {
-            "select": self.select.get_signal(data, current_time),
-            "trend": self.trend.get_signal(data, current_time),
-            "breakout": self.breakout.get_signal(data, current_time),
-            "counter": self.counter.get_signal(data, current_time),
-            "hf": self.hf.get_signal(data, current_time)
-        }
-        if data_weekly is not None:
-            signals["weekly_breakout"] = self.weekly_breakout.get_signal(data_weekly, current_time)
-            signals["weekly_momentum"] = self.weekly_momentum.get_signal(data_weekly, current_time)
-
-        # 단기 전략 가중치 0.7, 주간 0.3
-        vote_enter = sum(0.7 for key in ["select", "trend", "breakout", "counter", "hf"] if signals.get(key) == "enter_long")
-        vote_exit = sum(0.7 for key in ["select", "trend", "breakout", "counter", "hf"] if signals.get(key) == "exit_all")
-        if data_weekly is not None:
-            vote_enter += sum(0.3 for key in ["weekly_breakout", "weekly_momentum"] if signals.get(key) == "enter_long")
-            vote_exit += sum(0.3 for key in ["weekly_breakout", "weekly_momentum"] if signals.get(key) == "exit_all")
-        final_signal = "exit_all" if vote_exit > vote_enter else ("enter_long" if vote_enter > vote_exit else "hold")
-        if self.last_final_signal != final_signal:
-            self.logger.debug(f"Final ensemble signal changed to {final_signal} at {current_time}")
-            self.last_final_signal = final_signal
-        return final_signal
+    def get_final_signal(self, market_regime, liquidity_info, data, current_time, data_weekly=None, **kwargs):
+        return self.ensemble.get_final_signal(market_regime, liquidity_info, data, current_time, data_weekly, **kwargs)

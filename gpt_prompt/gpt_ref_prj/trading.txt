@@ -84,43 +84,81 @@ def calculate_atr(data: pd.DataFrame, period: int = 14) -> pd.DataFrame:
     return data
 
 def calculate_dynamic_stop_and_take(entry_price: float, atr: float, risk_params: dict):
-    atr_multiplier = risk_params.get("atr_multiplier", 2.0)
-    profit_ratio = risk_params.get("profit_ratio", 0.05)
-    volatility_multiplier = risk_params.get("volatility_multiplier", 1.0)
-    stop_loss_price = entry_price - (atr * atr_multiplier * volatility_multiplier)
-    take_profit_price = entry_price * (1 + profit_ratio)
-    logger.debug(f"Calculated stop_loss={stop_loss_price:.2f}, take_profit={take_profit_price:.2f}")
-    return stop_loss_price, take_profit_price
+    # 입력값 검증
+    if entry_price <= 0:
+        logger.error("Invalid entry_price <= 0: {}".format(entry_price))
+        raise ValueError("entry_price must be positive.")
+    if atr <= 0:
+        logger.error("Invalid atr <= 0: {}".format(atr))
+        raise ValueError("atr must be positive.")
+    try:
+        atr_multiplier = risk_params.get("atr_multiplier", 2.0)
+        profit_ratio = risk_params.get("profit_ratio", 0.05)
+        volatility_multiplier = risk_params.get("volatility_multiplier", 1.0)
+        # 극단적인 값 방지를 위해 클리핑
+        atr_multiplier = max(0.1, min(atr_multiplier, 10))
+        profit_ratio = max(0.001, min(profit_ratio, 1))
+        stop_loss_price = entry_price - (atr * atr_multiplier * volatility_multiplier)
+        take_profit_price = entry_price * (1 + profit_ratio)
+        # 손절 가격이 0 이하인 경우 최소 50% 수준으로 조정
+        if stop_loss_price <= 0:
+            logger.warning("Computed stop_loss_price is non-positive; adjusting to at least 50% of entry_price.")
+            stop_loss_price = entry_price * 0.5
+        logger.debug(f"Calculated stop_loss={stop_loss_price:.2f}, take_profit={take_profit_price:.2f} "
+                     f"(entry_price={entry_price}, atr={atr}, atr_multiplier={atr_multiplier}, profit_ratio={profit_ratio})")
+        return stop_loss_price, take_profit_price
+    except Exception as e:
+        logger.error(f"calculate_dynamic_stop_and_take error: {e}", exc_info=True)
+        raise
 
 def adjust_trailing_stop(current_stop: float, current_price: float, highest_price: float, trailing_percentage: float,
                            volatility: float = 0.0, weekly_high: float = None, weekly_volatility: float = None) -> float:
-    if current_stop is None:
-        current_stop = highest_price * (1 - trailing_percentage * (1 + volatility))
-    new_stop_intraday = highest_price * (1 - trailing_percentage * (1 + volatility))
-    if weekly_high is not None:
-        w_vol = weekly_volatility if weekly_volatility is not None else 0.0
-        new_stop_weekly = weekly_high * (1 - trailing_percentage * (1 + w_vol))
-        candidate_stop = max(new_stop_intraday, new_stop_weekly)
-    else:
-        candidate_stop = new_stop_intraday
-    adjusted_stop = candidate_stop if candidate_stop > current_stop and candidate_stop < current_price else current_stop
-    logger.debug(f"Adjusted trailing stop: {adjusted_stop:.2f}")
-    return adjusted_stop
+    if current_price <= 0 or highest_price <= 0:
+        logger.error("Invalid current_price or highest_price: current_price={}, highest_price={}".format(current_price, highest_price))
+        raise ValueError("current_price and highest_price must be positive.")
+    if trailing_percentage < 0:
+        logger.error("Invalid trailing_percentage < 0: {}".format(trailing_percentage))
+        raise ValueError("trailing_percentage must be non-negative.")
+    try:
+        if current_stop is None or current_stop <= 0:
+            current_stop = highest_price * (1 - trailing_percentage * (1 + volatility))
+        new_stop_intraday = highest_price * (1 - trailing_percentage * (1 + volatility))
+        if weekly_high is not None:
+            w_vol = weekly_volatility if weekly_volatility is not None else 0.0
+            new_stop_weekly = weekly_high * (1 - trailing_percentage * (1 + w_vol))
+            candidate_stop = max(new_stop_intraday, new_stop_weekly)
+        else:
+            candidate_stop = new_stop_intraday
+        adjusted_stop = candidate_stop if candidate_stop > current_stop and candidate_stop < current_price else current_stop
+        logger.debug(f"Adjusted trailing stop: {adjusted_stop:.2f} "
+                     f"(current_stop={current_stop}, candidate_stop={candidate_stop}, current_price={current_price})")
+        return adjusted_stop
+    except Exception as e:
+        logger.error(f"adjust_trailing_stop error: {e}", exc_info=True)
+        raise
 
 def calculate_partial_exit_targets(entry_price: float, partial_exit_ratio: float = 0.5,
                                      partial_profit_ratio: float = 0.03, final_profit_ratio: float = 0.06,
                                      final_exit_ratio: float = 1.0, use_weekly_target: bool = False,
                                      weekly_momentum: float = None, weekly_adjustment_factor: float = 0.5):
-    if use_weekly_target and weekly_momentum is not None:
-        adjusted_partial = partial_profit_ratio + weekly_adjustment_factor * weekly_momentum
-        adjusted_final = final_profit_ratio + weekly_adjustment_factor * weekly_momentum
-    else:
-        adjusted_partial = partial_profit_ratio
-        adjusted_final = final_profit_ratio
-    partial_target = entry_price * (1 + adjusted_partial)
-    final_target = entry_price * (1 + adjusted_final)
-    logger.debug(f"Partial targets: partial={partial_target:.2f}, final={final_target:.2f}")
-    return [(partial_target, partial_exit_ratio), (final_target, final_exit_ratio)]
+    if entry_price <= 0:
+        logger.error("Invalid entry_price <= 0: {}".format(entry_price))
+        raise ValueError("entry_price must be positive.")
+    try:
+        if use_weekly_target and weekly_momentum is not None:
+            adjusted_partial = partial_profit_ratio + weekly_adjustment_factor * weekly_momentum
+            adjusted_final = final_profit_ratio + weekly_adjustment_factor * weekly_momentum
+        else:
+            adjusted_partial = partial_profit_ratio
+            adjusted_final = final_profit_ratio
+        partial_target = entry_price * (1 + adjusted_partial)
+        final_target = entry_price * (1 + adjusted_final)
+        logger.debug(f"Partial targets: partial={partial_target:.2f}, final={final_target:.2f} "
+                     f"(entry_price={entry_price}, adjusted_partial={adjusted_partial}, adjusted_final={adjusted_final})")
+        return [(partial_target, partial_exit_ratio), (final_target, final_exit_ratio)]
+    except Exception as e:
+        logger.error(f"calculate_partial_exit_targets error: {e}", exc_info=True)
+        raise
 
 ---
 
@@ -130,6 +168,26 @@ from strategies.trading_strategies import (
     SelectStrategy, TrendFollowingStrategy, BreakoutStrategy,
     CounterTrendStrategy, HighFrequencyStrategy, WeeklyBreakoutStrategy, WeeklyMomentumStrategy
 )
+
+def compute_dynamic_weights(market_volatility: float, liquidity_info: str, volume: float = None):
+    if market_volatility is None:
+        market_volatility = 0.02
+    if liquidity_info.lower() == "high":
+        short_weight = 0.8
+        weekly_weight = 0.2
+    else:
+        short_weight = 0.6
+        weekly_weight = 0.4
+
+    if market_volatility > 0.05:
+        short_weight = 0.6
+        weekly_weight = 0.4
+
+    if volume is not None and volume < 1000:
+        short_weight *= 0.8
+        weekly_weight = 1 - short_weight
+
+    return short_weight, weekly_weight
 
 class Ensemble:
     def __init__(self):
@@ -143,7 +201,10 @@ class Ensemble:
         self.weekly_momentum_strategy = WeeklyMomentumStrategy()
         self.last_final_signal = None
 
-    def get_final_signal(self, market_regime, liquidity_info, data, current_time, data_weekly=None):
+    def get_final_signal(self, market_regime, liquidity_info, data, current_time, data_weekly=None, 
+                         market_volatility: float = None, volume: float = None):
+        short_weight, weekly_weight = compute_dynamic_weights(market_volatility, liquidity_info, volume)
+
         signals = {
             "select": self.select_strategy.get_signal(data, current_time),
             "trend": self.trend_following_strategy.get_signal(data, current_time),
@@ -155,9 +216,6 @@ class Ensemble:
             signals["weekly_breakout"] = self.weekly_breakout_strategy.get_signal(data_weekly, current_time)
             signals["weekly_momentum"] = self.weekly_momentum_strategy.get_signal(data_weekly, current_time)
 
-        short_weight = 0.7
-        weekly_weight = 0.3 if data_weekly is not None else 0.0
-
         vote_enter = sum(short_weight for key in ["select", "trend", "breakout", "counter", "hf"] if signals.get(key) == "enter_long")
         vote_exit = sum(short_weight for key in ["select", "trend", "breakout", "counter", "hf"] if signals.get(key) == "exit_all")
         if data_weekly is not None:
@@ -166,7 +224,11 @@ class Ensemble:
 
         final_signal = "exit_all" if vote_exit > vote_enter else ("enter_long" if vote_enter > vote_exit else "hold")
         if self.last_final_signal != final_signal:
-            self.logger.debug(f"Ensemble final signal changed to {final_signal} at {current_time}")
+            self.logger.debug(
+                f"Ensemble final signal changed to {final_signal} at {current_time} "
+                f"with dynamic weights: short={short_weight}, weekly={weekly_weight}, "
+                f"signals: {signals}"
+            )
             self.last_final_signal = final_signal
         return final_signal
 
@@ -241,18 +303,30 @@ class RiskManager:
     def compute_position_size(self, available_balance: float, risk_percentage: float, entry_price: float,
                               stop_loss: float, fee_rate: float = 0.001, min_order_size: float = 1e-8,
                               volatility: float = 0.0, weekly_volatility: float = None, weekly_risk_coefficient: float = 1.0) -> float:
-        if stop_loss is None:
-            stop_loss = entry_price * 0.98
+        if entry_price <= 0 or stop_loss <= 0:
+            self.logger.error(f"Invalid entry_price ({entry_price}) or stop_loss ({stop_loss})")
+            return 0.0
         price_diff = abs(entry_price - stop_loss)
+        if price_diff == 0:
+            self.logger.warning("Zero price difference between entry and stop_loss; cannot compute risk properly.")
+            return 0.0
         max_risk = available_balance * risk_percentage
         fee_amount = entry_price * fee_rate
         loss_per_unit = price_diff + fee_amount
-        computed_size = max_risk / loss_per_unit if loss_per_unit > 0 else 0.0
+        if loss_per_unit <= 0:
+            self.logger.error("Non-positive loss per unit computed.")
+            return 0.0
+        computed_size = max_risk / loss_per_unit
+        self.logger.debug(f"Initial computed size: {computed_size:.8f} (max_risk={max_risk}, loss_per_unit={loss_per_unit})")
         if volatility > 0:
-            computed_size /= (1 + volatility)
+            computed_size /= ((1 + volatility) ** 2)
+            self.logger.debug(f"Size adjusted for volatility {volatility} with square factor: {computed_size:.8f}")
         if weekly_volatility is not None:
             computed_size /= (1 + weekly_risk_coefficient * weekly_volatility)
-        return computed_size if computed_size >= min_order_size else 0.0
+            self.logger.debug(f"Size adjusted for weekly_volatility {weekly_volatility} with coefficient {weekly_risk_coefficient}: {computed_size:.8f}")
+        final_size = computed_size if computed_size >= min_order_size else 0.0
+        self.logger.debug(f"Final computed position size: {final_size:.8f} (min_order_size={min_order_size})")
+        return final_size
 
     def allocate_position_splits(self, total_size: float, splits_count: int = 3, allocation_mode: str = 'equal', min_order_size: float = 1e-8) -> list:
         if splits_count < 1:
@@ -294,35 +368,44 @@ class RiskManager:
                                           high_profit_ratio_multiplier: float = 1.0, low_profit_ratio_multiplier: float = 0.9) -> dict:
         regime = regime.lower()
         risk_params = {}
-        if regime == "bullish":
-            risk_params['risk_per_trade'] = base_params['risk_per_trade'] * bullish_risk_multiplier
-            risk_params['atr_multiplier'] = base_params['atr_multiplier'] * bullish_atr_multiplier_factor
-            risk_params['profit_ratio'] = base_params['profit_ratio'] * bullish_profit_ratio_multiplier
-        elif regime == "bearish":
-            risk_params['risk_per_trade'] = base_params['risk_per_trade'] * bearish_risk_multiplier
-            risk_params['atr_multiplier'] = base_params['atr_multiplier'] * bearish_atr_multiplier_factor
-            risk_params['profit_ratio'] = base_params['profit_ratio'] * bearish_profit_ratio_multiplier
-        elif regime == "sideways":
-            if liquidity is None:
-                raise ValueError("Liquidity info required for sideways regime")
-            liquidity = liquidity.lower()
-            if liquidity == "high":
-                risk_params['risk_per_trade'] = base_params['risk_per_trade'] * high_liquidity_risk_multiplier
-                risk_params['atr_multiplier'] = base_params['atr_multiplier'] * high_atr_multiplier_factor
-                risk_params['profit_ratio'] = base_params['profit_ratio'] * high_profit_ratio_multiplier
+        try:
+            if regime == "bullish":
+                risk_params['risk_per_trade'] = base_params['risk_per_trade'] * bullish_risk_multiplier
+                risk_params['atr_multiplier'] = base_params['atr_multiplier'] * bullish_atr_multiplier_factor
+                risk_params['profit_ratio'] = base_params['profit_ratio'] * bullish_profit_ratio_multiplier
+            elif regime == "bearish":
+                risk_params['risk_per_trade'] = base_params['risk_per_trade'] * bearish_risk_multiplier
+                risk_params['atr_multiplier'] = base_params['atr_multiplier'] * bearish_atr_multiplier_factor
+                risk_params['profit_ratio'] = base_params['profit_ratio'] * bearish_profit_ratio_multiplier
+            elif regime == "sideways":
+                if liquidity is None:
+                    self.logger.error("Liquidity info required for sideways regime")
+                    raise ValueError("Liquidity info required for sideways regime")
+                liquidity = liquidity.lower()
+                if liquidity == "high":
+                    risk_params['risk_per_trade'] = base_params['risk_per_trade'] * high_liquidity_risk_multiplier
+                    risk_params['atr_multiplier'] = base_params['atr_multiplier'] * high_atr_multiplier_factor
+                    risk_params['profit_ratio'] = base_params['profit_ratio'] * high_profit_ratio_multiplier
+                else:
+                    risk_params['risk_per_trade'] = base_params['risk_per_trade'] * low_liquidity_risk_multiplier
+                    risk_params['atr_multiplier'] = base_params['atr_multiplier'] * low_atr_multiplier_factor
+                    risk_params['profit_ratio'] = base_params['profit_ratio'] * low_profit_ratio_multiplier
             else:
-                risk_params['risk_per_trade'] = base_params['risk_per_trade'] * low_liquidity_risk_multiplier
-                risk_params['atr_multiplier'] = base_params['atr_multiplier'] * low_atr_multiplier_factor
-                risk_params['profit_ratio'] = base_params['profit_ratio'] * low_profit_ratio_multiplier
-        else:
-            raise ValueError("Invalid market regime. Must be 'bullish', 'bearish', or 'sideways'.")
-        current_volatility = base_params.get("current_volatility", None)
-        if current_volatility is not None:
-            if current_volatility > 0.05:
-                risk_params['risk_per_trade'] *= 0.8
-            else:
-                risk_params['risk_per_trade'] *= 1.1
-        return risk_params
+                self.logger.error(f"Invalid market regime: {regime}")
+                raise ValueError("Invalid market regime. Must be 'bullish', 'bearish', or 'sideways'.")
+            current_volatility = base_params.get("current_volatility", None)
+            if current_volatility is not None:
+                if current_volatility > 0.05:
+                    risk_params['risk_per_trade'] *= 0.8
+                    self.logger.debug(f"Adjusted risk_per_trade for high volatility {current_volatility}")
+                else:
+                    risk_params['risk_per_trade'] *= 1.1
+                    self.logger.debug(f"Adjusted risk_per_trade for low volatility {current_volatility}")
+            self.logger.debug(f"Computed risk parameters: {risk_params}")
+            return risk_params
+        except Exception as e:
+            self.logger.error(f"Error computing risk parameters: {e}", exc_info=True)
+            raise
 
     def adjust_trailing_stop(self, current_stop: float, current_price: float, highest_price: float, trailing_percentage: float,
                                volatility: float = 0.0, weekly_high: float = None, weekly_volatility: float = None) -> float:
@@ -368,17 +451,41 @@ logger = setup_logger(__name__)
 class TradeExecutor:
     @staticmethod
     def compute_atr(data: pd.DataFrame, period: int = 14):
-        return calculate_atr(data, period)
+        try:
+            result = calculate_atr(data, period)
+            logger.debug("ATR computed successfully.")
+            return result
+        except Exception as e:
+            logger.error("Error in compute_atr: {}".format(e), exc_info=True)
+            raise
 
     @staticmethod
     def calculate_dynamic_stop_and_take(entry_price: float, atr: float, risk_params: dict):
-        return calculate_dynamic_stop_and_take(entry_price, atr, risk_params)
+        try:
+            stop_loss, take_profit = calculate_dynamic_stop_and_take(entry_price, atr, risk_params)
+            logger.debug(f"TradeExecutor: dynamic stop and take computed: stop_loss={stop_loss:.2f}, take_profit={take_profit:.2f}")
+            return stop_loss, take_profit
+        except Exception as e:
+            logger.error("Error in calculate_dynamic_stop_and_take: {}".format(e), exc_info=True)
+            raise
 
     @staticmethod
     def adjust_trailing_stop(current_stop: float, current_price: float, highest_price: float, trailing_percentage: float):
-        return adjust_trailing_stop(current_stop, current_price, highest_price, trailing_percentage)
+        try:
+            new_stop = adjust_trailing_stop(current_stop, current_price, highest_price, trailing_percentage)
+            logger.debug(f"TradeExecutor: trailing stop adjusted to {new_stop:.2f}")
+            return new_stop
+        except Exception as e:
+            logger.error("Error in adjust_trailing_stop: {}".format(e), exc_info=True)
+            raise
 
     @staticmethod
     def calculate_partial_exit_targets(entry_price: float, partial_exit_ratio: float = 0.5,
                                        partial_profit_ratio: float = 0.03, final_profit_ratio: float = 0.06):
-        return calculate_partial_exit_targets(entry_price, partial_exit_ratio, partial_profit_ratio, final_profit_ratio)
+        try:
+            targets = calculate_partial_exit_targets(entry_price, partial_exit_ratio, partial_profit_ratio, final_profit_ratio)
+            logger.debug(f"TradeExecutor: partial exit targets computed: {targets}")
+            return targets
+        except Exception as e:
+            logger.error("Error in calculate_partial_exit_targets: {}".format(e), exc_info=True)
+            raise

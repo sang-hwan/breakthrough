@@ -8,18 +8,30 @@ class RiskManager:
     def compute_position_size(self, available_balance: float, risk_percentage: float, entry_price: float,
                               stop_loss: float, fee_rate: float = 0.001, min_order_size: float = 1e-8,
                               volatility: float = 0.0, weekly_volatility: float = None, weekly_risk_coefficient: float = 1.0) -> float:
-        if stop_loss is None:
-            stop_loss = entry_price * 0.98
+        if entry_price <= 0 or stop_loss <= 0:
+            self.logger.error(f"Invalid entry_price ({entry_price}) or stop_loss ({stop_loss})")
+            return 0.0
         price_diff = abs(entry_price - stop_loss)
+        if price_diff == 0:
+            self.logger.warning("Zero price difference between entry and stop_loss; cannot compute risk properly.")
+            return 0.0
         max_risk = available_balance * risk_percentage
         fee_amount = entry_price * fee_rate
         loss_per_unit = price_diff + fee_amount
-        computed_size = max_risk / loss_per_unit if loss_per_unit > 0 else 0.0
+        if loss_per_unit <= 0:
+            self.logger.error("Non-positive loss per unit computed.")
+            return 0.0
+        computed_size = max_risk / loss_per_unit
+        self.logger.debug(f"Initial computed size: {computed_size:.8f} (max_risk={max_risk}, loss_per_unit={loss_per_unit})")
         if volatility > 0:
-            computed_size /= (1 + volatility)
+            computed_size /= ((1 + volatility) ** 2)
+            self.logger.debug(f"Size adjusted for volatility {volatility} with square factor: {computed_size:.8f}")
         if weekly_volatility is not None:
             computed_size /= (1 + weekly_risk_coefficient * weekly_volatility)
-        return computed_size if computed_size >= min_order_size else 0.0
+            self.logger.debug(f"Size adjusted for weekly_volatility {weekly_volatility} with coefficient {weekly_risk_coefficient}: {computed_size:.8f}")
+        final_size = computed_size if computed_size >= min_order_size else 0.0
+        self.logger.debug(f"Final computed position size: {final_size:.8f} (min_order_size={min_order_size})")
+        return final_size
 
     def allocate_position_splits(self, total_size: float, splits_count: int = 3, allocation_mode: str = 'equal', min_order_size: float = 1e-8) -> list:
         if splits_count < 1:
@@ -61,35 +73,44 @@ class RiskManager:
                                           high_profit_ratio_multiplier: float = 1.0, low_profit_ratio_multiplier: float = 0.9) -> dict:
         regime = regime.lower()
         risk_params = {}
-        if regime == "bullish":
-            risk_params['risk_per_trade'] = base_params['risk_per_trade'] * bullish_risk_multiplier
-            risk_params['atr_multiplier'] = base_params['atr_multiplier'] * bullish_atr_multiplier_factor
-            risk_params['profit_ratio'] = base_params['profit_ratio'] * bullish_profit_ratio_multiplier
-        elif regime == "bearish":
-            risk_params['risk_per_trade'] = base_params['risk_per_trade'] * bearish_risk_multiplier
-            risk_params['atr_multiplier'] = base_params['atr_multiplier'] * bearish_atr_multiplier_factor
-            risk_params['profit_ratio'] = base_params['profit_ratio'] * bearish_profit_ratio_multiplier
-        elif regime == "sideways":
-            if liquidity is None:
-                raise ValueError("Liquidity info required for sideways regime")
-            liquidity = liquidity.lower()
-            if liquidity == "high":
-                risk_params['risk_per_trade'] = base_params['risk_per_trade'] * high_liquidity_risk_multiplier
-                risk_params['atr_multiplier'] = base_params['atr_multiplier'] * high_atr_multiplier_factor
-                risk_params['profit_ratio'] = base_params['profit_ratio'] * high_profit_ratio_multiplier
+        try:
+            if regime == "bullish":
+                risk_params['risk_per_trade'] = base_params['risk_per_trade'] * bullish_risk_multiplier
+                risk_params['atr_multiplier'] = base_params['atr_multiplier'] * bullish_atr_multiplier_factor
+                risk_params['profit_ratio'] = base_params['profit_ratio'] * bullish_profit_ratio_multiplier
+            elif regime == "bearish":
+                risk_params['risk_per_trade'] = base_params['risk_per_trade'] * bearish_risk_multiplier
+                risk_params['atr_multiplier'] = base_params['atr_multiplier'] * bearish_atr_multiplier_factor
+                risk_params['profit_ratio'] = base_params['profit_ratio'] * bearish_profit_ratio_multiplier
+            elif regime == "sideways":
+                if liquidity is None:
+                    self.logger.error("Liquidity info required for sideways regime")
+                    raise ValueError("Liquidity info required for sideways regime")
+                liquidity = liquidity.lower()
+                if liquidity == "high":
+                    risk_params['risk_per_trade'] = base_params['risk_per_trade'] * high_liquidity_risk_multiplier
+                    risk_params['atr_multiplier'] = base_params['atr_multiplier'] * high_atr_multiplier_factor
+                    risk_params['profit_ratio'] = base_params['profit_ratio'] * high_profit_ratio_multiplier
+                else:
+                    risk_params['risk_per_trade'] = base_params['risk_per_trade'] * low_liquidity_risk_multiplier
+                    risk_params['atr_multiplier'] = base_params['atr_multiplier'] * low_atr_multiplier_factor
+                    risk_params['profit_ratio'] = base_params['profit_ratio'] * low_profit_ratio_multiplier
             else:
-                risk_params['risk_per_trade'] = base_params['risk_per_trade'] * low_liquidity_risk_multiplier
-                risk_params['atr_multiplier'] = base_params['atr_multiplier'] * low_atr_multiplier_factor
-                risk_params['profit_ratio'] = base_params['profit_ratio'] * low_profit_ratio_multiplier
-        else:
-            raise ValueError("Invalid market regime. Must be 'bullish', 'bearish', or 'sideways'.")
-        current_volatility = base_params.get("current_volatility", None)
-        if current_volatility is not None:
-            if current_volatility > 0.05:
-                risk_params['risk_per_trade'] *= 0.8
-            else:
-                risk_params['risk_per_trade'] *= 1.1
-        return risk_params
+                self.logger.error(f"Invalid market regime: {regime}")
+                raise ValueError("Invalid market regime. Must be 'bullish', 'bearish', or 'sideways'.")
+            current_volatility = base_params.get("current_volatility", None)
+            if current_volatility is not None:
+                if current_volatility > 0.05:
+                    risk_params['risk_per_trade'] *= 0.8
+                    self.logger.debug(f"Adjusted risk_per_trade for high volatility {current_volatility}")
+                else:
+                    risk_params['risk_per_trade'] *= 1.1
+                    self.logger.debug(f"Adjusted risk_per_trade for low volatility {current_volatility}")
+            self.logger.debug(f"Computed risk parameters: {risk_params}")
+            return risk_params
+        except Exception as e:
+            self.logger.error(f"Error computing risk parameters: {e}", exc_info=True)
+            raise
 
     def adjust_trailing_stop(self, current_stop: float, current_price: float, highest_price: float, trailing_percentage: float,
                                volatility: float = 0.0, weekly_high: float = None, weekly_volatility: float = None) -> float:

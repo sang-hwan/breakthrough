@@ -4,9 +4,11 @@ import pandas as pd
 from datetime import datetime
 import time
 from logs.logger_config import setup_logger
+from functools import lru_cache
 
 logger = setup_logger(__name__)
 
+@lru_cache(maxsize=32)
 def fetch_historical_ohlcv_data(symbol: str, timeframe: str, start_date: str, 
                                 limit_per_request: int = 1000, pause_sec: float = 1.0, 
                                 exchange_id: str = 'binance', single_fetch: bool = False,
@@ -60,7 +62,7 @@ def fetch_historical_ohlcv_data(symbol: str, timeframe: str, start_date: str,
             df = pd.DataFrame(ohlcv_list, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
             df.set_index('timestamp', inplace=True)
-            return df
+            return df.copy()  # 반환 전에 복사하여 캐시된 객체의 변형 방지
         except Exception as e:
             logger.error(f"DataFrame 변환 에러: {e}", exc_info=True)
             return pd.DataFrame()
@@ -68,6 +70,7 @@ def fetch_historical_ohlcv_data(symbol: str, timeframe: str, start_date: str,
         logger.warning(f"{symbol} {timeframe}에 대한 데이터가 없습니다.")
         return pd.DataFrame()
 
+@lru_cache(maxsize=32)
 def fetch_latest_ohlcv_data(symbol: str, timeframe: str, limit: int = 500, exchange_id: str = 'binance') -> pd.DataFrame:
     try:
         exchange_class = getattr(ccxt, exchange_id)
@@ -88,7 +91,7 @@ def fetch_latest_ohlcv_data(symbol: str, timeframe: str, limit: int = 500, excha
             df = pd.DataFrame(ohlcvs, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
             df.set_index('timestamp', inplace=True)
-            return df
+            return df.copy()
         except Exception as e:
             logger.error(f"DataFrame 변환 에러: {e}", exc_info=True)
             return pd.DataFrame()
