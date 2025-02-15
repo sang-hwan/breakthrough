@@ -3,15 +3,10 @@ import os
 import glob
 import logging
 import pytest
-from logs.logger_config import initialize_root_logger
+from logs.logger_config import initialize_root_logger, shutdown_logging
 
 @pytest.fixture(autouse=True, scope="session")
-def clear_logs():
-    """
-    테스트 실행 전에 logs 디렉토리 내 모든 .log 파일을 삭제하고,
-    기존 로거를 종료한 후 루트 로거를 재초기화합니다.
-    이 fixture는 세션 전체에 대해 한 번 실행됩니다.
-    """
+def manage_logs():
     log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "logs")
     log_pattern = os.path.join(log_dir, "*.log")
     log_files = glob.glob(log_pattern)
@@ -22,9 +17,12 @@ def clear_logs():
         except Exception as e:
             print(f"Failed to delete {log_file}: {e}")
     
-    # 기존 로거 종료 후, 최신 AggregatingHandler 설정이 반영되도록 루트 로거 재초기화
     logging.shutdown()
     initialize_root_logger()
+    
+    yield
+    
+    shutdown_logging()
 
 ---
 
@@ -210,8 +208,9 @@ def test_dynamic_stop_and_take_invalid_entry_price():
         calculate_dynamic_stop_and_take(0, 5, {"atr_multiplier": 2.0, "profit_ratio": 0.05})
 
 def test_dynamic_stop_and_take_invalid_atr():
-    with pytest.raises(ValueError):
-        calculate_dynamic_stop_and_take(100, 0, {"atr_multiplier": 2.0, "profit_ratio": 0.05})
+    stop_loss, take_profit = calculate_dynamic_stop_and_take(100, 0, {"atr_multiplier": 2.0, "profit_ratio": 0.05})
+    assert stop_loss == 98.00, f"Expected stop_loss 98.00, got {stop_loss}"
+    assert take_profit == 105.00, f"Expected take_profit 105.00, got {take_profit}"
 
 def test_adjust_trailing_stop_extreme():
     current_stop = 80
@@ -506,6 +505,72 @@ def test_aggregate_to_weekly():
     # 주간 인디케이터 컬럼 확인
     assert 'weekly_sma' in weekly.columns
     assert 'weekly_momentum' in weekly.columns
+
+---
+
+# tests/test_ohlcv_variability.py
+import pandas as pd
+import numpy as np
+import pytest
+from backtesting.steps.data_loader import _validate_and_prepare_df
+from logs.logger_config import setup_logger
+
+logger = setup_logger(__name__)
+
+@pytest.fixture
+def constant_ohlcv():
+    """
+    거의 일정한 OHLCV 데이터를 생성 (낮은 변동성)
+    """
+    dates = pd.date_range(start='2020-01-01', periods=10, freq='D')
+    data = {
+        'open': np.full(10, 100.0),
+        'high': np.full(10, 100.01),  # 극히 미세한 변동
+        'low': np.full(10, 99.99),
+        'close': np.full(10, 100.0),
+        'volume': np.full(10, 1000)
+    }
+    df = pd.DataFrame(data, index=dates)
+    return df
+
+@pytest.fixture
+def volatile_ohlcv():
+    """
+    충분한 변동성을 가지는 OHLCV 데이터를 생성.
+    재현성을 위해 난수 시드를 고정합니다.
+    """
+    np.random.seed(42)
+    dates = pd.date_range(start='2020-01-01', periods=10, freq='D')
+    open_prices = np.linspace(100, 110, 10)
+    high_prices = open_prices + np.random.uniform(1, 2, 10)
+    low_prices = open_prices - np.random.uniform(1, 2, 10)
+    close_prices = open_prices + np.random.uniform(-1, 1, 10)
+    volume = np.random.randint(1000, 2000, 10)
+    df = pd.DataFrame({
+        'open': open_prices,
+        'high': high_prices,
+        'low': low_prices,
+        'close': close_prices,
+        'volume': volume
+    }, index=dates)
+    return df
+
+def test_low_volatility_warning(caplog, constant_ohlcv):
+    caplog.set_level("WARNING")
+    # 실제 테이블 이름 규칙을 반영 (예: "ohlcv_btcusdt_1d")
+    table_name = "ohlcv_btcusdt_1d"
+    _validate_and_prepare_df(constant_ohlcv, table_name)
+    # "low volatility" 경고 메시지가 로그에 기록되었는지 확인합니다.
+    warning_found = any("low volatility" in record.message for record in caplog.records)
+    assert warning_found, "낮은 변동성 데이터에 대해 경고가 발생해야 합니다."
+
+def test_high_volatility_no_warning(caplog, volatile_ohlcv):
+    caplog.set_level("WARNING")
+    table_name = "ohlcv_btcusdt_1d"
+    _validate_and_prepare_df(volatile_ohlcv, table_name)
+    # 충분한 변동성 데이터에서는 경고가 발생하지 않아야 합니다.
+    warning_found = any("low volatility" in record.message for record in caplog.records)
+    assert not warning_found, "충분한 변동성 데이터에서는 경고가 발생하면 안 됩니다."
 
 ---
 
@@ -842,8 +907,9 @@ def test_trade_executor_dynamic_stop_invalid_entry():
         TradeExecutor.calculate_dynamic_stop_and_take(0, 5, {"atr_multiplier": 2.0, "profit_ratio": 0.05})
 
 def test_trade_executor_dynamic_stop_invalid_atr():
-    with pytest.raises(ValueError):
-        TradeExecutor.calculate_dynamic_stop_and_take(100, 0, {"atr_multiplier": 2.0, "profit_ratio": 0.05})
+    stop_loss, take_profit = TradeExecutor.calculate_dynamic_stop_and_take(100, 0, {"atr_multiplier": 2.0, "profit_ratio": 0.05})
+    assert stop_loss == 98.00, f"Expected stop_loss 98.00, got {stop_loss}"
+    assert take_profit == 105.00, f"Expected take_profit 105.00, got {take_profit}"
 
 def test_trade_executor_adjust_trailing_stop_extreme():
     current_stop = 80

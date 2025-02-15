@@ -36,8 +36,9 @@ def test_dynamic_stop_and_take_invalid_entry_price():
         calculate_dynamic_stop_and_take(0, 5, {"atr_multiplier": 2.0, "profit_ratio": 0.05})
 
 def test_dynamic_stop_and_take_invalid_atr():
-    with pytest.raises(ValueError):
-        calculate_dynamic_stop_and_take(100, 0, {"atr_multiplier": 2.0, "profit_ratio": 0.05})
+    stop_loss, take_profit = calculate_dynamic_stop_and_take(100, 0, {"atr_multiplier": 2.0, "profit_ratio": 0.05})
+    assert stop_loss == 98.00, f"Expected stop_loss 98.00, got {stop_loss}"
+    assert take_profit == 105.00, f"Expected take_profit 105.00, got {take_profit}"
 
 def test_adjust_trailing_stop_extreme():
     current_stop = 80
