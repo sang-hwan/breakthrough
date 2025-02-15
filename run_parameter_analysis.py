@@ -75,7 +75,7 @@ def run_parameter_analysis():
         start_val = default_val * 0.9
         end_val = default_val * 1.1
         param_settings[pname] = np.linspace(start_val, end_val, args.param_steps)
-        logger.info(f"Analyzing {pname} over range {start_val:.4f} to {end_val:.4f}")
+        logger.debug(f"Analyzing {pname} over range {start_val:.4f} to {end_val:.4f}")
 
     results_all = run_sensitivity_analysis(
         param_settings, assets, args.short_tf, args.long_tf, args.start_date, args.end_date, periods

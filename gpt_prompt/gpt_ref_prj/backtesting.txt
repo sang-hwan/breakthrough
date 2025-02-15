@@ -4,10 +4,10 @@ from data.db.db_manager import fetch_ohlcv_records
 from data.ohlcv.ohlcv_aggregator import aggregate_to_weekly
 from trading.indicators import compute_bollinger_bands
 import threading
+import pandas as pd
 
 logger = setup_logger(__name__)
 
-# 간단한 in-memory 캐시 (동일 테이블, 날짜 범위의 데이터 중복 호출 방지)
 _cache_lock = threading.Lock()
 _data_cache = {}
 
@@ -21,28 +21,60 @@ def _set_cached_ohlcv(table_name, start_date, end_date, df):
     with _cache_lock:
         _data_cache[key] = df
 
-def load_data(backtester, short_table_format, long_table_format, short_tf, long_tf, start_date=None, end_date=None, extra_tf=None, use_weekly=False):
+def _validate_and_prepare_df(df, table_name):
+    if df.empty:
+        logger.error(f"DataFrame for {table_name} is empty.")
+        return df
+
+    if not pd.api.types.is_datetime64_any_dtype(df.index):
+        try:
+            df.index = pd.to_datetime(df.index, errors='coerce')
+            if df.index.isnull().any():
+                logger.warning(f"Some index values in {table_name} could not be converted to datetime and will be dropped.")
+                df = df[~df.index.isnull()]
+        except Exception as e:
+            logger.error(f"Error converting index to datetime for {table_name}: {e}", exc_info=True)
+            raise
+
+    df.sort_index(inplace=True)
+
+    if df.index.duplicated().any():
+        logger.warning(f"Duplicate datetime indices found in {table_name}; removing duplicates.")
+        df = df[~df.index.duplicated(keep='first')]
+
+    if 'high' in df.columns and 'low' in df.columns and 'close' in df.columns:
+        avg_range = (df['high'] - df['low']).mean()
+        avg_close = df['close'].mean()
+        if avg_range < avg_close * 0.001:
+            logger.warning(f"Data for {table_name} shows low volatility: avg_range={avg_range:.6f}, avg_close={avg_close:.6f}.")
+    return df
+
+def load_data(backtester, short_table_format, long_table_format, short_tf, long_tf, 
+              start_date=None, end_date=None, extra_tf=None, use_weekly=False):
     try:
         symbol_for_table = backtester.symbol.replace('/', '').lower()
         short_table = short_table_format.format(symbol=symbol_for_table, timeframe=short_tf)
         long_table = long_table_format.format(symbol=symbol_for_table, timeframe=long_tf)
-        # 캐시에서 short 데이터 조회
+        
         df_short = _get_cached_ohlcv(short_table, start_date, end_date)
         if df_short is None:
             df_short = fetch_ohlcv_records(short_table, start_date, end_date)
             _set_cached_ohlcv(short_table, start_date, end_date, df_short)
-        # 캐시에서 long 데이터 조회
+        df_short = _validate_and_prepare_df(df_short, short_table)
+        
         df_long = _get_cached_ohlcv(long_table, start_date, end_date)
         if df_long is None:
             df_long = fetch_ohlcv_records(long_table, start_date, end_date)
             _set_cached_ohlcv(long_table, start_date, end_date, df_long)
+        df_long = _validate_and_prepare_df(df_long, long_table)
+        
         backtester.df_short = df_short
         backtester.df_long = df_long
+        
         if backtester.df_short.empty or backtester.df_long.empty:
             logger.error("데이터 로드 실패: short 또는 long 데이터가 비어있습니다.")
             raise ValueError("No data loaded")
-        backtester.df_short.sort_index(inplace=True)
-        backtester.df_long.sort_index(inplace=True)
+        
         logger.debug(f"데이터 로드 완료: short 데이터 {len(backtester.df_short)}행, long 데이터 {len(backtester.df_long)}행")
     except Exception as e:
         logger.error(f"데이터 로드 중 에러 발생: {e}", exc_info=True)
@@ -55,9 +87,9 @@ def load_data(backtester, short_table_format, long_table_format, short_tf, long_
             if df_extra is None:
                 df_extra = fetch_ohlcv_records(extra_table, start_date, end_date)
                 _set_cached_ohlcv(extra_table, start_date, end_date, df_extra)
+            df_extra = _validate_and_prepare_df(df_extra, extra_table)
             backtester.df_extra = df_extra
             if not backtester.df_extra.empty:
-                backtester.df_extra.sort_index(inplace=True)
                 backtester.df_extra = compute_bollinger_bands(
                     backtester.df_extra,
                     price_column='close',
@@ -111,139 +143,204 @@ from logs.logger_config import setup_logger
 
 logger = setup_logger(__name__)
 
+
 def process_training_orders(backtester, dynamic_params, signal_cooldown, rebalance_interval):
     for current_time, row in backtester.df_train.iterrows():
-        # Weekly end handling
-        if current_time.weekday() == 4 and (backtester.last_weekly_close_date is None or backtester.last_weekly_close_date != current_time.date()):
-            backtester.handle_weekly_end(current_time, row)
-            backtester.last_weekly_close_date = current_time.date()
-            continue
-        
-        # Walk-forward window handling
-        if backtester.walk_forward_days is not None and current_time - backtester.window_start >= backtester.walk_forward_td:
-            backtester.handle_walk_forward_window(current_time, row)
-            backtester.window_start = current_time
-        
-        # Signal generation (if cooldown elapsed)
-        if backtester.last_signal_time is None or (current_time - backtester.last_signal_time) >= signal_cooldown:
+        try:
             try:
-                action = backtester.ensemble_manager.get_final_signal(
-                    row['market_regime'], 
-                    dynamic_params.get('liquidity_info', 'high'), 
-                    backtester.df_short, 
-                    current_time,
-                    data_weekly=backtester.df_weekly
-                )
+                if current_time.weekday() == 4 and (
+                    backtester.last_weekly_close_date is None or 
+                    backtester.last_weekly_close_date != current_time.date()
+                ):
+                    try:
+                        backtester.handle_weekly_end(current_time, row)
+                    except Exception as e:
+                        logger.error(f"Weekly end handling error at {current_time}: {e}", exc_info=True)
+                    backtester.last_weekly_close_date = current_time.date()
+                    continue
             except Exception as e:
-                logger.error(f"Signal generation error at {current_time}: {e}")
+                logger.error(f"Error during weekly end check at {current_time}: {e}", exc_info=True)
+            
+            try:
+                if backtester.walk_forward_days is not None and (current_time - backtester.window_start) >= backtester.walk_forward_td:
+                    try:
+                        backtester.handle_walk_forward_window(current_time, row)
+                    except Exception as e:
+                        logger.error(f"Walk-forward window handling error at {current_time}: {e}", exc_info=True)
+                    backtester.window_start = current_time
+            except Exception as e:
+                logger.error(f"Error during walk-forward window check at {current_time}: {e}", exc_info=True)
+            
+            if backtester.last_signal_time is None or (current_time - backtester.last_signal_time) >= signal_cooldown:
                 action = "hold"
-            base_risk_params = {
-                "risk_per_trade": dynamic_params.get("risk_per_trade", 0.01),
-                "atr_multiplier": dynamic_params.get("atr_multiplier", 2.0),
-                "profit_ratio": dynamic_params.get("profit_ratio", 0.05),
-                "current_volatility": row.get("volatility", 0)
-            }
-            try:
-                risk_params = backtester.risk_manager.compute_risk_parameters_by_regime(
-                    base_risk_params,
-                    regime=row['market_regime'],
-                    liquidity=dynamic_params.get('liquidity_info', 'high')
-                )
-            except Exception as e:
-                logger.error(f"Risk parameter computation error at {current_time}: {e}")
+                try:
+                    action = backtester.ensemble_manager.get_final_signal(
+                        row.get('market_regime', 'unknown'),
+                        dynamic_params.get('liquidity_info', 'high'),
+                        backtester.df_short,
+                        current_time,
+                        data_weekly=backtester.df_weekly
+                    )
+                except Exception as e:
+                    logger.error(f"Signal generation error at {current_time}: {e}", exc_info=True)
+                    action = "hold"
+                base_risk_params = {
+                    "risk_per_trade": dynamic_params.get("risk_per_trade", 0.01),
+                    "atr_multiplier": dynamic_params.get("atr_multiplier", 2.0),
+                    "profit_ratio": dynamic_params.get("profit_ratio", 0.05),
+                    "current_volatility": row.get("volatility", 0)
+                }
                 risk_params = base_risk_params
-            if action == "enter_long":
-                backtester.process_bullish_entry(current_time, row, risk_params, dynamic_params)
-            elif action == "exit_all":
-                backtester.process_bearish_exit(current_time, row)
-            elif row['market_regime'] == "sideways":
-                backtester.process_sideways_trade(current_time, row, risk_params, dynamic_params)
-            backtester.last_signal_time = current_time
-        
-        backtester.update_positions(current_time, row)
-        if backtester.last_rebalance_time is None or (current_time - backtester.last_rebalance_time) >= rebalance_interval:
-            backtester.asset_manager.rebalance(row['market_regime'])
-            backtester.last_rebalance_time = current_time
+                try:
+                    risk_params = backtester.risk_manager.compute_risk_parameters_by_regime(
+                        base_risk_params,
+                        regime=row.get('market_regime', 'unknown'),
+                        liquidity=dynamic_params.get('liquidity_info', 'high')
+                    )
+                except Exception as e:
+                    logger.error(f"Risk parameter computation error at {current_time}: {e}", exc_info=True)
+                    risk_params = base_risk_params
+                try:
+                    if action == "enter_long":
+                        backtester.process_bullish_entry(current_time, row, risk_params, dynamic_params)
+                    elif action == "exit_all":
+                        backtester.process_bearish_exit(current_time, row)
+                    elif row.get('market_regime', 'unknown') == "sideways":
+                        backtester.process_sideways_trade(current_time, row, risk_params, dynamic_params)
+                except Exception as e:
+                    logger.error(f"Error processing order at {current_time} with action '{action}': {e}", exc_info=True)
+                backtester.last_signal_time = current_time
+
+            try:
+                backtester.update_positions(current_time, row)
+            except Exception as e:
+                logger.error(f"Error updating positions at {current_time}: {e}", exc_info=True)
+
+            try:
+                if backtester.last_rebalance_time is None or (current_time - backtester.last_rebalance_time) >= rebalance_interval:
+                    try:
+                        backtester.asset_manager.rebalance(row.get('market_regime', 'unknown'))
+                    except Exception as e:
+                        logger.error(f"Error during rebalance at {current_time}: {e}", exc_info=True)
+                    backtester.last_rebalance_time = current_time
+            except Exception as e:
+                logger.error(f"Error in rebalance check at {current_time}: {e}", exc_info=True)
+
+        except Exception as e:
+            logger.error(f"Unexpected error during processing training orders at {current_time}: {e}", exc_info=True)
+            continue
+
 
 def process_extra_orders(backtester, dynamic_params):
     if backtester.df_extra is not None and not backtester.df_extra.empty:
         for current_time, row in backtester.df_extra.iterrows():
             try:
-                hf_signal = backtester.ensemble_manager.get_final_signal(
-                    row['market_regime'], 
-                    dynamic_params.get('liquidity_info', 'high'), 
-                    backtester.df_short, 
-                    current_time,
-                    data_weekly=backtester.df_weekly
-                )
-            except Exception as e:
-                logger.error(f"High-frequency signal error at {current_time}: {e}")
                 hf_signal = "hold"
-            try:
-                regime = backtester.df_long.loc[backtester.df_long.index <= current_time].iloc[-1].get('market_regime', 'sideways')
-            except Exception as e:
-                logger.error(f"Retrieving regime failed at {current_time}: {e}")
+                try:
+                    hf_signal = backtester.ensemble_manager.get_final_signal(
+                        row.get('market_regime', 'unknown'),
+                        dynamic_params.get('liquidity_info', 'high'),
+                        backtester.df_short,
+                        current_time,
+                        data_weekly=backtester.df_weekly
+                    )
+                except Exception as e:
+                    logger.error(f"High-frequency signal error at {current_time}: {e}", exc_info=True)
+                    hf_signal = "hold"
                 regime = "sideways"
-            base_risk_params = {
-                "risk_per_trade": dynamic_params.get("risk_per_trade", 0.01),
-                "atr_multiplier": dynamic_params.get("atr_multiplier", 2.0),
-                "profit_ratio": dynamic_params.get("profit_ratio", 0.05),
-                "current_volatility": row.get("volatility", 0)
-            }
-            try:
-                risk_params = backtester.risk_manager.compute_risk_parameters_by_regime(
-                    base_risk_params,
-                    regime=regime,
-                    liquidity=dynamic_params.get('liquidity_info', 'high')
-                )
-            except Exception as e:
-                logger.error(f"Risk params error (extra data) at {current_time}: {e}")
+                try:
+                    regime = backtester.df_long.loc[backtester.df_long.index <= current_time].iloc[-1].get('market_regime', 'sideways')
+                except Exception as e:
+                    logger.error(f"Retrieving regime failed at {current_time}: {e}", exc_info=True)
+                    regime = "sideways"
+                base_risk_params = {
+                    "risk_per_trade": dynamic_params.get("risk_per_trade", 0.01),
+                    "atr_multiplier": dynamic_params.get("atr_multiplier", 2.0),
+                    "profit_ratio": dynamic_params.get("profit_ratio", 0.05),
+                    "current_volatility": row.get("volatility", 0)
+                }
                 risk_params = base_risk_params
-            if hf_signal == "enter_long":
-                backtester.process_bullish_entry(current_time, row, risk_params, dynamic_params)
-            elif hf_signal == "exit_all":
-                backtester.process_bearish_exit(current_time, row)
-            backtester.monitor_orders(current_time, row)
+                try:
+                    risk_params = backtester.risk_manager.compute_risk_parameters_by_regime(
+                        base_risk_params,
+                        regime=regime,
+                        liquidity=dynamic_params.get('liquidity_info', 'high')
+                    )
+                except Exception as e:
+                    logger.error(f"Risk params error (extra data) at {current_time}: {e}", exc_info=True)
+                    risk_params = base_risk_params
+                try:
+                    if hf_signal == "enter_long":
+                        backtester.process_bullish_entry(current_time, row, risk_params, dynamic_params)
+                    elif hf_signal == "exit_all":
+                        backtester.process_bearish_exit(current_time, row)
+                except Exception as e:
+                    logger.error(f"Error processing extra order at {current_time} with hf_signal '{hf_signal}': {e}", exc_info=True)
+                try:
+                    backtester.monitor_orders(current_time, row)
+                except Exception as e:
+                    logger.error(f"Error monitoring orders at {current_time}: {e}", exc_info=True)
+            except Exception as e:
+                logger.error(f"Unexpected error in process_extra_orders at {current_time}: {e}", exc_info=True)
+                continue
+
 
 def process_holdout_orders(backtester, dynamic_params, df_holdout):
     if df_holdout is not None:
         for current_time, row in df_holdout.iterrows():
             try:
-                action = backtester.ensemble_manager.get_final_signal(
-                    row['market_regime'], 
-                    dynamic_params.get('liquidity_info', 'high'), 
-                    backtester.df_short, 
-                    current_time,
-                    data_weekly=backtester.df_weekly
-                )
-            except Exception as e:
-                logger.error(f"Holdout signal error at {current_time}: {e}")
                 action = "hold"
-            base_risk_params = {
-                "risk_per_trade": dynamic_params.get("risk_per_trade", 0.01),
-                "atr_multiplier": dynamic_params.get("atr_multiplier", 2.0),
-                "profit_ratio": dynamic_params.get("profit_ratio", 0.05),
-                "current_volatility": row.get("volatility", 0)
-            }
-            try:
-                risk_params = backtester.risk_manager.compute_risk_parameters_by_regime(
-                    base_risk_params,
-                    regime=row['market_regime'],
-                    liquidity=dynamic_params.get('liquidity_info', 'high')
-                )
-            except Exception as e:
-                logger.error(f"Risk params error (holdout) at {current_time}: {e}")
+                try:
+                    action = backtester.ensemble_manager.get_final_signal(
+                        row.get('market_regime', 'unknown'),
+                        dynamic_params.get('liquidity_info', 'high'),
+                        backtester.df_short,
+                        current_time,
+                        data_weekly=backtester.df_weekly
+                    )
+                except Exception as e:
+                    logger.error(f"Holdout signal error at {current_time}: {e}", exc_info=True)
+                    action = "hold"
+                base_risk_params = {
+                    "risk_per_trade": dynamic_params.get("risk_per_trade", 0.01),
+                    "atr_multiplier": dynamic_params.get("atr_multiplier", 2.0),
+                    "profit_ratio": dynamic_params.get("profit_ratio", 0.05),
+                    "current_volatility": row.get("volatility", 0)
+                }
                 risk_params = base_risk_params
-            if action == "enter_long":
-                backtester.process_bullish_entry(current_time, row, risk_params, dynamic_params)
-            elif action == "exit_all":
-                backtester.process_bearish_exit(current_time, row)
-            elif row['market_regime'] == "sideways":
-                backtester.process_sideways_trade(current_time, row, risk_params, dynamic_params)
-            backtester.update_positions(current_time, row)
+                try:
+                    risk_params = backtester.risk_manager.compute_risk_parameters_by_regime(
+                        base_risk_params,
+                        regime=row.get('market_regime', 'unknown'),
+                        liquidity=dynamic_params.get('liquidity_info', 'high')
+                    )
+                except Exception as e:
+                    logger.error(f"Risk params error (holdout) at {current_time}: {e}", exc_info=True)
+                    risk_params = base_risk_params
+                try:
+                    if action == "enter_long":
+                        backtester.process_bullish_entry(current_time, row, risk_params, dynamic_params)
+                    elif action == "exit_all":
+                        backtester.process_bearish_exit(current_time, row)
+                    elif row.get('market_regime', 'unknown') == "sideways":
+                        backtester.process_sideways_trade(current_time, row, risk_params, dynamic_params)
+                except Exception as e:
+                    logger.error(f"Error processing holdout order at {current_time} with action '{action}': {e}", exc_info=True)
+                try:
+                    backtester.update_positions(current_time, row)
+                except Exception as e:
+                    logger.error(f"Error updating positions in holdout at {current_time}: {e}", exc_info=True)
+            except Exception as e:
+                logger.error(f"Unexpected error in process_holdout_orders at {current_time}: {e}", exc_info=True)
+                continue
+
 
 def finalize_orders(backtester):
-    backtester.finalize_all_positions()
+    try:
+        backtester.finalize_all_positions()
+    except Exception as e:
+        logger.error(f"Error finalizing orders: {e}", exc_info=True)
+        raise
 
 ---
 
@@ -290,267 +387,359 @@ class Backtester:
 
     def apply_indicators(self):
         from backtesting.steps.indicator_applier import apply_indicators
-        apply_indicators(self)
+        try:
+            apply_indicators(self)
+        except Exception as e:
+            self.logger.error(f"Error applying indicators: {e}", exc_info=True)
+            raise
 
     def update_hmm_regime(self, dynamic_params):
-        hmm_features = ['returns', 'volatility', 'sma', 'rsi', 'macd_macd', 'macd_signal', 'macd_diff']
-        current_dt = self.df_long.index.max()
-        retrain_interval = pd.Timedelta(minutes=dynamic_params.get('hmm_retrain_interval_minutes', 60))
-        max_samples = dynamic_params.get('max_hmm_train_samples', 1000)
-        if self.hmm_model is None or self.last_hmm_training_datetime is None or (current_dt - self.last_hmm_training_datetime) >= retrain_interval:
-            from markets.regime_model import MarketRegimeHMM
-            self.hmm_model = MarketRegimeHMM(n_components=3, retrain_interval_minutes=dynamic_params.get('hmm_retrain_interval_minutes', 60))
-            training_data = self.df_long if len(self.df_long) <= max_samples else self.df_long.tail(max_samples)
-            self.hmm_model.train(training_data, feature_columns=hmm_features)
-            self.last_hmm_training_datetime = current_dt
-            self.logger.debug(f"HMM retrained at {current_dt}")
-        regime_predictions = self.hmm_model.predict(self.df_long, feature_columns=hmm_features)
-        regime_map = {0: "bullish", 1: "bearish", 2: "sideways"}
-        adjusted_regimes = []
-        self.df_long['long_term_sma'] = self.df_long['close'].rolling(window=dynamic_params.get('sma_period', 200), min_periods=1).mean()
-        for idx, pred in enumerate(regime_predictions):
-            regime = regime_map.get(pred, "unknown") if self.df_long['close'].iloc[idx] > self.df_long['long_term_sma'].iloc[idx] else "bearish"
-            adjusted_regimes.append(regime)
-        return pd.Series(adjusted_regimes, index=self.df_long.index)
+        try:
+            hmm_features = ['returns', 'volatility', 'sma', 'rsi', 'macd_macd', 'macd_signal', 'macd_diff']
+            current_dt = self.df_long.index.max()
+            retrain_interval_minutes = dynamic_params.get('hmm_retrain_interval_minutes', 60)
+            retrain_interval = pd.Timedelta(minutes=retrain_interval_minutes)
+            max_samples = dynamic_params.get('max_hmm_train_samples', 1000)
+            min_samples = dynamic_params.get('min_hmm_train_samples', 50)
+            feature_change_threshold = dynamic_params.get('hmm_feature_change_threshold', 0.01)
+
+            if len(self.df_long) < min_samples:
+                self.logger.warning(f"Not enough samples for HMM training (min required: {min_samples}). Skipping HMM update.")
+                return pd.Series(["unknown"] * len(self.df_long), index=self.df_long.index)
+
+            if self.hmm_model is None or self.last_hmm_training_datetime is None or (current_dt - self.last_hmm_training_datetime) >= retrain_interval:
+                from markets.regime_model import MarketRegimeHMM
+                self.hmm_model = MarketRegimeHMM(n_components=3, retrain_interval_minutes=retrain_interval_minutes)
+                training_data = self.df_long if len(self.df_long) <= max_samples else self.df_long.tail(max_samples)
+                if self.last_hmm_training_datetime is not None and hasattr(self.hmm_model, 'last_feature_stats') and self.hmm_model.last_feature_stats is not None:
+                    current_means = training_data[hmm_features].mean()
+                    diff = abs(current_means - self.hmm_model.last_feature_stats).mean()
+                    if diff < feature_change_threshold:
+                        self.logger.debug(f"HMM retraining skipped: feature change {diff:.6f} below threshold {feature_change_threshold}")
+                    else:
+                        self.hmm_model.train(training_data, feature_columns=hmm_features)
+                        self.last_hmm_training_datetime = current_dt
+                        self.logger.debug(f"HMM retrained at {current_dt} with feature change diff {diff:.6f}")
+                else:
+                    self.hmm_model.train(training_data, feature_columns=hmm_features)
+                    self.last_hmm_training_datetime = current_dt
+                    self.logger.debug(f"HMM trained at {current_dt}")
+            regime_predictions = self.hmm_model.predict(self.df_long, feature_columns=hmm_features)
+            regime_map = {0: "bullish", 1: "bearish", 2: "sideways"}
+            adjusted_regimes = []
+            self.df_long['long_term_sma'] = self.df_long['close'].rolling(window=dynamic_params.get('sma_period', 200), min_periods=1).mean()
+            for idx, pred in enumerate(regime_predictions):
+                if self.df_long['close'].iloc[idx] > self.df_long['long_term_sma'].iloc[idx]:
+                    regime = regime_map.get(pred, "unknown")
+                else:
+                    regime = "bearish"
+                adjusted_regimes.append(regime)
+            return pd.Series(adjusted_regimes, index=self.df_long.index)
+        except Exception as e:
+            self.logger.error(f"Error updating HMM regime: {e}", exc_info=True)
+            return pd.Series(["unknown"] * len(self.df_long), index=self.df_long.index)
 
     def update_short_dataframe(self, regime_series, dynamic_params):
-        self.df_short = self.df_short.join(self.df_long[['sma', 'rsi', 'volatility']], how='left').ffill()
-        self.df_short['market_regime'] = regime_series.reindex(self.df_short.index).ffill()
-        self.df_short = TradeExecutor.compute_atr(self.df_short, period=dynamic_params.get("atr_period", 14))
+        try:
+            self.df_short = self.df_short.join(self.df_long[['sma', 'rsi', 'volatility']], how='left').ffill()
+            self.df_short['market_regime'] = regime_series.reindex(self.df_short.index).ffill()
+            self.df_short = TradeExecutor.compute_atr(self.df_short, period=dynamic_params.get("atr_period", 14))
+            # 기본 stop_loss_price 계산: close - (atr * default_atr_multiplier)
+            default_atr_multiplier = dynamic_params.get("default_atr_multiplier", 2.0)
+            self.df_short["stop_loss_price"] = self.df_short["close"] - (self.df_short["atr"] * default_atr_multiplier)
+        except Exception as e:
+            self.logger.error(f"Error updating short dataframe: {e}", exc_info=True)
+            raise
 
     def handle_walk_forward_window(self, current_time, row):
-        for pos in self.positions:
-            for exec_record in pos.executions:
-                if not exec_record.get("closed", False):
-                    final_close = row["close"]
-                    adjusted_final_close = final_close * (1 - self.final_exit_slippage) if self.final_exit_slippage else final_close
-                    exit_price = adjusted_final_close * (1 - self.slippage_rate)
-                    fee = exit_price * exec_record["size"] * self.fee_rate
-                    pnl = (exit_price - exec_record["entry_price"]) * exec_record["size"] - fee
-                    exec_record["closed"] = True
-                    trade_detail = {
-                        "entry_time": exec_record["entry_time"],
-                        "entry_price": exec_record["entry_price"],
-                        "exit_time": current_time,
-                        "exit_price": exit_price,
-                        "size": exec_record["size"],
-                        "pnl": pnl,
-                        "reason": "walk_forward_window_close",
-                        "trade_type": exec_record.get("trade_type", "unknown"),
-                        "position_id": pos.position_id
-                    }
-                    self.trade_logs.append(trade_detail)
-                    self.trades.append(trade_detail)
-                    self.account.update_after_trade(trade_detail)
-        self.positions = []
+        try:
+            for pos in self.positions:
+                for exec_record in pos.executions:
+                    if not exec_record.get("closed", False):
+                        final_close = row["close"]
+                        adjusted_final_close = final_close * (1 - self.final_exit_slippage) if self.final_exit_slippage else final_close
+                        exit_price = adjusted_final_close * (1 - self.slippage_rate)
+                        fee = exit_price * exec_record["size"] * self.fee_rate
+                        pnl = (exit_price - exec_record["entry_price"]) * exec_record["size"] - fee
+                        exec_record["closed"] = True
+                        trade_detail = {
+                            "entry_time": exec_record["entry_time"],
+                            "entry_price": exec_record["entry_price"],
+                            "exit_time": current_time,
+                            "exit_price": exit_price,
+                            "size": exec_record["size"],
+                            "pnl": pnl,
+                            "reason": "walk_forward_window_close",
+                            "trade_type": exec_record.get("trade_type", "unknown"),
+                            "position_id": pos.position_id
+                        }
+                        self.trade_logs.append(trade_detail)
+                        self.trades.append(trade_detail)
+                        self.account.update_after_trade(trade_detail)
+            self.positions = []
+        except Exception as e:
+            self.logger.error(f"Error during walk-forward window handling: {e}", exc_info=True)
+            raise
 
     def handle_weekly_end(self, current_time, row):
-        final_close = row["close"]
-        adjusted_final_close = final_close * (1 - self.final_exit_slippage) if self.final_exit_slippage else final_close
-        for pos in self.positions:
-            for exec_record in pos.executions:
-                if not exec_record.get("closed", False):
-                    exit_price = adjusted_final_close * (1 - self.slippage_rate)
-                    fee = exit_price * exec_record["size"] * self.fee_rate
-                    pnl = (exit_price - exec_record["entry_price"]) * exec_record["size"] - fee
-                    exec_record["closed"] = True
-                    trade_detail = {
-                        "entry_time": exec_record["entry_time"],
-                        "entry_price": exec_record["entry_price"],
-                        "exit_time": current_time,
-                        "exit_price": exit_price,
-                        "size": exec_record["size"],
-                        "pnl": pnl,
-                        "reason": "weekly_end_close",
-                        "trade_type": exec_record.get("trade_type", "unknown"),
-                        "position_id": pos.position_id
-                    }
-                    self.trade_logs.append(trade_detail)
-                    self.trades.append(trade_detail)
-                    self.account.update_after_trade(trade_detail)
-        self.positions = []
+        try:
+            final_close = row["close"]
+            adjusted_final_close = final_close * (1 - self.final_exit_slippage) if self.final_exit_slippage else final_close
+            for pos in self.positions:
+                for exec_record in pos.executions:
+                    if not exec_record.get("closed", False):
+                        exit_price = adjusted_final_close * (1 - self.slippage_rate)
+                        fee = exit_price * exec_record["size"] * self.fee_rate
+                        pnl = (exit_price - exec_record["entry_price"]) * exec_record["size"] - fee
+                        exec_record["closed"] = True
+                        trade_detail = {
+                            "entry_time": exec_record["entry_time"],
+                            "entry_price": exec_record["entry_price"],
+                            "exit_time": current_time,
+                            "exit_price": exit_price,
+                            "size": exec_record["size"],
+                            "pnl": pnl,
+                            "reason": "weekly_end_close",
+                            "trade_type": exec_record.get("trade_type", "unknown"),
+                            "position_id": pos.position_id
+                        }
+                        self.trade_logs.append(trade_detail)
+                        self.trades.append(trade_detail)
+                        self.account.update_after_trade(trade_detail)
+            self.positions = []
+        except Exception as e:
+            self.logger.error(f"Error during weekly end handling: {e}", exc_info=True)
+            raise
 
     def process_bullish_entry(self, current_time, row, risk_params, dynamic_params):
-        close_price = row["close"]
-        signal_cooldown = pd.Timedelta(minutes=dynamic_params.get("signal_cooldown_minutes", 5))
-        if self.last_signal_time is not None and (current_time - self.last_signal_time) < signal_cooldown:
-            return
-        # Scale-in existing position if possible
-        for pos in self.positions:
-            if pos.side == "LONG":
-                additional_size = self.risk_manager.compute_position_size(
-                    available_balance=self.account.get_available_balance(),
-                    risk_percentage=risk_params["risk_per_trade"],
-                    entry_price=close_price,
-                    stop_loss=row.get("stop_loss_price"),
-                    fee_rate=self.fee_rate,
-                    volatility=row.get("volatility", 0)
-                )
-                required_amount = close_price * additional_size * (1 + self.fee_rate)
-                if self.account.get_available_balance() >= required_amount:
-                    threshold = dynamic_params.get("scale_in_threshold", 0.02)
-                    effective_threshold = threshold * (0.5 if close_price < 10 else 1)
-                    self.risk_manager.attempt_scale_in_position(
-                        position=pos,
-                        current_price=close_price,
-                        scale_in_threshold=effective_threshold,
-                        slippage_rate=self.slippage_rate,
-                        stop_loss=row.get("stop_loss_price"),
-                        take_profit=row.get("take_profit_price"),
-                        entry_time=current_time,
-                        trade_type="scale_in"
+        try:
+            close_price = row["close"]
+            signal_cooldown = pd.Timedelta(minutes=dynamic_params.get("signal_cooldown_minutes", 5))
+            if self.last_signal_time is not None and (current_time - self.last_signal_time) < signal_cooldown:
+                return
+
+            # 기본 stop_loss_price 할당: 누락 시 close_price의 5% 하락값 사용
+            stop_loss_price = row.get("stop_loss_price")
+            if stop_loss_price is None:
+                stop_loss_price = close_price * 0.95
+                self.logger.warning(f"Missing stop_loss_price for bullish entry at {current_time}. Using default stop_loss_price={stop_loss_price:.2f}.")
+
+            for pos in self.positions:
+                if pos.side == "LONG":
+                    additional_size = self.risk_manager.compute_position_size(
+                        available_balance=self.account.get_available_balance(),
+                        risk_percentage=risk_params.get("risk_per_trade"),
+                        entry_price=close_price,
+                        stop_loss=stop_loss_price,
+                        fee_rate=self.fee_rate,
+                        volatility=row.get("volatility", 0)
                     )
-                    self.last_signal_time = current_time
-                    return
-        # Open new position
-        total_size = self.risk_manager.compute_position_size(
-            available_balance=self.account.get_available_balance(),
-            risk_percentage=risk_params["risk_per_trade"],
-            entry_price=close_price,
-            stop_loss=row.get("stop_loss_price"),
-            fee_rate=self.fee_rate,
-            volatility=row.get("volatility", 0)
-        )
-        required_amount = close_price * total_size * (1 + self.fee_rate)
-        if self.account.get_available_balance() >= required_amount:
-            new_position = Position(
-                side="LONG",
-                initial_price=close_price,
-                maximum_size=total_size,
-                total_splits=dynamic_params.get("total_splits", 3),
-                allocation_plan=self.risk_manager.allocate_position_splits(
-                    total_size=1.0,
-                    splits_count=dynamic_params.get("total_splits", 3),
-                    allocation_mode=dynamic_params.get("allocation_mode", "equal")
-                )
-            )
-            try:
-                atr_value = self.df_short.loc[current_time, "atr"]
-            except KeyError:
-                atr_value = 0
-            stop_loss_price, take_profit_price = TradeExecutor.calculate_dynamic_stop_and_take(
+                    required_amount = close_price * additional_size * (1 + self.fee_rate)
+                    if self.account.get_available_balance() >= required_amount:
+                        threshold = dynamic_params.get("scale_in_threshold", 0.02)
+                        effective_threshold = threshold * (0.5 if close_price < 10 else 1)
+                        self.risk_manager.attempt_scale_in_position(
+                            position=pos,
+                            current_price=close_price,
+                            scale_in_threshold=effective_threshold,
+                            slippage_rate=self.slippage_rate,
+                            stop_loss=stop_loss_price,
+                            take_profit=row.get("take_profit_price"),
+                            entry_time=current_time,
+                            trade_type="scale_in"
+                        )
+                        self.last_signal_time = current_time
+                        return
+            total_size = self.risk_manager.compute_position_size(
+                available_balance=self.account.get_available_balance(),
+                risk_percentage=risk_params.get("risk_per_trade"),
                 entry_price=close_price,
-                atr=atr_value,
-                risk_params=risk_params
-            )
-            new_position.add_execution(
-                entry_price=close_price * (1 + self.slippage_rate),
-                size=total_size * new_position.allocation_plan[0],
                 stop_loss=stop_loss_price,
-                take_profit=take_profit_price,
-                entry_time=current_time,
-                exit_targets=TradeExecutor.calculate_partial_exit_targets(
-                    entry_price=close_price,
-                    partial_exit_ratio=dynamic_params.get("partial_exit_ratio", 0.5),
-                    partial_profit_ratio=dynamic_params.get("partial_profit_ratio", 0.03),
-                    final_profit_ratio=dynamic_params.get("final_profit_ratio", 0.06)
-                ),
-                trade_type="new_entry"
+                fee_rate=self.fee_rate,
+                volatility=row.get("volatility", 0)
             )
-            new_position.executed_splits = 1
-            self.positions.append(new_position)
-            self.account.add_position(new_position)
-            self.last_signal_time = current_time
+            required_amount = close_price * total_size * (1 + self.fee_rate)
+            if self.account.get_available_balance() >= required_amount:
+                new_position = Position(
+                    side="LONG",
+                    initial_price=close_price,
+                    maximum_size=total_size,
+                    total_splits=dynamic_params.get("total_splits", 3),
+                    allocation_plan=self.risk_manager.allocate_position_splits(
+                        total_size=1.0,
+                        splits_count=dynamic_params.get("total_splits", 3),
+                        allocation_mode=dynamic_params.get("allocation_mode", "equal")
+                    )
+                )
+                try:
+                    atr_value = self.df_short.loc[current_time, "atr"]
+                except KeyError:
+                    atr_value = 0
+                stop_loss_price_new, take_profit_price = TradeExecutor.calculate_dynamic_stop_and_take(
+                    entry_price=close_price,
+                    atr=atr_value,
+                    risk_params=risk_params
+                )
+                new_position.add_execution(
+                    entry_price=close_price * (1 + self.slippage_rate),
+                    size=total_size * new_position.allocation_plan[0],
+                    stop_loss=stop_loss_price_new,
+                    take_profit=take_profit_price,
+                    entry_time=current_time,
+                    exit_targets=TradeExecutor.calculate_partial_exit_targets(
+                        entry_price=close_price,
+                        partial_exit_ratio=dynamic_params.get("partial_exit_ratio", 0.5),
+                        partial_profit_ratio=dynamic_params.get("partial_profit_ratio", 0.03),
+                        final_profit_ratio=dynamic_params.get("final_profit_ratio", 0.06)
+                    ),
+                    trade_type="new_entry"
+                )
+                new_position.executed_splits = 1
+                self.positions.append(new_position)
+                self.account.add_position(new_position)
+                self.last_signal_time = current_time
+        except Exception as e:
+            self.logger.error(f"Error processing bullish entry: {e}", exc_info=True)
+            raise
 
     def process_bearish_exit(self, current_time, row):
-        close_price = row["close"]
-        for pos in self.positions:
-            for exec_record in pos.executions:
-                if not exec_record.get("closed", False):
-                    exit_price = close_price * (1 - self.slippage_rate)
-                    fee = exit_price * exec_record["size"] * self.fee_rate
-                    pnl = (exit_price - exec_record["entry_price"]) * exec_record["size"] - fee
-                    exec_record["closed"] = True
-                    trade_detail = {
-                        "entry_time": exec_record["entry_time"],
-                        "entry_price": exec_record["entry_price"],
-                        "exit_time": current_time,
-                        "exit_price": exit_price,
-                        "size": exec_record["size"],
-                        "pnl": pnl,
-                        "reason": "exit_regime_change",
-                        "trade_type": exec_record.get("trade_type", "unknown"),
-                        "position_id": pos.position_id
-                    }
-                    self.trade_logs.append(trade_detail)
-                    self.trades.append(trade_detail)
-                    self.account.update_after_trade(trade_detail)
-        self.last_signal_time = current_time
+        try:
+            close_price = row["close"]
+            for pos in self.positions:
+                for exec_record in pos.executions:
+                    if not exec_record.get("closed", False):
+                        exit_price = close_price * (1 - self.slippage_rate)
+                        fee = exit_price * exec_record["size"] * self.fee_rate
+                        pnl = (exit_price - exec_record["entry_price"]) * exec_record["size"] - fee
+                        exec_record["closed"] = True
+                        trade_detail = {
+                            "entry_time": exec_record["entry_time"],
+                            "entry_price": exec_record["entry_price"],
+                            "exit_time": current_time,
+                            "exit_price": exit_price,
+                            "size": exec_record["size"],
+                            "pnl": pnl,
+                            "reason": "exit_regime_change",
+                            "trade_type": exec_record.get("trade_type", "unknown"),
+                            "position_id": pos.position_id
+                        }
+                        self.trade_logs.append(trade_detail)
+                        self.trades.append(trade_detail)
+                        self.account.update_after_trade(trade_detail)
+            self.last_signal_time = current_time
+        except Exception as e:
+            self.logger.error(f"Error processing bearish exit: {e}", exc_info=True)
+            raise
 
     def process_sideways_trade(self, current_time, row, risk_params, dynamic_params):
-        close_price = row["close"]
-        liquidity = dynamic_params.get('liquidity_info', 'high').lower()
-        if liquidity == "high":
-            lower_bound = self.df_short['low'].rolling(window=20, min_periods=1).min().iloc[-1]
-            if close_price <= lower_bound:
-                self.process_bullish_entry(current_time, row, risk_params, dynamic_params)
-        else:
-            mean_price = self.df_short['close'].rolling(window=20, min_periods=1).mean().iloc[-1]
-            std_price = self.df_short['close'].rolling(window=20, min_periods=1).std().iloc[-1]
-            if close_price < mean_price - std_price:
-                self.process_bullish_entry(current_time, row, risk_params, dynamic_params)
-            elif close_price > mean_price + std_price:
-                self.process_bearish_exit(current_time, row)
+        try:
+            close_price = row["close"]
+            liquidity = dynamic_params.get('liquidity_info', 'high').lower()
+            if liquidity == "high":
+                lower_bound = self.df_short['low'].rolling(window=20, min_periods=1).min().iloc[-1]
+                if close_price <= lower_bound:
+                    self.process_bullish_entry(current_time, row, risk_params, dynamic_params)
+            else:
+                mean_price = self.df_short['close'].rolling(window=20, min_periods=1).mean().iloc[-1]
+                std_price = self.df_short['close'].rolling(window=20, min_periods=1).std().iloc[-1]
+                if close_price < mean_price - std_price:
+                    self.process_bullish_entry(current_time, row, risk_params, dynamic_params)
+                elif close_price > mean_price + std_price:
+                    self.process_bearish_exit(current_time, row)
+        except Exception as e:
+            self.logger.error(f"Error processing sideways trade: {e}", exc_info=True)
+            raise
 
     def update_positions(self, current_time, row):
-        close_price = row["close"]
-        for pos in self.positions:
-            for exec_record in pos.executions:
-                if not exec_record.get("closed", False):
-                    pos.highest_price = max(pos.highest_price, close_price)
-                    new_stop = TradeExecutor.adjust_trailing_stop(
-                        current_stop=row.get("stop_loss_price", 0),
-                        current_price=close_price,
-                        highest_price=pos.highest_price,
-                        trailing_percentage=self.config_manager.get_defaults().get("trailing_percent", 0.045)
-                    )
-                    exec_record["stop_loss"] = new_stop
+        try:
+            close_price = row["close"]
+            for pos in self.positions:
+                for exec_record in pos.executions:
+                    if not exec_record.get("closed", False):
+                        pos.highest_price = max(pos.highest_price, close_price)
+                        new_stop = TradeExecutor.adjust_trailing_stop(
+                            current_stop=row.get("stop_loss_price", 0),
+                            current_price=close_price,
+                            highest_price=pos.highest_price,
+                            trailing_percentage=self.config_manager.get_defaults().get("trailing_percent", 0.045)
+                        )
+                        exec_record["stop_loss"] = new_stop
+        except Exception as e:
+            self.logger.error(f"Error updating positions: {e}", exc_info=True)
+            raise
 
     def finalize_all_positions(self):
-        final_time = self.df_short.index[-1]
-        final_close = self.df_short.iloc[-1]["close"]
-        adjusted_final_close = final_close * (1 - self.final_exit_slippage) if self.final_exit_slippage else final_close
-        for pos in self.positions:
-            for exec_record in pos.executions:
-                if not exec_record.get("closed", False):
-                    exit_price = adjusted_final_close * (1 - self.slippage_rate)
-                    fee = exit_price * exec_record["size"] * self.fee_rate
-                    pnl = (exit_price - exec_record["entry_price"]) * exec_record["size"] - fee
-                    exec_record["closed"] = True
-                    trade_detail = {
-                        "entry_time": exec_record["entry_time"],
-                        "entry_price": exec_record["entry_price"],
-                        "exit_time": final_time,
-                        "exit_price": exit_price,
-                        "size": exec_record["size"],
-                        "pnl": pnl,
-                        "reason": "final_exit",
-                        "trade_type": exec_record.get("trade_type", "unknown"),
-                        "position_id": pos.position_id
-                    }
-                    self.trade_logs.append(trade_detail)
-                    self.trades.append(trade_detail)
-                    self.account.update_after_trade(trade_detail)
+        try:
+            final_time = self.df_short.index[-1]
+            final_close = self.df_short.iloc[-1]["close"]
+            adjusted_final_close = final_close * (1 - self.final_exit_slippage) if self.final_exit_slippage else final_close
+            for pos in self.positions:
+                for exec_record in pos.executions:
+                    if not exec_record.get("closed", False):
+                        exit_price = adjusted_final_close * (1 - self.slippage_rate)
+                        fee = exit_price * exec_record["size"] * self.fee_rate
+                        pnl = (exit_price - exec_record["entry_price"]) * exec_record["size"] - fee
+                        exec_record["closed"] = True
+                        trade_detail = {
+                            "entry_time": exec_record["entry_time"],
+                            "entry_price": exec_record["entry_price"],
+                            "exit_time": final_time,
+                            "exit_price": exit_price,
+                            "size": exec_record["size"],
+                            "pnl": pnl,
+                            "reason": "final_exit",
+                            "trade_type": exec_record.get("trade_type", "unknown"),
+                            "position_id": pos.position_id
+                        }
+                        self.trade_logs.append(trade_detail)
+                        self.trades.append(trade_detail)
+                        self.account.update_after_trade(trade_detail)
+        except Exception as e:
+            self.logger.error(f"Error finalizing positions: {e}", exc_info=True)
+            raise
 
     def monitor_orders(self, current_time, row):
-        for pos in self.positions:
-            for exec_record in pos.executions:
-                if not exec_record.get("closed", False):
-                    entry_price = exec_record.get("entry_price", 0)
-                    current_price = row.get("close", entry_price)
-                    if abs(current_price - entry_price) / entry_price > 0.05:
-                        self.logger.debug(f"Significant price move for position {pos.position_id} at {current_time}.")
+        try:
+            for pos in self.positions:
+                for exec_record in pos.executions:
+                    if not exec_record.get("closed", False):
+                        entry_price = exec_record.get("entry_price", 0)
+                        current_price = row.get("close", entry_price)
+                        if entry_price > 0 and abs(current_price - entry_price) / entry_price > 0.05:
+                            self.logger.debug(f"Significant price move for position {pos.position_id} at {current_time}.")
+        except Exception as e:
+            self.logger.error(f"Error monitoring orders: {e}", exc_info=True)
+            raise
 
     def run_backtest(self, dynamic_params=None, walk_forward_days: int = None, holdout_period: tuple = None):
         if dynamic_params is None:
             dynamic_params = self.config_manager.get_defaults()
-        self.df_long['returns'] = self.df_long['close'].pct_change().fillna(0)
-        self.df_long['volatility'] = self.df_long['returns'].rolling(window=20).std().fillna(0)
-        self.apply_indicators()
-        from backtesting.steps.hmm_manager import update_hmm
-        regime_series = update_hmm(self, dynamic_params)
-        self.update_short_dataframe(regime_series, dynamic_params)
-        
+        try:
+            self.df_long['returns'] = self.df_long['close'].pct_change().fillna(0)
+            self.df_long['volatility'] = self.df_long['returns'].rolling(window=20).std().fillna(0)
+        except Exception as e:
+            self.logger.error(f"Error computing returns/volatility: {e}", exc_info=True)
+            raise
+
+        try:
+            self.apply_indicators()
+        except Exception as e:
+            self.logger.error(f"Error during indicator application: {e}", exc_info=True)
+            raise
+
+        try:
+            from backtesting.steps.hmm_manager import update_hmm
+            regime_series = update_hmm(self, dynamic_params)
+        except Exception as e:
+            self.logger.error(f"Error updating HMM: {e}", exc_info=True)
+            regime_series = pd.Series(["unknown"] * len(self.df_long), index=self.df_long.index)
+
+        try:
+            self.update_short_dataframe(regime_series, dynamic_params)
+        except Exception as e:
+            self.logger.error(f"Error updating short dataframe: {e}", exc_info=True)
+            raise
+
         if holdout_period:
             holdout_start, holdout_end = pd.to_datetime(holdout_period[0]), pd.to_datetime(holdout_period[1])
             df_train = self.df_short[self.df_short.index < holdout_start]
@@ -558,7 +747,7 @@ class Backtester:
         else:
             df_train = self.df_short
             df_holdout = None
-        
+
         if walk_forward_days is not None:
             self.window_start = df_train.index[0]
             self.walk_forward_td = pd.Timedelta(days=walk_forward_days)
@@ -566,17 +755,21 @@ class Backtester:
         else:
             self.window_start = None
             self.walk_forward_days = None
-        
+
         signal_cooldown = pd.Timedelta(minutes=dynamic_params.get("signal_cooldown_minutes", 5))
         rebalance_interval = pd.Timedelta(minutes=dynamic_params.get("rebalance_interval_minutes", 60))
-        
+
         self.df_train = df_train
-        from backtesting.steps.order_manager import process_training_orders, process_extra_orders, process_holdout_orders, finalize_orders
-        process_training_orders(self, dynamic_params, signal_cooldown, rebalance_interval)
-        process_extra_orders(self, dynamic_params)
-        process_holdout_orders(self, dynamic_params, df_holdout)
-        finalize_orders(self)
-        
+        try:
+            from backtesting.steps.order_manager import process_training_orders, process_extra_orders, process_holdout_orders, finalize_orders
+            process_training_orders(self, dynamic_params, signal_cooldown, rebalance_interval)
+            process_extra_orders(self, dynamic_params)
+            process_holdout_orders(self, dynamic_params, df_holdout)
+            finalize_orders(self)
+        except Exception as e:
+            self.logger.error(f"Error during order processing: {e}", exc_info=True)
+            raise
+
         total_pnl = sum(trade["pnl"] for trade in self.trades)
         roi = total_pnl / self.account.initial_balance * 100
         self.logger.debug(f"Backtest complete: Total PnL={total_pnl:.2f}, ROI={roi:.2f}%")

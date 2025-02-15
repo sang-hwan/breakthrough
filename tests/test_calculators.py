@@ -51,3 +51,10 @@ def test_adjust_trailing_stop_extreme():
 def test_calculate_partial_exit_targets_invalid():
     with pytest.raises(ValueError):
         calculate_partial_exit_targets(0, partial_exit_ratio=0.5, partial_profit_ratio=0.03, final_profit_ratio=0.06)
+
+def test_calculate_dynamic_stop_and_take_extreme_profit_ratio():
+    entry_price = 100
+    atr = 5
+    stop_loss, take_profit = calculate_dynamic_stop_and_take(entry_price, atr, {"atr_multiplier": 2.0, "profit_ratio": 1.5})
+    assert take_profit == pytest.approx(200, rel=1e-3)
+    assert stop_loss == pytest.approx(90, rel=1e-3)

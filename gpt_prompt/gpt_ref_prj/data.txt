@@ -357,7 +357,7 @@ def collect_and_store_ohlcv_data(
         table_name = table_name_format.format(symbol=symbol.replace('/', '').lower(), timeframe=tf)
         try:
             insert_ohlcv_records(df, table_name=table_name)
-            logger.info(f"Data inserted for {symbol} {tf} into table {table_name}")
+            logger.debug(f"Data inserted for {symbol} {tf} into table {table_name}")
         except Exception as e:
             logger.error(f"[OHLCV PIPELINE] 데이터 저장 에러 ({table_name}): {e}", exc_info=True)
         time.sleep(pause_sec)  # 짧은 대기 시간으로 API rate limit 준수

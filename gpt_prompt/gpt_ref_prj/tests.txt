@@ -108,6 +108,55 @@ def test_rebalance_bearish():
 
 ---
 
+# tests/test_backtester_integration.py
+import pandas as pd
+import numpy as np
+import pytest
+from backtesting.backtester import Backtester
+
+@pytest.fixture
+def dummy_data():
+    # 30일치 더미 long 데이터 생성
+    dates = pd.date_range(start="2023-01-01", periods=30, freq="D")
+    df_long = pd.DataFrame({
+        "open": np.linspace(100, 130, 30),
+        "high": np.linspace(105, 135, 30),
+        "low": np.linspace(95, 125, 30),
+        "close": np.linspace(100, 130, 30),
+    }, index=dates)
+    # short 데이터: long 데이터를 시간해상도로 리샘플링하여 생성
+    df_short = df_long.resample('H').ffill()
+    return df_long, df_short
+
+def test_backtester_integration(dummy_data):
+    df_long, df_short = dummy_data
+    backtester = Backtester(symbol="BTC/USDT", account_size=10000)
+    # 더미 데이터를 직접 할당
+    backtester.df_long = df_long.copy()
+    backtester.df_short = df_short.copy()
+    backtester.df_train = df_short.copy()
+    backtester.last_signal_time = None
+    backtester.last_rebalance_time = None
+    backtester.positions = []
+    
+    # 외부 의존성을 제거하기 위해 필요한 메서드 오버라이드
+    backtester.update_hmm_regime = lambda dynamic_params: pd.Series(["bullish"] * len(backtester.df_long), index=backtester.df_long.index)
+    backtester.apply_indicators = lambda: None
+    backtester.update_short_dataframe = lambda regime_series, dynamic_params: None
+    backtester.risk_manager.compute_risk_parameters_by_regime = lambda base_params, regime, liquidity="high": base_params
+    backtester.ensemble_manager.get_final_signal = lambda regime, liquidity, data, current_time, data_weekly=None: "hold"
+    # 더미 AssetManager (rebalance 메서드 no-op)
+    backtester.asset_manager = type("DummyAssetManager", (), {"rebalance": lambda self, regime: None})()
+    # 주간 데이터도 생성 (단순하게 long 데이터의 주간 마지막값)
+    backtester.df_weekly = df_long.resample('W').last()
+    
+    # 백테스트 실행 (오류 없이 리스트 반환되어야 함)
+    trades, trade_logs = backtester.run_backtest(dynamic_params={"signal_cooldown_minutes": 5, "rebalance_interval_minutes": 60})
+    assert isinstance(trades, list)
+    assert isinstance(trade_logs, list)
+
+---
+
 # tests/test_base_strategy.py
 from strategies.base_strategy import BaseStrategy
 
@@ -176,6 +225,13 @@ def test_adjust_trailing_stop_extreme():
 def test_calculate_partial_exit_targets_invalid():
     with pytest.raises(ValueError):
         calculate_partial_exit_targets(0, partial_exit_ratio=0.5, partial_profit_ratio=0.03, final_profit_ratio=0.06)
+
+def test_calculate_dynamic_stop_and_take_extreme_profit_ratio():
+    entry_price = 100
+    atr = 5
+    stop_loss, take_profit = calculate_dynamic_stop_and_take(entry_price, atr, {"atr_multiplier": 2.0, "profit_ratio": 1.5})
+    assert take_profit == pytest.approx(200, rel=1e-3)
+    assert stop_loss == pytest.approx(90, rel=1e-3)
 
 ---
 
@@ -267,6 +323,64 @@ def test_partial_close_execution():
 
 ---
 
+# tests/test_data_validation.py
+import pandas as pd
+import pytest
+from backtesting.steps.data_loader import load_data
+
+# 더미 백테스터 클래스 정의
+class DummyBacktester:
+    def __init__(self, symbol="BTC/USDT"):
+        self.symbol = symbol
+        self.df_short = None
+        self.df_long = None
+
+# fetch_ohlcv_records를 더미 함수로 대체 (유효한 날짜 범위에서는 non-empty DataFrame, 그렇지 않으면 empty DataFrame 반환)
+def dummy_fetch_ohlcv_records(table_name, start_date, end_date):
+    if start_date and end_date and start_date < end_date:
+        dates = pd.date_range(start=start_date, end=end_date, freq='D')
+        df = pd.DataFrame({
+            "open": [100] * len(dates),
+            "high": [110] * len(dates),
+            "low": [90] * len(dates),
+            "close": [105] * len(dates),
+            "volume": [1000] * len(dates)
+        }, index=dates)
+        return df
+    else:
+        return pd.DataFrame()
+
+# 모든 테스트에서 fetch_ohlcv_records를 패치
+@pytest.fixture(autouse=True)
+def patch_fetch_ohlcv(monkeypatch):
+    monkeypatch.setattr("backtesting.steps.data_loader.fetch_ohlcv_records", dummy_fetch_ohlcv_records)
+
+def test_load_data_valid():
+    backtester = DummyBacktester(symbol="BTC/USDT")
+    short_table_format = "ohlcv_{symbol}_{timeframe}"
+    long_table_format = "ohlcv_{symbol}_{timeframe}"
+    short_tf = "1d"
+    long_tf = "1d"
+    start_date = "2023-01-01"
+    end_date = "2023-01-10"
+    # load_data 호출 시 정상적인 데이터를 반환해야 함.
+    load_data(backtester, short_table_format, long_table_format, short_tf, long_tf, start_date, end_date)
+    assert backtester.df_short is not None and not backtester.df_short.empty
+    assert backtester.df_long is not None and not backtester.df_long.empty
+
+def test_load_data_invalid():
+    backtester = DummyBacktester(symbol="BTC/USDT")
+    short_table_format = "ohlcv_{symbol}_{timeframe}"
+    long_table_format = "ohlcv_{symbol}_{timeframe}"
+    short_tf = "1d"
+    long_tf = "1d"
+    start_date = "2023-01-10"
+    end_date = "2023-01-01"  # 잘못된 날짜 범위: 시작일 > 종료일
+    with pytest.raises(ValueError):
+        load_data(backtester, short_table_format, long_table_format, short_tf, long_tf, start_date, end_date)
+
+---
+
 # tests/test_ensemble.py
 import pytest
 import pandas as pd
@@ -303,6 +417,27 @@ def test_get_final_signal(dummy_data, dummy_weekly_data):
     current_time = dummy_data.index[-1]
     final_signal = ens.get_final_signal(market_regime="bullish", liquidity_info="high", data=dummy_data, current_time=current_time, data_weekly=dummy_weekly_data)
     assert final_signal in ["enter_long", "exit_all", "hold"]
+
+---
+
+# tests/test_exception_logging.py
+import logging
+import pytest
+from trading.calculators import calculate_dynamic_stop_and_take, adjust_trailing_stop
+
+def test_exception_logging_dynamic_stop_and_take(caplog):
+    caplog.set_level(logging.ERROR)
+    # entry_price가 0인 경우 ValueError가 발생하도록 되어 있음.
+    with pytest.raises(ValueError):
+        calculate_dynamic_stop_and_take(0, 5, {"atr_multiplier": 2.0, "profit_ratio": 0.05})
+    assert "Invalid entry_price" in caplog.text
+
+def test_exception_logging_adjust_trailing_stop(caplog):
+    caplog.set_level(logging.ERROR)
+    # current_price 또는 highest_price가 0 이하인 경우 에러 발생
+    with pytest.raises(ValueError):
+        adjust_trailing_stop(0, -100, -100, 0.05)
+    assert "Invalid current_price" in caplog.text or "highest_price" in caplog.text
 
 ---
 

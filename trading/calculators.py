@@ -21,26 +21,33 @@ def calculate_atr(data: pd.DataFrame, period: int = 14) -> pd.DataFrame:
     except Exception as e:
         logger.error(f"calculate_atr error: {e}", exc_info=True)
         data['atr'] = data['high'] - data['low']
+    
+    avg_range = (data['high'] - data['low']).mean()
+    avg_close = data['close'].mean()
+    if avg_range < avg_close * 0.001:
+        fallback_atr = data['atr'].mean() if data['atr'].mean() > 0 else avg_close * 0.01
+        logger.warning(f"Data variability is low (avg_range={avg_range:.6f}). Using fallback ATR value: {fallback_atr:.6f}.")
+        data['atr'] = data['atr'].apply(lambda x: fallback_atr if x < fallback_atr else x)
     return data
 
 def calculate_dynamic_stop_and_take(entry_price: float, atr: float, risk_params: dict):
-    # 입력값 검증
     if entry_price <= 0:
         logger.error("Invalid entry_price <= 0: {}".format(entry_price))
         raise ValueError("entry_price must be positive.")
     if atr <= 0:
-        logger.error("Invalid atr <= 0: {}".format(atr))
-        raise ValueError("atr must be positive.")
+        logger.warning("ATR value is non-positive ({}). Using fallback ATR value from risk_params if available.".format(atr))
+        fallback_atr = risk_params.get("fallback_atr", entry_price * 0.01)
+        if fallback_atr <= 0:
+            fallback_atr = entry_price * 0.01
+        atr = fallback_atr
     try:
         atr_multiplier = risk_params.get("atr_multiplier", 2.0)
         profit_ratio = risk_params.get("profit_ratio", 0.05)
         volatility_multiplier = risk_params.get("volatility_multiplier", 1.0)
-        # 극단적인 값 방지를 위해 클리핑
         atr_multiplier = max(0.1, min(atr_multiplier, 10))
         profit_ratio = max(0.001, min(profit_ratio, 1))
         stop_loss_price = entry_price - (atr * atr_multiplier * volatility_multiplier)
         take_profit_price = entry_price * (1 + profit_ratio)
-        # 손절 가격이 0 이하인 경우 최소 50% 수준으로 조정
         if stop_loss_price <= 0:
             logger.warning("Computed stop_loss_price is non-positive; adjusting to at least 50% of entry_price.")
             stop_loss_price = entry_price * 0.5

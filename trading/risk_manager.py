@@ -6,15 +6,15 @@ class RiskManager:
         self.logger = setup_logger(__name__)
 
     def compute_position_size(self, available_balance: float, risk_percentage: float, entry_price: float,
-                              stop_loss: float, fee_rate: float = 0.001, min_order_size: float = 1e-8,
-                              volatility: float = 0.0, weekly_volatility: float = None, weekly_risk_coefficient: float = 1.0) -> float:
+                            stop_loss: float, fee_rate: float = 0.001, min_order_size: float = 1e-8,
+                            volatility: float = 0.0, weekly_volatility: float = None, weekly_risk_coefficient: float = 1.0) -> float:
         if entry_price <= 0 or stop_loss <= 0:
             self.logger.error(f"Invalid entry_price ({entry_price}) or stop_loss ({stop_loss})")
             return 0.0
         price_diff = abs(entry_price - stop_loss)
         if price_diff == 0:
-            self.logger.warning("Zero price difference between entry and stop_loss; cannot compute risk properly.")
-            return 0.0
+            self.logger.warning("Zero price difference between entry and stop_loss; assigning minimal epsilon to price_diff.")
+            price_diff = entry_price * 1e-4
         max_risk = available_balance * risk_percentage
         fee_amount = entry_price * fee_rate
         loss_per_unit = price_diff + fee_amount
@@ -32,6 +32,7 @@ class RiskManager:
         final_size = computed_size if computed_size >= min_order_size else 0.0
         self.logger.debug(f"Final computed position size: {final_size:.8f} (min_order_size={min_order_size})")
         return final_size
+
 
     def allocate_position_splits(self, total_size: float, splits_count: int = 3, allocation_mode: str = 'equal', min_order_size: float = 1e-8) -> list:
         if splits_count < 1:
