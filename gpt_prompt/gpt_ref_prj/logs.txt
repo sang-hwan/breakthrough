@@ -4,32 +4,50 @@ import os
 
 class AggregatingHandler(logging.Handler):
     """
-    AggregatingHandler는 (logger 이름, 파일명, 함수명) 단위로 로그 발생 건수를 집계하여,
-    실행 종료 시 누적 결과를 한 번에 출력합니다.
+    AggregatingHandler는 (logger 이름, 파일명, 함수명) 단위로 로그 발생 건수를 집계합니다.
+    추가로, 'is_weekly_signal' 플래그가 설정된 로그를 별도로 집계하여 주간 전략 신호 발생 건수를 파악할 수 있습니다.
+    flush 시 전체 로그 집계와 주간 신호 로그 집계를 각각 출력합니다.
     """
     def __init__(self, level=logging.DEBUG):
         super().__init__(level)
         self.total_aggregation = {}
+        self.weekly_signal_aggregation = {}
 
     def emit(self, record):
         try:
             key = (record.name, os.path.basename(record.pathname), record.funcName)
             self.total_aggregation[key] = self.total_aggregation.get(key, 0) + 1
+
+            # 주간 전략 신호 이벤트 플래그가 있으면 별도 집계
+            if getattr(record, 'is_weekly_signal', False):
+                self.weekly_signal_aggregation[key] = self.weekly_signal_aggregation.get(key, 0) + 1
         except Exception:
             self.handleError(record)
 
     def flush_aggregation_summary(self):
-        if not self.total_aggregation:
-            return
-        summary_lines = [
-            f"{filename}:{funcname} (logger: {logger_name}) - 총 {count}회 발생"
-            for (logger_name, filename, funcname), count in self.total_aggregation.items()
-        ]
-        summary = "\n".join(summary_lines)
-        try:
-            logging.getLogger().info("전체 누적 로그 집계:\n" + summary)
-        except Exception:
-            pass
+        # 전체 로그 집계 요약 출력
+        if self.total_aggregation:
+            summary_lines = [
+                f"{filename}:{funcname} (logger: {logger_name}) - 총 {count}회 발생"
+                for (logger_name, filename, funcname), count in self.total_aggregation.items()
+            ]
+            summary = "\n".join(summary_lines)
+            try:
+                logging.getLogger().info("전체 누적 로그 집계:\n" + summary)
+            except Exception:
+                pass
+
+        # 주간 신호 로그 집계 요약 출력 (있을 경우)
+        if self.weekly_signal_aggregation:
+            weekly_summary_lines = [
+                f"{filename}:{funcname} (logger: {logger_name}) - 주간 신호 {count}회 발생"
+                for (logger_name, filename, funcname), count in self.weekly_signal_aggregation.items()
+            ]
+            weekly_summary = "\n".join(weekly_summary_lines)
+            try:
+                logging.getLogger().info("전체 주간 신호 로그 집계:\n" + weekly_summary)
+            except Exception:
+                pass
 
 ---
 
@@ -114,6 +132,20 @@ def generate_parameter_sensitivity_report(param_name, results):
                 report_lines.append(f"{param_name} = {val:.4f} -> ROI: {roi:.2f}%")
             else:
                 report_lines.append(f"{param_name} = {val:.4f} -> ROI: Error")
+    report_lines.append("==========================================")
+    
+    report_str = "\n".join(report_lines)
+    logger.info(report_str)
+
+def generate_weekly_signal_report(weekly_signal_counts):
+    """
+    주간 신호 발생 건수를 요약하는 리포트를 생성합니다.
+    weekly_signal_counts는 (logger_name, filename, funcName)를 key로 하는 딕셔너리입니다.
+    """
+    report_lines = []
+    report_lines.append("=== WEEKLY SIGNAL REPORT ===")
+    for (logger_name, filename, funcname), count in weekly_signal_counts.items():
+        report_lines.append(f"{filename}:{funcname} (logger: {logger_name}) - 주간 신호 {count}회 발생")
     report_lines.append("==========================================")
     
     report_str = "\n".join(report_lines)
@@ -219,6 +251,7 @@ def initialize_root_logger():
     queue_listener = QueueListener(log_queue, console_handler)
     queue_listener.start()
     
+    # Aggregator handler (주간 신호 로깅 포함) 추가
     if AggregatingHandler is not None:
         aggregator_handler = AggregatingHandler(level=detail_level)
         aggregator_handler.addFilter(lambda record: not getattr(record, '_is_summary', False))
@@ -256,7 +289,6 @@ def shutdown_logging():
 
 ---
 
-# logs/logging_util.py
 import threading
 import os
 import glob
@@ -265,7 +297,8 @@ from logs.logger_config import setup_logger
 class LoggingUtil:
     """
     LoggingUtil는 이벤트 로깅과 로그 파일 관리를 제공합니다.
-    이벤트 발생 시 INFO 레벨 로그를 기록하며, clear_log_files()로 logs 폴더 내 .log 파일을 삭제합니다.
+    이벤트 발생 시 INFO/DEBUG 레벨 로그를 기록하며, clear_log_files()로 logs 폴더 내 .log 파일을 삭제합니다.
+    또한, log_weekly_signal() 메서드를 통해 주간 전략 신호 이벤트를 별도로 로깅할 수 있습니다.
     """
     def __init__(self, module_name: str):
         self.module_name = module_name
@@ -279,6 +312,14 @@ class LoggingUtil:
     def log_summary(self) -> None:
         with self.lock:
             self.logger.debug(f"[{self.module_name}] Summary requested.")
+
+    def log_weekly_signal(self, event_message: str) -> None:
+        """
+        주간 전략 신호 이벤트를 INFO 레벨로 로깅하며, 기록에 'is_weekly_signal' 플래그를 추가합니다.
+        이를 통해 AggregatingHandler에서 별도로 집계할 수 있습니다.
+        """
+        with self.lock:
+            self.logger.debug(f"[WEEKLY_SIGNAL] {event_message}", extra={'is_weekly_signal': True})
 
     @staticmethod
     def clear_log_files():

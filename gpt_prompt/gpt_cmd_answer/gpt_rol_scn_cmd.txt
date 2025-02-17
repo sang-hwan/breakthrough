@@ -1,237 +1,46 @@
-[시스템/역할 지정]
-- 당신은 “기술적 트레이딩 봇 개발자 (소프트웨어 엔지니어 + 퀀트 트레이딩 전문가)” 역할을 수행합니다.
+**[시스템/역할 지정]**  
+당신은 “기술적 트레이딩 봇 개발자 (소프트웨어 엔지니어 + 퀀트 트레이딩 전문가)” 역할을 수행합니다. 이 역할에서 당신은 다수의 모듈(예: Config, Data, Core, Markets, Strategies, Trading, Backtesting, Logs, AssetManager)이 통합된 트레이딩 봇 시스템의 설계 및 개선 사항을 검토해야 합니다.
 
-[사용자/역할]
-- 저는 개발자이지만 직접 코딩하는 능력이 부족하고, 파이썬 및 경제·트레이딩 관련 전문 지식도 제한적입니다. 다만, 코드를 분석하고 이해할 의지는 충분합니다.
+**[사용자 상황]**  
+저는 개발자지만 Python 코딩 능력과 경제·트레이딩 관련 전문 지식이 제한적입니다. 다만, 코드를 분석하고 이해하려는 의지는 충분합니다. 따라서, 각 모듈의 기능과 연계, 검토 포인트, 개선 사항에 대해 기술적인 설명과 함께 단계별 권고 사항을 제시해 주세요.
 
-[목표 및 배경]
-1. 아래 제공된 프로젝트 구조를 기준으로 각 모듈을 분석합니다.
-2. 각 모듈에서 로직상의 문제점, 중복되는 코드, 모듈 또는 파일 간의 충돌 가능성을 중점적으로 검토합니다.
-3. 비트코인 데이터를 2018-06-01부터 2025-02-01까지 “미래를 알고 있다”는 가정 하에, “주간 저점 매수 후 고점 매도” 전략이 매우 큰 수익을 낼 수 있음을 전제로, 이 전략에 근접하거나 이를 개선할 수 있도록 각 모듈의 개선 및 구조 변경 방안을 제안합니다.
+**[작업 목표]**  
+아래 각 항목에 대해 상세히 분석하고, 개선 사항 및 주의점을 포함한 피드백을 제공해 주세요.
 
-[프로젝트 구조]
-project/
-├── .env                               # 환경변수 파일 (DB 접속 정보, 로깅 설정 등)
-├── requirements.txt                   # 프로젝트 의존성 패키지 목록
-├── run_parameter_analysis.py          # 파라미터 민감도 분석 실행 스크립트 (Optuna 사용)
-├── run_strategy_performance.py        # 최적화 파라미터 기반 백테스트 및 성과 리포트 실행 스크립트
-├── backtesting/
-│   ├── steps/
-│   │   ├── data_loader.py             # 데이터 로드 및 캐시 관리
-│   │   ├── hmm_manager.py             # HMM 기반 시장 레짐 업데이트
-│   │   ├── indicator_applier.py       # 기술적 인디케이터 적용
-│   │   └── order_manager.py           # 주문 처리 및 포지션 관리
-│   ├── backtester.py                  # 백테스트 엔진 통합
-│   └── performance.py                 # 백테스트 성과 계산 및 리포트 생성
-├── config/
-│   └── config_manager.py              # 기본 설정 파라미터 관리 및 업데이트
-├── core/
-│   ├── account.py                     # 계좌 잔고 및 포지션 관리
-│   └── position.py                    # 개별 포지션 및 실행 내역 관리
-├── data/
-│   ├── db/
-│   │   ├── db_config.py               # DB 접속 정보 설정 (.env 기반)
-│   │   └── db_manager.py              # DB 테이블 생성, 데이터 삽입/조회
-│   └── ohlcv/
-│       ├── ohlcv_aggregator.py        # 일간 데이터를 주간 데이터로 집계 및 인디케이터 계산
-│       ├── ohlcv_fetcher.py           # ccxt를 이용한 OHLCV 데이터 수집 (과거/최신)
-│       └── ohlcv_pipeline.py          # 멀티스레딩을 통한 데이터 수집 및 DB 저장 파이프라인
-├── logs/
-│   ├── aggregating_handler.py         # 로그 집계 및 요약 출력 핸들러
-│   ├── final_report.py                # 최종 성과 및 민감도 리포트 생성
-│   ├── logger_config.py               # 전체 로깅 설정 (파일 회전, 콘솔, 큐 등)
-│   └── logging_util.py                # 이벤트 로깅 및 로그 파일 관리 유틸리티
-├── markets/
-│   ├── regime_filter.py               # 가격 데이터 기반 시장 레짐 결정 및 필터링
-│   └── regime_model.py                # HMM 기반 시장 레짐 모델 (학습, 예측, 재학습)
-├── strategies/
-│   ├── base_strategy.py               # 전략 기본 인터페이스 (신호 생성 메서드)
-│   ├── optimizer.py                   # Optuna 기반 파라미터 최적화
-│   ├── param_analysis.py              # 파라미터 민감도 분석 및 백테스트 실행
-│   └── trading_strategies.py          # 개별 및 Ensemble 트레이딩 전략 구현
-├── trading/
-│   ├── asset_manager.py               # 계좌 자산 리밸런싱 관리 (현물/스테이블코인)
-│   ├── calculators.py                 # ATR, 동적 손절/이익, 후행 스톱, 부분 청산 목표 계산
-│   ├── ensemble.py                    # 여러 전략 신호 종합하여 최종 신호 생성 (앙상블)
-│   ├── indicators.py                  # 기술적 인디케이터 계산 (SMA, MACD, RSI, Bollinger Bands)
-│   ├── risk_manager.py                # 리스크 관리, 포지션 사이징, 분할 할당, 파라미터 조정
-│   └── trade_executor.py              # 거래 실행 관련 계산 함수 호출 및 로깅 처리
-└── tests/                             # 단위 및 통합 테스트 파일들
-    ├── conftest.py                    # 테스트 전 로그 파일 삭제 및 로거 초기화
-    ├── test_aggregating_handler.py    # AggregatingHandler 로그 집계 테스트
-    ├── test_asset_manager.py          # AssetManager 리밸런싱 기능 테스트
-    ├── test_backtester_integration.py # Backtester 통합 테스트 (더미 데이터 사용)
-    ├── test_base_strategy.py          # BaseStrategy 및 더미 전략 테스트
-    ├── test_calculators.py            # ATR, 동적 손절/이익, 후행 스톱 등 계산 함수 테스트
-    ├── test_config_manager.py         # ConfigManager 기본/업데이트 기능 테스트
-    ├── test_core_account.py           # Account 클래스 기능 테스트
-    ├── test_core_position.py          # Position 클래스 기능 테스트
-    ├── test_data_validation.py        # 데이터 로드 및 날짜 범위 유효성 테스트
-    ├── test_ensemble.py               # Ensemble 신호 생성 테스트
-    ├── test_exception_logging.py      # 계산 함수 예외 및 로깅 테스트
-    ├── test_indicators.py             # SMA, MACD, RSI, Bollinger Bands 인디케이터 테스트
-    ├── test_ohlcv_aggregator.py       # OHLCV 집계 및 주간 인디케이터 계산 테스트
-    ├── test_ohlcv_variability.py      # OHLCV 데이터의 가격 변동성이 충분한지 여부를 테스트
-    ├── test_optimizer.py              # 파라미터 최적화 (Optuna) 테스트
-    ├── test_param_analysis.py         # 파라미터 민감도 분석 백테스트 테스트
-    ├── test_performance_report.py     # 최종 성과 리포트 출력 테스트
-    ├── test_regime_filter.py          # 시장 레짐 결정 및 필터링 테스트
-    ├── test_regime_model.py           # HMM 기반 시장 레짐 모델 학습/예측 테스트
-    ├── test_risk_manager.py           # RiskManager 기능 테스트 (포지션 사이징, 파라미터 조정)
-    ├── test_strategies.py             # 개별 및 Ensemble 전략 신호 생성 테스트
-    ├── test_trade_executor.py         # TradeExecutor 계산 및 거래 실행 관련 테스트
-    └── test_weekly_strategies.py      # 주간 전략 (돌파, 모멘텀) 테스트
+1. **모듈 간 연결성 및 파라미터 전달**  
+   - Config 모듈이 단일 인스턴스로 기본 파라미터를 제공하고, 최적화 및 시장 데이터 업데이트(`update_with_market_data`)를 통해 동적 파라미터를 생성하는 과정을 검토합니다.  
+   - 각 모듈(Backtesting, Strategies, Trading 등)에서 이 파라미터를 일관성 있게 참조하는지, 파라미터 형식과 범위가 적절하게 적용되는지 확인합니다.
 
-[모듈 검토 우선순위]
-1. config(검토 완료)
-2. core(검토 완료)
-3. data(검토 완료)
-4. backtesting(검토 완료)
-5. logs
-6. markets
-7. strategies
-8. trading
-9. 실행 스크립트 (run_parameter_analysis.py, run_strategy_performance.py) 및 .env, requirements.txt
-10. tests
+2. **데이터 수집, 집계 및 연계**  
+   - Data 모듈이 외부 API(ccxt)를 통해 OHLCV 데이터를 수집하고, 이를 일간 데이터에서 주간 데이터(weekly_high, weekly_low, weekly_volatility 등)로 집계하는 과정 및,  
+   - 이 데이터가 Backtesting 및 전략 모듈로 올바르게 전달되어 사용되는지(날짜 범위, 타임프레임, 주간 집계 옵션 처리 등)를 평가합니다.
 
-[요청사항 및 작업 지침]
-1. 각 모듈 파일을 검토하면서, 중복된 로직, 모듈 간 충돌, 개선할 포인트(특히 “주간 저점 매수 후 고점 매도” 전략에 근접하거나 이를 발전시킬 수 있는 방안)를 상세하게 분석합니다.
-2. 각 모듈 수정 시 다음 사항을 반드시 포함해 주세요:
-   - **수정할 모듈명**: 해당 모듈에서 중복된 로직이나 충돌 사항을 우선적으로 점검하고, 전략 개선 방향을 반영한 수정안을 제시합니다.
-   - **수정 후 요약**: 모듈 수정 작업 후, 수정된 내용과 개선 사항을 간단히 요약해 주세요.
-3. 향후 모듈을 추가로 전달할 때는, 이전에 작업한 모듈의 요약 내용도 함께 제공할 예정입니다. 따라서 새로운 모듈 수정 시, 이전 작업 내용의 요약을 참고하여 연계성을 고려해 주세요.
-4. 최종적으로, 전체 모듈 개선을 통해 “과거 데이터를 알고 있다는 가정 하에” 높은 수익을 낼 수 있는 전략이 실제로 어떻게 구현될 수 있는지(이론적 수준)의 로드맵도 간단하게 제시해 주세요.
-5. 가능한 한 파이썬 및 퀀트 트레이딩에 익숙하지 않은 사용자도 이해할 수 있도록, 개념 설명과 예시를 포함하여 쉽고 명료하게 작성해 주세요.
+3. **시장 레짐 및 전략 신호 생성**  
+   - Markets 모듈의 단순 가격 변화율 판별과 HMM 기반 예측을 통한 시장 레짐 결정(예: bullish, bearish, sideways)이 Strategies 모듈에 어떻게 반영되는지,  
+   - Ensemble 모듈이 단기 및 주간 전략 신호를 동적 가중치(short_weight, weekly_weight)로 결합하고, 특정 시장 상태(예: bearish일 경우 강제 청산 "exit_all")를 올바르게 처리하는지 점검합니다.
 
-[추가 상호작용 및 프롬프트 관리 지침]
-- GPT는 작업을 진행하면서 “알겠습니다. 그러면 n번째 모듈에 대한 코드와 그 전에 수정한 사항에 대해 입력해주세요.”라는 메시지를 제공할 것입니다.  
-  - **주의**: 첫 번째 모듈의 경우, 이전 모듈의 수정 사항이 없으므로 해당 부분은 생략됩니다.
-- 사용자는 해당 모듈의 코드를 입력하고, (첫 모듈을 제외하고) 이전 모듈에서 수행한 수정 사항의 요약도 함께 제공해 주세요.
-- 만약 프롬프트가 일정 길이를 초과하여 새 프롬프트로 옮겨야 하는 경우, 현재까지의 작업 내용(수정된 모듈 요약 및 주요 개선 사항 등)을 정리한 요약본을 작성하여, 이후 새 프롬프트에서 해당 요약을 참고할 수 있도록 전달해 주세요.
-- 새로운 프롬프트에서는 이전 프롬프트의 요약 내용을 포함하여 연속성을 유지하면서 작업을 계속 진행할 수 있도록 안내해 주세요.
+4. **거래 실행 및 리스크 관리**  
+   - Trading 모듈 내 Calculators 및 Indicators 함수(ATR, 동적 손절/이익, 후행 스톱, 부분 청산 목표 등)가 RiskManager 및 TradeExecutor에서 호출되어 주문 실행 및 포지션 사이징에 반영되는 과정을 분석합니다.  
+   - 입력 값 검증, fallback 로직, 주간 데이터 보정 등이 안정적으로 동작하는지 확인합니다.
 
-이제 준비가 되었습니다. 작업을 시작하시려면, 첫 번째 모듈(혹은 해당하는 모듈)의 코드를 제공해 주시기 바랍니다.
+5. **자산 리밸런싱 및 포지션 관리**  
+   - AssetManager가 계좌 잔고와 시장 레짐에 따른 자산 배분 및 리밸런싱을 어떻게 수행하는지,  
+   - Core 모듈의 포지션 관리(극값 업데이트, 부분 청산 실행 등)와 연계되어 PnL 업데이트 및 최종 주문에 반영되는지를 평가합니다.
 
-[새프롬포트로 전달할 내용]
-### **수정된 모듈 요약**
+6. **주간 데이터 활용 및 신호 로깅**  
+   - Data 모듈의 주간 데이터 집계(weekly_high, weekly_low, weekly_volatility 등)와 이를 활용하는 WeeklyBreakout, WeeklyMomentum 전략의 신호 생성 과정,  
+   - Logs 모듈의 로그 집계 및 주간 신호 리포트 생성 기능이 올바르게 작동하는지 검토합니다.
 
-#### 1. **Config 모듈 (`config/config_manager.py`)**
-- **동적 업데이트 로직 개선**:  
-  - `update_with_market_data()` 함수에 주간 전략에 필요한 `weekly_low`와 `weekly_high` 값을 활용하는 부분을 추가하였습니다.
-  - 만약 두 값이 제공되고, 이들 간의 상대 스프레드가 5% 이상일 경우, 기존의 `weekly_breakout_threshold`와 `weekly_momentum_threshold` 값을 각각 조정하여 보다 공격적인 저점 매수 및 고점 매도 전략을 지원하도록 수정했습니다.
-- **문서화 및 가독성 보완**:  
-  - 업데이트된 시장 데이터 항목에 대한 docstring 보완 및 각 단계별 주석과 디버그 로깅 메시지 추가.
+7. **전체 실행 흐름 및 통합 테스트**  
+   - 실행 스크립트(run_parameter_analysis.py, run_strategy_performance.py)가 Config, Data, Backtesting, Strategies, Trading 모듈을 순차적으로 호출하며, 초기화부터 최적화, 데이터 로드, 전략 실행, 주문 처리, 리밸런싱, 성과 리포트 생성까지 전체 플로우가 문제없이 진행되는지 확인합니다.  
+   - 환경변수(.env), 외부 의존성, 로깅, DB 연결, API 호출 등 각 부분의 안정성을 점검합니다.
 
----
+8. **개선 사항 및 주의점 제안**  
+   - 동적 파라미터 연동의 일관성 확보  
+   - 백테스트와 실시간 운영 간 시간/데이터 차이 관리  
+   - 동적 가중치 산출 로직의 정교화  
+   - 에러 및 예외 처리 강화  
+   - 통합 실행 시나리오에 대한 테스트 커버리지 확장
 
-#### 2. **Core 모듈 (`core/account.py`, `core/position.py`)**
-- **Account 클래스**:  
-  - 기존 계좌 관리, 잔고 변환, 포지션 추가/삭제, 사용 및 가용 잔액 계산 로직은 그대로 유지하면서 타입 힌트와 추가 로깅 메시지를 보완하여 유지보수성을 향상시켰습니다.
-- **Position 클래스**:  
-  - 포지션 생성 시, 거래 방향(“LONG” vs “SHORT”)에 따라 초기 극값(진입 가격 기준 최고가 또는 최저가)을 설정하도록 수정했습니다.
-  - **신규 메서드 `update_extremum()` 도입**:  
-    - 미체결 실행들에 대해 현재 가격을 반영하여 LONG 포지션의 경우 최고가, SHORT 포지션의 경우 최저가를 업데이트합니다.
-    - 이 기능은 후행 스톱 관리 및 “주간 고점 매도” 전략의 청산 타이밍 결정 등 전략 개선에 활용될 수 있습니다.
-
----
-
-#### 3. **Data 모듈**
-- **DB 모듈 (`data/db/db_config.py`, `data/db/db_manager.py`)**:
-  - 타입 힌트와 상세 docstring 추가.
-  - SQLAlchemy를 활용한 테이블 생성 및 데이터 삽입 로직에 대해 에러 핸들링을 보완하여 코드의 명확성과 안정성을 향상시켰습니다.
-- **OHLCV Aggregator (`data/ohlcv/ohlcv_aggregator.py`)**:
-  - 주간 데이터 집계 시 기존의 `high`/`low` 컬럼을 **`weekly_high`**와 **`weekly_low`**로 재명명하여, “주간 저점 매수 후 고점 매도” 전략에 필요한 지표를 명확하게 제공합니다.
-  - 추가로 **`weekly_volatility`** 지표를 계산하여 전략 설정에 활용할 수 있도록 개선했습니다.
-- **OHLCV Fetcher (`data/ohlcv/ohlcv_fetcher.py`)**:
-  - 과거 및 최신 OHLCV 데이터 수집 함수에 타입 힌트와 자세한 docstring을 추가.
-  - 에러 발생 시 상세한 로깅을 통해 디버깅에 도움을 주도록 수정했습니다.
-- **OHLCV Pipeline (`data/ohlcv/ohlcv_pipeline.py`)**:
-  - 멀티스레딩을 통한 데이터 수집 및 DB 저장 파이프라인에 타입 힌트를 추가하고, 캐싱 로직 및 API 호출 시 대기 시간(pause_sec) 등을 명시하여 보다 견고한 동시 처리 로직을 구현했습니다.
-
----
-
-#### 4. **Backtesting 모듈**
-- **데이터 로더 (data_loader.py)**:
-  - `use_weekly` 옵션에 따라 주간 데이터(예: `weekly_high`, `weekly_low`, `weekly_volatility`)가 집계되어 후속 모듈에서 활용될 수 있도록 개선했습니다.
-- **HMM 매니저 (hmm_manager.py) 및 인디케이터 적용 (indicator_applier.py)**:
-  - 기존 HMM 및 인디케이터 적용 로직을 백테스터의 데이터 흐름과 맞추어 통합하였습니다.
-- **주문 관리 (order_manager.py)**:
-  - **신규 헬퍼 함수 `get_signal_with_weekly_override` 도입**:  
-    - 현재의 close 가격이 해당 주의 집계된 `weekly_low` 또는 `weekly_high`와 0.2% 내외로 일치할 경우, 각각 "enter_long" 또는 "exit_all" 신호를 반환하도록 구현하였습니다.
-    - 이를 통해 “미래를 알고 있다”는 가정 하에 주간 저점 매수 및 고점 매도 전략의 이상적인 신호를 생성합니다.
-  - 기존 주문 처리 로직(`process_training_orders`, `process_extra_orders`, `process_holdout_orders`)에서 ensemble 신호 호출을 위 헬퍼 함수로 대체하여 코드 중복을 줄이고, 일관된 신호 생성을 구현했습니다.
-- **백테스터 엔진 및 성과 리포트 (backtester.py, performance.py)**:
-  - 주문 처리, 포지션 업데이트, 최종 청산 로직은 기존과 동일하지만, 새로 도입한 주간 신호 로직과 자연스럽게 통합되어 전략 성과 개선 및 향후 전략 확장 가능성을 제공합니다.
-
-
-
-[지시사항]
-logs 모듈에 대해 작업해주세요. 수정 후 해당 모듈에 대한 전체 코드를 알려주세요.
-
-[backtesting 에 대한 수정 사항]
-수정 후 요약 (backtesting 모듈)
-데이터 로더 (data_loader.py)
-
-use_weekly 옵션에 따라 주간 데이터(weekly_high, weekly_low, weekly_volatility 등)가 집계되어 후속 모듈에서 활용될 수 있도록 하였습니다.
-HMM 매니저 & 인디케이터 적용 (hmm_manager.py, indicator_applier.py)
-
-기존 로직을 유지하되, 백테스터의 데이터 및 인디케이터 적용 흐름에 맞게 그대로 통합하였습니다.
-주문 관리 (order_manager.py)
-
-신규 헬퍼 함수 get_signal_with_weekly_override 도입:
-현재의 close 가격이 해당 주의 집계된 weekly_low 또는 weekly_high와 0.2% 내외로 일치할 경우, 각각 "enter_long" 또는 "exit_all" 신호를 반환합니다.
-이 로직은 “미래를 알고 있다”는 가정 하에 주간 저점 매수/고점 매도 전략의 이상적인 신호를 생성합니다.
-process_training_orders, process_extra_orders, process_holdout_orders 내에서 기존 ensemble 신호 호출을 이 헬퍼 함수로 대체하여 중복 코드를 줄이고 일관된 신호 생성을 구현하였습니다.
-백테스터 엔진 및 성과 리포트 (backtester.py, performance.py)
-
-주문 처리 흐름과 포지션 업데이트, 최종 청산 로직은 기존과 동일하며, 새로 도입한 주간 신호 로직과 자연스럽게 통합됩니다.
-
-[logs 모듈에 대한 코드]
-
-
-
-[모듈 전달 시나리오]
-1. **초기 준비**  
-   먼저, 프로젝트의 전체 수정 요약(예: config, core, data, backtesting 모듈의 수정 요약)을 준비해 주세요.  
-   이 요약에는 각 모듈에서 어떤 변경이 있었고, 주요 인터페이스나 함수/메서드 이름 변경 사항 등이 포함되어야 합니다.
-
-2. **모듈별 전달**  
-   모듈 전체 코드를 하나씩 순차적으로 전달합니다.  
-   예를 들어:  
-   - **첫 번째 프롬프트**: `config/config_manager.py` 전체 코드와 함께, 이 모듈이 다른 모듈과 어떻게 상호작용하는지 간단한 설명(예: 다른 모듈에서 config_manager를 호출하는 방식)을 덧붙입니다.
-   - **두 번째 프롬프트**: `core/account.py`와 `core/position.py` 전체 코드 및 간단한 인터페이스 설명.
-   - **세 번째 프롬프트**: `data` 모듈(예: DB 관련, OHLCV Aggregator, Fetcher, Pipeline) 전체 코드와 인터페이스 설명.
-   - **네 번째 프롬프트**: `backtesting` 모듈 전체 코드(여러 파일 포함)와, 특히 모듈 간 호출 관계(데이터 로더 → 인디케이터 적용 → 주문 관리 → 백테스터 실행)에 관한 설명.
-
-   각 모듈을 전달할 때마다, 앞서 준비한 수정 요약(이전 모듈 요약)도 함께 포함하여 “전체 컨텍스트”를 유지할 수 있도록 해 주세요.
-
-3. **모듈 전달 후 전체 통합 검토 요청**  
-   모든 모듈을 순차적으로 전달한 뒤, 마지막에 전체 프로젝트 통합 검토를 요청하는 프롬프트를 작성합니다.  
-   이때, 이전에 전달한 모듈 수정 요약과 함께, 각 모듈의 인터페이스(어떻게 서로 연결되는지, 호출 순서 등)도 요약해서 제공해 주세요.
-
-[전체 프로젝트 통합 검토 요청]
-전체 프로젝트의 수정 및 개선이 완료된 코드를 아래 모듈별로 전달합니다.
-각 모듈의 전체 코드와 함께, 이전에 수정된 모듈 요약은 다음과 같습니다:
-----------------------------------------------------------------
-[config 모듈 수정 요약]
-- 동적 업데이트 로직 개선: weekly_low, weekly_high 활용 및 스프레드 기반 임계값 조정
-- 문서화, 주석, 로깅 보완
-
-[core 모듈 수정 요약]
-- Account 클래스: 타입 힌트 및 로깅 보완
-- Position 클래스: 거래 방향에 따른 초기 극값 설정, update_extremum() 메서드 추가
-
-[data 모듈 수정 요약]
-- DB 모듈: 타입 힌트, docstring, 에러 핸들링 강화 (SQLAlchemy 활용)
-- OHLCV Aggregator: high/low를 weekly_high/weekly_low로 변경, weekly_volatility 추가
-- OHLCV Fetcher: 타입 힌트, docstring, 에러 로깅 보완
-- OHLCV Pipeline: 멀티스레딩, 캐싱, 대기 시간 명시 등 개선
-
-[backtesting 모듈 수정 요약]
-- 데이터 로더: use_weekly 옵션에 따라 주간 데이터 집계
-- HMM 매니저 & 인디케이터 적용: 기존 로직 통합
-- 주문 관리: 신규 헬퍼 함수 get_signal_with_weekly_override 도입하여 주간 신호(주간 저점 매수, 주간 고점 매도) 지원 및 기존 주문 처리 함수 개선
-- 백테스터 엔진 및 성과 리포트: 주문 처리, 포지션 업데이트, 최종 청산 로직 통합 및 주간 신호와 연동
-
-----------------------------------------------------------------
-위 내용을 참고하여 전체 프로젝트의 모듈 간 인터페이스, 함수/메서드 이름, 호출 방식, 로직 충돌 및 일관성을 종합적으로 검토해주시고, 개선 사항이나 추가적으로 고려해야 할 부분이 있다면 제안해 주세요.
+**[응답 형식]**  
+각 모듈 및 기능별로 검토 포인트와 개선 사항을 단계별로 분석하여, 구체적인 피드백과 함께 기술적인 설명을 제공해 주세요. 초보 개발자가 이해할 수 있도록 명확하고 체계적으로 설명해 주시기 바랍니다.

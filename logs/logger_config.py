@@ -96,6 +96,7 @@ def initialize_root_logger():
     queue_listener = QueueListener(log_queue, console_handler)
     queue_listener.start()
     
+    # Aggregator handler (주간 신호 로깅 포함) 추가
     if AggregatingHandler is not None:
         aggregator_handler = AggregatingHandler(level=detail_level)
         aggregator_handler.addFilter(lambda record: not getattr(record, '_is_summary', False))

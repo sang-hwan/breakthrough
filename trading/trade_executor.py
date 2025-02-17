@@ -12,7 +12,10 @@ logger = setup_logger(__name__)
 
 class TradeExecutor:
     @staticmethod
-    def compute_atr(data: pd.DataFrame, period: int = 14):
+    def compute_atr(data: pd.DataFrame, period: int = 14) -> pd.DataFrame:
+        """
+        Computes ATR for the provided data.
+        """
         try:
             result = calculate_atr(data, period)
             logger.debug("ATR computed successfully.")
@@ -23,6 +26,9 @@ class TradeExecutor:
 
     @staticmethod
     def calculate_dynamic_stop_and_take(entry_price: float, atr: float, risk_params: dict):
+        """
+        Calculates dynamic stop-loss and take-profit prices.
+        """
         try:
             stop_loss, take_profit = calculate_dynamic_stop_and_take(entry_price, atr, risk_params)
             logger.debug(f"TradeExecutor: dynamic stop and take computed: stop_loss={stop_loss:.2f}, take_profit={take_profit:.2f}")
@@ -33,6 +39,9 @@ class TradeExecutor:
 
     @staticmethod
     def adjust_trailing_stop(current_stop: float, current_price: float, highest_price: float, trailing_percentage: float):
+        """
+        Adjusts the trailing stop price.
+        """
         try:
             new_stop = adjust_trailing_stop(current_stop, current_price, highest_price, trailing_percentage)
             logger.debug(f"TradeExecutor: trailing stop adjusted to {new_stop:.2f}")
@@ -44,6 +53,9 @@ class TradeExecutor:
     @staticmethod
     def calculate_partial_exit_targets(entry_price: float, partial_exit_ratio: float = 0.5,
                                        partial_profit_ratio: float = 0.03, final_profit_ratio: float = 0.06):
+        """
+        Calculates partial exit targets.
+        """
         try:
             targets = calculate_partial_exit_targets(entry_price, partial_exit_ratio, partial_profit_ratio, final_profit_ratio)
             logger.debug(f"TradeExecutor: partial exit targets computed: {targets}")

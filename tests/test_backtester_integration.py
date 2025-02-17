@@ -24,7 +24,6 @@ def test_backtester_integration(dummy_data):
     # 더미 데이터를 직접 할당
     backtester.df_long = df_long.copy()
     backtester.df_short = df_short.copy()
-    backtester.df_short["market_regime"] = "bullish"
     backtester.df_train = df_short.copy()
     backtester.last_signal_time = None
     backtester.last_rebalance_time = None
@@ -38,7 +37,7 @@ def test_backtester_integration(dummy_data):
     backtester.ensemble_manager.get_final_signal = lambda regime, liquidity, data, current_time, data_weekly=None: "hold"
     # 더미 AssetManager (rebalance 메서드 no-op)
     backtester.asset_manager = type("DummyAssetManager", (), {"rebalance": lambda self, regime: None})()
-    # 주간 데이터도 생성 (단순하게 long 데이터의 주간 마지막값)
+    # 주간 데이터 생성 (long 데이터의 주간 마지막값 사용)
     backtester.df_weekly = df_long.resample('W').last()
     
     # 백테스트 실행 (오류 없이 리스트 반환되어야 함)

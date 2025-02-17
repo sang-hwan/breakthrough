@@ -1,6 +1,7 @@
 # strategies/trading_strategies.py
 from logs.logger_config import setup_logger
 from strategies.base_strategy import BaseStrategy
+from markets.regime_filter import determine_weekly_extreme_signal
 
 class SelectStrategy(BaseStrategy):
     def __init__(self):
@@ -130,6 +131,7 @@ class HighFrequencyStrategy(BaseStrategy):
 class WeeklyBreakoutStrategy(BaseStrategy):
     def __init__(self):
         super().__init__()
+        self.previous_signal = None
 
     def get_signal(self, data_weekly, current_time, breakout_threshold=0.01, **kwargs):
         try:
@@ -138,14 +140,23 @@ class WeeklyBreakoutStrategy(BaseStrategy):
                 return "hold"
             prev_week = weekly_data.iloc[-2]
             current_week = weekly_data.iloc[-1]
-            if current_week.get('close') is None or prev_week.get('high') is None or prev_week.get('low') is None:
-                return "hold"
-            if current_week.get('close') >= prev_week.get('high') * (1 + breakout_threshold):
-                signal = "enter_long"
-            elif current_week.get('close') <= prev_week.get('low') * (1 - breakout_threshold):
-                signal = "exit_all"
+            # 신규: 주간 극값 신호 판단 (주간 저점 매수/고점 매도)
+            price_data = {"current_price": current_week.get('close')}
+            weekly_extremes = {"weekly_low": prev_week.get('low'), "weekly_high": prev_week.get('high')}
+            extreme_signal = determine_weekly_extreme_signal(price_data, weekly_extremes, threshold=breakout_threshold)
+            if extreme_signal:
+                signal = extreme_signal
             else:
-                signal = "hold"
+                # 기존 돌파 로직
+                if current_week.get('close') >= prev_week.get('high') * (1 + breakout_threshold):
+                    signal = "enter_long"
+                elif current_week.get('close') <= prev_week.get('low') * (1 - breakout_threshold):
+                    signal = "exit_all"
+                else:
+                    signal = "hold"
+            if self.previous_signal != signal:
+                self.logger.debug(f"WeeklyBreakoutStrategy signal changed to {signal} at {current_time}")
+                self.previous_signal = signal
             return signal
         except Exception:
             return "hold"
@@ -153,6 +164,7 @@ class WeeklyBreakoutStrategy(BaseStrategy):
 class WeeklyMomentumStrategy(BaseStrategy):
     def __init__(self):
         super().__init__()
+        self.previous_signal = None
 
     def get_signal(self, data_weekly, current_time, momentum_threshold=0.5, **kwargs):
         try:
@@ -162,7 +174,11 @@ class WeeklyMomentumStrategy(BaseStrategy):
             momentum = weekly_data.iloc[-1].get('weekly_momentum')
             if momentum is None:
                 return "hold"
-            return "enter_long" if momentum >= momentum_threshold else ("exit_all" if momentum <= -momentum_threshold else "hold")
+            signal = "enter_long" if momentum >= momentum_threshold else ("exit_all" if momentum <= -momentum_threshold else "hold")
+            if self.previous_signal != signal:
+                self.logger.debug(f"WeeklyMomentumStrategy signal changed to {signal} at {current_time}")
+                self.previous_signal = signal
+            return signal
         except Exception:
             return "hold"
 
@@ -175,4 +191,13 @@ class TradingStrategies:
         self.weekly_momentum = self.ensemble.weekly_momentum_strategy
 
     def get_final_signal(self, market_regime, liquidity_info, data, current_time, data_weekly=None, **kwargs):
-        return self.ensemble.get_final_signal(market_regime, liquidity_info, data, current_time, data_weekly, **kwargs)
+        # 우선 Ensemble의 최종 신호를 획득
+        ensemble_signal = self.ensemble.get_final_signal(market_regime, liquidity_info, data, current_time, data_weekly, **kwargs)
+        # HMM 기반 시장 레짐에 따른 신호 override (예: bearish이면 강제 청산)
+        if market_regime == "bearish":
+            self.logger.debug("Market regime bearish: overriding final signal to exit_all")
+            return "exit_all"
+        elif market_regime == "bullish":
+            self.logger.debug("Market regime bullish: ensuring signal is at least enter_long")
+            return "enter_long" if ensemble_signal == "hold" else ensemble_signal
+        return ensemble_signal

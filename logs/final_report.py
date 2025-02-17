@@ -83,3 +83,17 @@ def generate_parameter_sensitivity_report(param_name, results):
     
     report_str = "\n".join(report_lines)
     logger.info(report_str)
+
+def generate_weekly_signal_report(weekly_signal_counts):
+    """
+    주간 신호 발생 건수를 요약하는 리포트를 생성합니다.
+    weekly_signal_counts는 (logger_name, filename, funcName)를 key로 하는 딕셔너리입니다.
+    """
+    report_lines = []
+    report_lines.append("=== WEEKLY SIGNAL REPORT ===")
+    for (logger_name, filename, funcname), count in weekly_signal_counts.items():
+        report_lines.append(f"{filename}:{funcname} (logger: {logger_name}) - 주간 신호 {count}회 발생")
+    report_lines.append("==========================================")
+    
+    report_str = "\n".join(report_lines)
+    logger.info(report_str)

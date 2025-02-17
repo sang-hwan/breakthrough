@@ -6,8 +6,12 @@ class RiskManager:
         self.logger = setup_logger(__name__)
 
     def compute_position_size(self, available_balance: float, risk_percentage: float, entry_price: float,
-                            stop_loss: float, fee_rate: float = 0.001, min_order_size: float = 1e-8,
-                            volatility: float = 0.0, weekly_volatility: float = None, weekly_risk_coefficient: float = 1.0) -> float:
+                              stop_loss: float, fee_rate: float = 0.001, min_order_size: float = 1e-8,
+                              volatility: float = 0.0, weekly_volatility: float = None, weekly_risk_coefficient: float = 1.0) -> float:
+        """
+        Computes the position size based on available balance, risk parameters, and market conditions.
+        Incorporates volatility adjustments including weekly volatility if available.
+        """
         if entry_price <= 0 or stop_loss <= 0:
             self.logger.error(f"Invalid entry_price ({entry_price}) or stop_loss ({stop_loss})")
             return 0.0
@@ -33,8 +37,10 @@ class RiskManager:
         self.logger.debug(f"Final computed position size: {final_size:.8f} (min_order_size={min_order_size})")
         return final_size
 
-
     def allocate_position_splits(self, total_size: float, splits_count: int = 3, allocation_mode: str = 'equal', min_order_size: float = 1e-8) -> list:
+        """
+        Allocates the total position size into splits based on the specified allocation mode.
+        """
         if splits_count < 1:
             raise ValueError("splits_count must be at least 1")
         if allocation_mode not in ['equal', 'pyramid_up', 'pyramid_down']:
@@ -50,6 +56,9 @@ class RiskManager:
     def attempt_scale_in_position(self, position, current_price: float, scale_in_threshold: float = 0.02, slippage_rate: float = 0.0,
                                   stop_loss: float = None, take_profit: float = None, entry_time=None, trade_type: str = "scale_in",
                                   dynamic_volatility: float = 1.0):
+        """
+        Attempts to scale in additional positions based on the current market price.
+        """
         if not position or position.is_empty():
             return
         while position.executed_splits < position.total_splits:
@@ -72,6 +81,9 @@ class RiskManager:
                                           bearish_risk_multiplier: float = 0.8, bearish_atr_multiplier_factor: float = 1.1, bearish_profit_ratio_multiplier: float = 0.9,
                                           high_liquidity_risk_multiplier: float = 1.0, low_liquidity_risk_multiplier: float = 0.8, high_atr_multiplier_factor: float = 1.0, low_atr_multiplier_factor: float = 1.1,
                                           high_profit_ratio_multiplier: float = 1.0, low_profit_ratio_multiplier: float = 0.9) -> dict:
+        """
+        Computes risk parameters adjustments based on market regime and liquidity information.
+        """
         regime = regime.lower()
         risk_params = {}
         try:
@@ -115,6 +127,9 @@ class RiskManager:
 
     def adjust_trailing_stop(self, current_stop: float, current_price: float, highest_price: float, trailing_percentage: float,
                                volatility: float = 0.0, weekly_high: float = None, weekly_volatility: float = None) -> float:
+        """
+        Adjusts the trailing stop based on market conditions, considering both intraday and weekly data.
+        """
         if current_stop is None:
             current_stop = highest_price * (1 - trailing_percentage * (1 + volatility))
         new_stop_intraday = highest_price * (1 - trailing_percentage * (1 + volatility))
@@ -130,6 +145,10 @@ class RiskManager:
                                          partial_profit_ratio: float = 0.03, final_profit_ratio: float = 0.06,
                                          final_exit_ratio: float = 1.0, use_weekly_target: bool = False,
                                          weekly_momentum: float = None, weekly_adjustment_factor: float = 0.5):
+        """
+        Calculates partial and final exit targets based on entry price and profit ratios,
+        with optional adjustments using weekly momentum.
+        """
         if use_weekly_target and weekly_momentum is not None:
             adjusted_partial = partial_profit_ratio + weekly_adjustment_factor * weekly_momentum
             adjusted_final = final_profit_ratio + weekly_adjustment_factor * weekly_momentum

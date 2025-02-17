@@ -8,6 +8,9 @@ from logs.logger_config import setup_logger
 logger = setup_logger(__name__)
 
 def compute_sma(data: pd.DataFrame, price_column: str = 'close', period: int = 20, fillna: bool = False, output_col: str = 'sma') -> pd.DataFrame:
+    """
+    Computes the Simple Moving Average (SMA) for the given data.
+    """
     try:
         sma = SMAIndicator(close=data[price_column], window=period, fillna=fillna)
         data[output_col] = sma.sma_indicator()
@@ -17,6 +20,9 @@ def compute_sma(data: pd.DataFrame, price_column: str = 'close', period: int = 2
     return data
 
 def compute_macd(data: pd.DataFrame, price_column: str = 'close', slow_period: int = 26, fast_period: int = 12, signal_period: int = 9, fillna: bool = False, prefix: str = 'macd_') -> pd.DataFrame:
+    """
+    Computes the Moving Average Convergence Divergence (MACD) indicators.
+    """
     try:
         macd = MACD(close=data[price_column],
                     window_slow=slow_period,
@@ -32,6 +38,9 @@ def compute_macd(data: pd.DataFrame, price_column: str = 'close', slow_period: i
     return data
 
 def compute_rsi(data: pd.DataFrame, price_column: str = 'close', period: int = 14, fillna: bool = False, output_col: str = 'rsi') -> pd.DataFrame:
+    """
+    Computes the Relative Strength Index (RSI) for the given data.
+    """
     try:
         rsi = RSIIndicator(close=data[price_column], window=period, fillna=fillna)
         data[output_col] = rsi.rsi()
@@ -41,6 +50,9 @@ def compute_rsi(data: pd.DataFrame, price_column: str = 'close', period: int = 1
     return data
 
 def compute_bollinger_bands(data: pd.DataFrame, price_column: str = 'close', period: int = 20, std_multiplier: float = 2.0, fillna: bool = False, prefix: str = 'bb_') -> pd.DataFrame:
+    """
+    Computes Bollinger Bands for the given data.
+    """
     try:
         bb = BollingerBands(close=data[price_column], window=period, window_dev=std_multiplier, fillna=fillna)
         data[f'{prefix}mavg'] = bb.bollinger_mavg()

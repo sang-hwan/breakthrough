@@ -25,7 +25,7 @@ def run_strategy_performance():
     best_params = config_manager.merge_optimized(best_trial.params)
     logger.debug(f"Optimal parameters determined: {best_params}")
 
-    # 각 심볼별 백테스트 실행
+    # 각 심볼별 백테스트 실행 (주간 데이터 활용 포함)
     start_date = "2018-06-01"
     end_date = "2025-02-01"
     timeframes = {"short_tf": "4h", "long_tf": "1d"}

@@ -10,7 +10,7 @@ from strategies.trading_strategies import (
 
 @pytest.fixture
 def sample_data():
-    # 간단한 테스트용 데이터프레임 (일별 데이터)
+    # 간단한 테스트용 일별 데이터프레임
     dates = pd.date_range(start="2023-01-01", periods=5, freq="D")
     data = pd.DataFrame({
         "open": [100, 102, 103, 104, 105],
@@ -25,7 +25,7 @@ def sample_data():
 
 @pytest.fixture
 def sample_weekly_data():
-    # 간단한 주간 데이터프레임
+    # 간단한 주간 데이터프레임 (주간 저점/고점, 모멘텀 포함)
     dates = pd.date_range(start="2023-01-01", periods=3, freq="W-MON")
     data = pd.DataFrame({
         "open": [100, 110, 120],
@@ -77,12 +77,14 @@ def test_high_frequency_strategy():
 def test_weekly_breakout_strategy(sample_weekly_data):
     strat = WeeklyBreakoutStrategy()
     current_time = sample_weekly_data.index[-1]
+    # 주간 돌파 조건 테스트: 전 주의 고점 대비 1% 이상 상승 시 enter_long, 하락 시 exit_all, 아니면 hold
     signal = strat.get_signal(sample_weekly_data, current_time, breakout_threshold=0.01)
     assert signal in ["enter_long", "exit_all", "hold"]
 
 def test_weekly_momentum_strategy(sample_weekly_data):
     strat = WeeklyMomentumStrategy()
     current_time = sample_weekly_data.index[-1]
+    # 주간 모멘텀 조건 테스트: 모멘텀이 임계값 이상이면 enter_long, 이하이면 exit_all 또는 hold
     signal = strat.get_signal(sample_weekly_data, current_time, momentum_threshold=0.5)
     assert signal in ["enter_long", "exit_all", "hold"]
 

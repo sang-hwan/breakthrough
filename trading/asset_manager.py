@@ -41,10 +41,11 @@ class AssetManager:
             return
 
         regime = market_regime.lower()
-        if regime == "bullish":
-            desired_spot = total_assets * 0.90
-        elif regime == "bearish":
-            desired_spot = total_assets * 0.10
+        # --- 수정: "enter_long" 및 "exit_all" 신호에 따른 자산 배분 처리 ---
+        if regime in ["bullish", "enter_long"]:
+            desired_spot = total_assets * (1.0 if regime == "enter_long" else 0.90)
+        elif regime in ["bearish", "exit_all"]:
+            desired_spot = total_assets * (0.0 if regime == "exit_all" else 0.10)
         elif regime == "sideways":
             desired_spot = total_assets * 0.60
         else:

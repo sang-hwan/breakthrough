@@ -6,6 +6,10 @@ from logs.logger_config import setup_logger
 logger = setup_logger(__name__)
 
 def calculate_atr(data: pd.DataFrame, period: int = 14) -> pd.DataFrame:
+    """
+    Calculates the Average True Range (ATR) for the given data.
+    Incorporates fallback logic when data variability is low.
+    """
     try:
         if len(data) < period:
             data['atr'] = data['high'] - data['low']
@@ -31,6 +35,9 @@ def calculate_atr(data: pd.DataFrame, period: int = 14) -> pd.DataFrame:
     return data
 
 def calculate_dynamic_stop_and_take(entry_price: float, atr: float, risk_params: dict):
+    """
+    Calculates dynamic stop-loss and take-profit prices based on ATR and risk parameters.
+    """
     if entry_price <= 0:
         logger.error("Invalid entry_price <= 0: {}".format(entry_price))
         raise ValueError("entry_price must be positive.")
@@ -60,6 +67,10 @@ def calculate_dynamic_stop_and_take(entry_price: float, atr: float, risk_params:
 
 def adjust_trailing_stop(current_stop: float, current_price: float, highest_price: float, trailing_percentage: float,
                            volatility: float = 0.0, weekly_high: float = None, weekly_volatility: float = None) -> float:
+    """
+    Adjusts the trailing stop price based on current market conditions.
+    Incorporates weekly high and volatility if available to better capture weekly extremes.
+    """
     if current_price <= 0 or highest_price <= 0:
         logger.error("Invalid current_price or highest_price: current_price={}, highest_price={}".format(current_price, highest_price))
         raise ValueError("current_price and highest_price must be positive.")
@@ -88,6 +99,10 @@ def calculate_partial_exit_targets(entry_price: float, partial_exit_ratio: float
                                      partial_profit_ratio: float = 0.03, final_profit_ratio: float = 0.06,
                                      final_exit_ratio: float = 1.0, use_weekly_target: bool = False,
                                      weekly_momentum: float = None, weekly_adjustment_factor: float = 0.5):
+    """
+    Calculates targets for partial exits based on entry price and profit ratios.
+    Can adjust targets based on weekly momentum if provided.
+    """
     if entry_price <= 0:
         logger.error("Invalid entry_price <= 0: {}".format(entry_price))
         raise ValueError("entry_price must be positive.")
