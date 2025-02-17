@@ -59,7 +59,7 @@ class ConfigManager:
     def update_with_market_data(self, market_data: dict) -> dict:
         """
         시장 데이터를 반영하여 설정 파라미터를 동적으로 업데이트합니다.
-        (주요 입력: volatility, trend, trend_strength, volume, weekly_volatility)
+        (주요 입력: volatility, trend, trend_strength, volume, weekly_volatility, weekly_low, weekly_high)
         """
         config = self.get_defaults()
         volatility = market_data.get("volatility", 0.0)
@@ -92,6 +92,19 @@ class ConfigManager:
         if volume is not None:
             volume_threshold = 1000
             config["risk_per_trade"] *= (volume / volume_threshold) if volume < volume_threshold else 1.05
+
+        # 추가: '주간 저점 매수 후 고점 매도' 전략 개선을 위한 주간 전략 파라미터 업데이트
+        weekly_low = market_data.get("weekly_low")
+        weekly_high = market_data.get("weekly_high")
+        if weekly_low is not None and weekly_high is not None and weekly_low > 0:
+            spread_ratio = (weekly_high - weekly_low) / weekly_low  # 상대 스프레드 비율 계산
+            # 만약 스프레드가 일정 수준(예: 5%) 이상이면, 매수 및 매도 임계값을 조정
+            if spread_ratio > 0.05:
+                # 주간 저점 매수 전략: breakout threshold를 낮춰 더 공격적으로 진입
+                config["weekly_breakout_threshold"] = max(config["weekly_breakout_threshold"] * 0.8, 0.005)
+                # 주간 고점 매도 전략: momentum threshold를 약간 높여 과매수 상황 회피
+                config["weekly_momentum_threshold"] = min(config["weekly_momentum_threshold"] * 1.05, 0.7)
+                self.logger.debug(f"Weekly strategy parameters adjusted due to high spread ratio: {spread_ratio:.2f}")
 
         self.logger.debug(f"Updated config with market data: {config}")
         return config

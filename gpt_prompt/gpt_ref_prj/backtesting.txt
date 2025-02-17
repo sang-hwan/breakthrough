@@ -102,6 +102,7 @@ def load_data(backtester, short_table_format, long_table_format, short_tf, long_
             logger.error(f"Extra 데이터 로드 에러: {e}", exc_info=True)
     if use_weekly:
         try:
+            # 주간 데이터 집계: ohlcv_aggregator에서 weekly_high, weekly_low, weekly_volatility 등이 계산됨.
             backtester.df_weekly = aggregate_to_weekly(backtester.df_short, compute_indicators=True)
             if backtester.df_weekly.empty:
                 logger.warning("주간 데이터 집계 결과가 비어있습니다.")
@@ -143,6 +144,41 @@ from logs.logger_config import setup_logger
 
 logger = setup_logger(__name__)
 
+def get_signal_with_weekly_override(backtester, row, current_time, dynamic_params):
+    """
+    Generates trading signal with weekly override based on perfect knowledge of weekly low and high.
+    If the current close price is within a small tolerance of the weekly low, returns 'enter_long'.
+    If it's near the weekly high, returns 'exit_all'.
+    Otherwise, falls back to the ensemble manager's signal.
+    """
+    try:
+        if hasattr(backtester, 'df_weekly') and backtester.df_weekly is not None and not backtester.df_weekly.empty:
+            # Get the latest weekly bar that ended on or before current_time
+            weekly_bar = backtester.df_weekly.loc[backtester.df_weekly.index <= current_time].iloc[-1]
+            tolerance = 0.002  # 0.2% tolerance
+            if abs(row["close"] - weekly_bar["weekly_low"]) / weekly_bar["weekly_low"] <= tolerance:
+                backtester.logger.debug(f"Weekly override: Price {row['close']} near weekly low {weekly_bar['weekly_low']}. Signal: enter_long.")
+                return "enter_long"
+            elif abs(row["close"] - weekly_bar["weekly_high"]) / weekly_bar["weekly_high"] <= tolerance:
+                backtester.logger.debug(f"Weekly override: Price {row['close']} near weekly high {weekly_bar['weekly_high']}. Signal: exit_all.")
+                return "exit_all"
+        # Fallback to ensemble manager's signal
+        return backtester.ensemble_manager.get_final_signal(
+            row.get('market_regime', 'unknown'),
+            dynamic_params.get('liquidity_info', 'high'),
+            backtester.df_short,
+            current_time,
+            data_weekly=getattr(backtester, 'df_weekly', None)
+        )
+    except Exception as e:
+        backtester.logger.error(f"Error in weekly override signal generation: {e}", exc_info=True)
+        return backtester.ensemble_manager.get_final_signal(
+            row.get('market_regime', 'unknown'),
+            dynamic_params.get('liquidity_info', 'high'),
+            backtester.df_short,
+            current_time,
+            data_weekly=getattr(backtester, 'df_weekly', None)
+        )
 
 def process_training_orders(backtester, dynamic_params, signal_cooldown, rebalance_interval):
     for current_time, row in backtester.df_train.iterrows():
@@ -172,44 +208,36 @@ def process_training_orders(backtester, dynamic_params, signal_cooldown, rebalan
                 logger.error(f"Error during walk-forward window check at {current_time}: {e}", exc_info=True)
             
             if backtester.last_signal_time is None or (current_time - backtester.last_signal_time) >= signal_cooldown:
+                action = get_signal_with_weekly_override(backtester, row, current_time, dynamic_params)
+            else:
                 action = "hold"
-                try:
-                    action = backtester.ensemble_manager.get_final_signal(
-                        row.get('market_regime', 'unknown'),
-                        dynamic_params.get('liquidity_info', 'high'),
-                        backtester.df_short,
-                        current_time,
-                        data_weekly=backtester.df_weekly
-                    )
-                except Exception as e:
-                    logger.error(f"Signal generation error at {current_time}: {e}", exc_info=True)
-                    action = "hold"
-                base_risk_params = {
-                    "risk_per_trade": dynamic_params.get("risk_per_trade", 0.01),
-                    "atr_multiplier": dynamic_params.get("atr_multiplier", 2.0),
-                    "profit_ratio": dynamic_params.get("profit_ratio", 0.05),
-                    "current_volatility": row.get("volatility", 0)
-                }
+                
+            base_risk_params = {
+                "risk_per_trade": dynamic_params.get("risk_per_trade", 0.01),
+                "atr_multiplier": dynamic_params.get("atr_multiplier", 2.0),
+                "profit_ratio": dynamic_params.get("profit_ratio", 0.05),
+                "current_volatility": row.get("volatility", 0)
+            }
+            risk_params = base_risk_params
+            try:
+                risk_params = backtester.risk_manager.compute_risk_parameters_by_regime(
+                    base_risk_params,
+                    regime=row.get('market_regime', 'unknown'),
+                    liquidity=dynamic_params.get('liquidity_info', 'high')
+                )
+            except Exception as e:
+                logger.error(f"Risk parameter computation error at {current_time}: {e}", exc_info=True)
                 risk_params = base_risk_params
-                try:
-                    risk_params = backtester.risk_manager.compute_risk_parameters_by_regime(
-                        base_risk_params,
-                        regime=row.get('market_regime', 'unknown'),
-                        liquidity=dynamic_params.get('liquidity_info', 'high')
-                    )
-                except Exception as e:
-                    logger.error(f"Risk parameter computation error at {current_time}: {e}", exc_info=True)
-                    risk_params = base_risk_params
-                try:
-                    if action == "enter_long":
-                        backtester.process_bullish_entry(current_time, row, risk_params, dynamic_params)
-                    elif action == "exit_all":
-                        backtester.process_bearish_exit(current_time, row)
-                    elif row.get('market_regime', 'unknown') == "sideways":
-                        backtester.process_sideways_trade(current_time, row, risk_params, dynamic_params)
-                except Exception as e:
-                    logger.error(f"Error processing order at {current_time} with action '{action}': {e}", exc_info=True)
-                backtester.last_signal_time = current_time
+            try:
+                if action == "enter_long":
+                    backtester.process_bullish_entry(current_time, row, risk_params, dynamic_params)
+                elif action == "exit_all":
+                    backtester.process_bearish_exit(current_time, row)
+                elif row.get('market_regime', 'unknown') == "sideways":
+                    backtester.process_sideways_trade(current_time, row, risk_params, dynamic_params)
+            except Exception as e:
+                logger.error(f"Error processing order at {current_time} with action '{action}': {e}", exc_info=True)
+            backtester.last_signal_time = current_time
 
             try:
                 backtester.update_positions(current_time, row)
@@ -230,23 +258,11 @@ def process_training_orders(backtester, dynamic_params, signal_cooldown, rebalan
             logger.error(f"Unexpected error during processing training orders at {current_time}: {e}", exc_info=True)
             continue
 
-
 def process_extra_orders(backtester, dynamic_params):
     if backtester.df_extra is not None and not backtester.df_extra.empty:
         for current_time, row in backtester.df_extra.iterrows():
             try:
-                hf_signal = "hold"
-                try:
-                    hf_signal = backtester.ensemble_manager.get_final_signal(
-                        row.get('market_regime', 'unknown'),
-                        dynamic_params.get('liquidity_info', 'high'),
-                        backtester.df_short,
-                        current_time,
-                        data_weekly=backtester.df_weekly
-                    )
-                except Exception as e:
-                    logger.error(f"High-frequency signal error at {current_time}: {e}", exc_info=True)
-                    hf_signal = "hold"
+                hf_signal = get_signal_with_weekly_override(backtester, row, current_time, dynamic_params)
                 regime = "sideways"
                 try:
                     regime = backtester.df_long.loc[backtester.df_long.index <= current_time].iloc[-1].get('market_regime', 'sideways')
@@ -284,23 +300,11 @@ def process_extra_orders(backtester, dynamic_params):
                 logger.error(f"Unexpected error in process_extra_orders at {current_time}: {e}", exc_info=True)
                 continue
 
-
 def process_holdout_orders(backtester, dynamic_params, df_holdout):
     if df_holdout is not None:
         for current_time, row in df_holdout.iterrows():
             try:
-                action = "hold"
-                try:
-                    action = backtester.ensemble_manager.get_final_signal(
-                        row.get('market_regime', 'unknown'),
-                        dynamic_params.get('liquidity_info', 'high'),
-                        backtester.df_short,
-                        current_time,
-                        data_weekly=backtester.df_weekly
-                    )
-                except Exception as e:
-                    logger.error(f"Holdout signal error at {current_time}: {e}", exc_info=True)
-                    action = "hold"
+                action = get_signal_with_weekly_override(backtester, row, current_time, dynamic_params)
                 base_risk_params = {
                     "risk_per_trade": dynamic_params.get("risk_per_trade", 0.01),
                     "atr_multiplier": dynamic_params.get("atr_multiplier", 2.0),
@@ -333,7 +337,6 @@ def process_holdout_orders(backtester, dynamic_params, df_holdout):
             except Exception as e:
                 logger.error(f"Unexpected error in process_holdout_orders at {current_time}: {e}", exc_info=True)
                 continue
-
 
 def finalize_orders(backtester):
     try:
@@ -444,7 +447,6 @@ class Backtester:
             self.df_short = self.df_short.join(self.df_long[['sma', 'rsi', 'volatility']], how='left').ffill()
             self.df_short['market_regime'] = regime_series.reindex(self.df_short.index).ffill()
             self.df_short = TradeExecutor.compute_atr(self.df_short, period=dynamic_params.get("atr_period", 14))
-            # 기본 stop_loss_price 계산: close - (atr * default_atr_multiplier)
             default_atr_multiplier = dynamic_params.get("default_atr_multiplier", 2.0)
             self.df_short["stop_loss_price"] = self.df_short["close"] - (self.df_short["atr"] * default_atr_multiplier)
         except Exception as e:
@@ -518,7 +520,6 @@ class Backtester:
             if self.last_signal_time is not None and (current_time - self.last_signal_time) < signal_cooldown:
                 return
 
-            # 기본 stop_loss_price 할당: 누락 시 close_price의 5% 하락값 사용
             stop_loss_price = row.get("stop_loss_price")
             if stop_loss_price is None:
                 stop_loss_price = close_price * 0.95

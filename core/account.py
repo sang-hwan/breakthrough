@@ -4,15 +4,15 @@ from logs.logger_config import setup_logger
 logger = setup_logger(__name__)
 
 class Account:
-    def __init__(self, initial_balance: float, fee_rate: float = 0.001):
+    def __init__(self, initial_balance: float, fee_rate: float = 0.001) -> None:
         """
         계좌 생성: 초기 잔고는 현물(spot) 자산으로 간주하며, fee_rate는 거래 시 적용되는 수수료율입니다.
         """
-        self.initial_balance = initial_balance
-        self.spot_balance = initial_balance
-        self.stablecoin_balance = 0.0
-        self.fee_rate = fee_rate
-        self.positions = []  # 보유 중인 포지션 객체 리스트
+        self.initial_balance: float = initial_balance
+        self.spot_balance: float = initial_balance
+        self.stablecoin_balance: float = 0.0
+        self.fee_rate: float = fee_rate
+        self.positions: list = []  # 보유 중인 포지션 객체 리스트
         logger.debug(f"Account initialized with balance: {initial_balance:.2f}")
 
     def add_position(self, position) -> None:
@@ -30,7 +30,7 @@ class Account:
 
     def get_used_balance(self) -> float:
         """미체결 포지션으로 인해 사용 중인 금액(수수료 포함)을 계산합니다."""
-        used = 0.0
+        used: float = 0.0
         for pos in self.positions:
             for record in pos.executions:
                 if not record.get("closed", False):

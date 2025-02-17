@@ -98,7 +98,6 @@ class Backtester:
             self.df_short = self.df_short.join(self.df_long[['sma', 'rsi', 'volatility']], how='left').ffill()
             self.df_short['market_regime'] = regime_series.reindex(self.df_short.index).ffill()
             self.df_short = TradeExecutor.compute_atr(self.df_short, period=dynamic_params.get("atr_period", 14))
-            # 기본 stop_loss_price 계산: close - (atr * default_atr_multiplier)
             default_atr_multiplier = dynamic_params.get("default_atr_multiplier", 2.0)
             self.df_short["stop_loss_price"] = self.df_short["close"] - (self.df_short["atr"] * default_atr_multiplier)
         except Exception as e:
@@ -172,7 +171,6 @@ class Backtester:
             if self.last_signal_time is not None and (current_time - self.last_signal_time) < signal_cooldown:
                 return
 
-            # 기본 stop_loss_price 할당: 누락 시 close_price의 5% 하락값 사용
             stop_loss_price = row.get("stop_loss_price")
             if stop_loss_price is None:
                 stop_loss_price = close_price * 0.95

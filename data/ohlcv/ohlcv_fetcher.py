@@ -13,6 +13,10 @@ def fetch_historical_ohlcv_data(symbol: str, timeframe: str, start_date: str,
                                 limit_per_request: int = 1000, pause_sec: float = 1.0, 
                                 exchange_id: str = 'binance', single_fetch: bool = False,
                                 time_offset_ms: int = 1, max_retries: int = 3) -> pd.DataFrame:
+    """
+    Fetch historical OHLCV data for the specified symbol and timeframe starting from start_date.
+    Uses caching to reduce duplicate API calls.
+    """
     try:
         exchange_class = getattr(ccxt, exchange_id)
         exchange = exchange_class({'enableRateLimit': True})
@@ -62,7 +66,7 @@ def fetch_historical_ohlcv_data(symbol: str, timeframe: str, start_date: str,
             df = pd.DataFrame(ohlcv_list, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
             df.set_index('timestamp', inplace=True)
-            return df.copy()  # 반환 전에 복사하여 캐시된 객체의 변형 방지
+            return df.copy()  # Return a copy to prevent external modifications
         except Exception as e:
             logger.error(f"DataFrame 변환 에러: {e}", exc_info=True)
             return pd.DataFrame()
@@ -72,6 +76,9 @@ def fetch_historical_ohlcv_data(symbol: str, timeframe: str, start_date: str,
 
 @lru_cache(maxsize=32)
 def fetch_latest_ohlcv_data(symbol: str, timeframe: str, limit: int = 500, exchange_id: str = 'binance') -> pd.DataFrame:
+    """
+    Fetch the latest OHLCV data for the specified symbol and timeframe.
+    """
     try:
         exchange_class = getattr(ccxt, exchange_id)
         exchange = exchange_class({'enableRateLimit': True})
@@ -102,6 +109,10 @@ def fetch_latest_ohlcv_data(symbol: str, timeframe: str, limit: int = 500, excha
 def get_top_market_cap_symbols(exchange_id: str = 'binance', quote_currency: str = 'USDT', 
                                required_start_date: str = "2018-01-01", count: int = 5, 
                                pause_sec: float = 1.0) -> list:
+    """
+    Retrieve top market cap symbols based on trading volume that have historical data
+    starting from the required_start_date.
+    """
     try:
         exchange_class = getattr(ccxt, exchange_id)
         exchange = exchange_class({'enableRateLimit': True})

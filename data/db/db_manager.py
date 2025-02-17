@@ -2,12 +2,16 @@
 from sqlalchemy import create_engine, text
 from psycopg2.extras import execute_values
 import pandas as pd
+from typing import Any, Iterable, Dict
 from data.db.db_config import DATABASE
 from logs.logger_config import setup_logger
 
 logger = setup_logger(__name__)
 
-def insert_on_conflict(table, conn, keys, data_iter):
+def insert_on_conflict(table: Any, conn: Any, keys: list, data_iter: Iterable) -> None:
+    """
+    Custom insertion method for pandas to_sql that handles conflicts on the 'timestamp' column.
+    """
     try:
         raw_conn = conn.connection
         cur = raw_conn.cursor()
@@ -20,7 +24,10 @@ def insert_on_conflict(table, conn, keys, data_iter):
         logger.error(f"insert_on_conflict 에러: {e}", exc_info=True)
 
 def insert_ohlcv_records(df: pd.DataFrame, table_name: str = 'ohlcv_data', conflict_action: str = "DO NOTHING",
-                         db_config: dict = None, chunk_size: int = 10000) -> None:
+                         db_config: Dict[str, Any] = None, chunk_size: int = 10000) -> None:
+    """
+    Insert OHLCV records into the specified table, creating the table if it doesn't exist.
+    """
     if db_config is None:
         db_config = DATABASE
 
@@ -63,7 +70,10 @@ def insert_ohlcv_records(df: pd.DataFrame, table_name: str = 'ohlcv_data', confl
         logger.error(f"데이터 저장 에러 ({table_name}): {e}", exc_info=True)
 
 def fetch_ohlcv_records(table_name: str = 'ohlcv_data', start_date: str = None, end_date: str = None,
-                        db_config: dict = None) -> pd.DataFrame:
+                        db_config: Dict[str, Any] = None) -> pd.DataFrame:
+    """
+    Fetch OHLCV records from the specified table within the given date range.
+    """
     if db_config is None:
         db_config = DATABASE
 

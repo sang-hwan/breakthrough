@@ -6,7 +6,7 @@ logger = setup_logger(__name__)
 
 class Position:
     def __init__(self, side: str = "LONG", initial_price: float = None, maximum_size: float = 0.0,
-                 total_splits: int = 1, allocation_plan: list = None):
+                 total_splits: int = 1, allocation_plan: list = None) -> None:
         """
         포지션 생성:
           - side: 거래 방향 ("LONG" 또는 "SHORT")
@@ -15,15 +15,20 @@ class Position:
           - total_splits: 분할 진입 횟수
           - allocation_plan: 각 분할 진입 비율 (미지정 시 빈 리스트)
         """
-        self.position_id = str(uuid.uuid4())
-        self.side = side
-        self.executions = []  # 실행 내역 리스트
-        self.initial_price = initial_price
-        self.maximum_size = maximum_size
-        self.total_splits = total_splits
-        self.executed_splits = 0
-        self.allocation_plan = allocation_plan if allocation_plan is not None else []
-        self.highest_price = initial_price if initial_price is not None else 0.0
+        self.position_id: str = str(uuid.uuid4())
+        self.side: str = side.upper()
+        self.executions: list = []  # 실행 내역 리스트
+        self.initial_price: float = initial_price
+        self.maximum_size: float = maximum_size
+        self.total_splits: int = total_splits
+        self.executed_splits: int = 0
+        self.allocation_plan: list = allocation_plan if allocation_plan is not None else []
+        # 초기 가격을 기반으로 극값 초기화 (LONG은 최고, SHORT는 최저)
+        if initial_price is not None:
+            if self.side == "SHORT":
+                self.lowest_price: float = initial_price
+            else:
+                self.highest_price: float = initial_price
         logger.debug(f"New position created: ID={self.position_id}, side={self.side}, entry price={self.initial_price}")
 
     def add_execution(self, entry_price: float, size: float, stop_loss: float = None,
@@ -34,6 +39,7 @@ class Position:
           - exit_targets: [(target_price, exit_ratio), ...] 형식의 리스트
         """
         if size < min_order_size:
+            logger.warning("Execution size below minimum order size; execution not added.")
             return
         targets = []
         if exit_targets:
@@ -47,11 +53,35 @@ class Position:
             'entry_time': entry_time,
             'exit_targets': targets,
             'trade_type': trade_type,
-            'highest_price_since_entry': entry_price,
             'closed': False
         }
+        # 포지션 방향에 따라 초기 극값 설정: LONG은 최고가, SHORT는 최저가
+        if self.side == "SHORT":
+            execution["lowest_price_since_entry"] = entry_price
+        else:
+            execution["highest_price_since_entry"] = entry_price
+
         self.executions.append(execution)
         logger.debug(f"Execution added: entry_price={entry_price}, size={size}, type={trade_type}")
+
+    def update_extremum(self, current_price: float) -> None:
+        """
+        포지션의 각 미체결 실행에 대해, 현재 가격을 반영하여
+        LONG 포지션인 경우 최고 가격, SHORT 포지션인 경우 최저 가격을 업데이트합니다.
+        이 메서드는 후행 스톱 및 최적의 청산 타이밍 결정에 활용될 수 있습니다.
+        """
+        for record in self.executions:
+            if record.get("closed", False):
+                continue
+            if self.side == "LONG":
+                if current_price > record.get("highest_price_since_entry", record["entry_price"]):
+                    record["highest_price_since_entry"] = current_price
+            elif self.side == "SHORT":
+                if "lowest_price_since_entry" not in record:
+                    record["lowest_price_since_entry"] = record["entry_price"]
+                if current_price < record["lowest_price_since_entry"]:
+                    record["lowest_price_since_entry"] = current_price
+        logger.debug(f"Updated extremum values for executions with current_price={current_price}")
 
     def get_total_size(self) -> float:
         """미체결 실행의 총 사이즈를 반환합니다."""
@@ -68,6 +98,8 @@ class Position:
         if 0 <= index < len(self.executions):
             self.executions.pop(index)
             logger.debug(f"Execution removed at index {index}")
+        else:
+            logger.warning(f"Failed to remove execution: invalid index {index}")
 
     def is_empty(self) -> bool:
         """모든 실행이 종료되었는지 확인합니다."""
@@ -90,4 +122,5 @@ class Position:
                 record['closed'] = True
             logger.debug(f"Partial close executed: index={index}, ratio={close_ratio}, closed qty={qty_to_close}")
             return qty_to_close
+        logger.warning(f"Partial close failed: invalid index {index}")
         return 0.0

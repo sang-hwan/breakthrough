@@ -102,6 +102,7 @@ def load_data(backtester, short_table_format, long_table_format, short_tf, long_
             logger.error(f"Extra 데이터 로드 에러: {e}", exc_info=True)
     if use_weekly:
         try:
+            # 주간 데이터 집계: ohlcv_aggregator에서 weekly_high, weekly_low, weekly_volatility 등이 계산됨.
             backtester.df_weekly = aggregate_to_weekly(backtester.df_short, compute_indicators=True)
             if backtester.df_weekly.empty:
                 logger.warning("주간 데이터 집계 결과가 비어있습니다.")

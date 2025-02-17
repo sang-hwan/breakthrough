@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-DATABASE = {
+DATABASE: dict = {
     'user': os.getenv('DB_USER'),
     'password': os.getenv('DB_PASSWORD'),
     'host': os.getenv('DB_HOST'),
@@ -18,12 +18,16 @@ DATABASE = {
 from sqlalchemy import create_engine, text
 from psycopg2.extras import execute_values
 import pandas as pd
+from typing import Any, Iterable, Dict
 from data.db.db_config import DATABASE
 from logs.logger_config import setup_logger
 
 logger = setup_logger(__name__)
 
-def insert_on_conflict(table, conn, keys, data_iter):
+def insert_on_conflict(table: Any, conn: Any, keys: list, data_iter: Iterable) -> None:
+    """
+    Custom insertion method for pandas to_sql that handles conflicts on the 'timestamp' column.
+    """
     try:
         raw_conn = conn.connection
         cur = raw_conn.cursor()
@@ -36,7 +40,10 @@ def insert_on_conflict(table, conn, keys, data_iter):
         logger.error(f"insert_on_conflict 에러: {e}", exc_info=True)
 
 def insert_ohlcv_records(df: pd.DataFrame, table_name: str = 'ohlcv_data', conflict_action: str = "DO NOTHING",
-                         db_config: dict = None, chunk_size: int = 10000) -> None:
+                         db_config: Dict[str, Any] = None, chunk_size: int = 10000) -> None:
+    """
+    Insert OHLCV records into the specified table, creating the table if it doesn't exist.
+    """
     if db_config is None:
         db_config = DATABASE
 
@@ -79,7 +86,10 @@ def insert_ohlcv_records(df: pd.DataFrame, table_name: str = 'ohlcv_data', confl
         logger.error(f"데이터 저장 에러 ({table_name}): {e}", exc_info=True)
 
 def fetch_ohlcv_records(table_name: str = 'ohlcv_data', start_date: str = None, end_date: str = None,
-                        db_config: dict = None) -> pd.DataFrame:
+                        db_config: Dict[str, Any] = None) -> pd.DataFrame:
+    """
+    Fetch OHLCV records from the specified table within the given date range.
+    """
     if db_config is None:
         db_config = DATABASE
 
@@ -121,6 +131,11 @@ from logs.logger_config import setup_logger
 logger = setup_logger(__name__)
 
 def aggregate_to_weekly(df: pd.DataFrame, compute_indicators: bool = True) -> pd.DataFrame:
+    """
+    Aggregate OHLCV data to a weekly frequency, and optionally compute technical indicators.
+    Additionally, renames 'high' and 'low' columns to 'weekly_high' and 'weekly_low' to support
+    the weekly breakout and momentum strategies.
+    """
     if df.empty:
         return df
 
@@ -135,10 +150,15 @@ def aggregate_to_weekly(df: pd.DataFrame, compute_indicators: bool = True) -> pd
     if weekly.empty:
         return weekly
 
+    # Rename columns for clarity in strategy configuration
+    weekly.rename(columns={'high': 'weekly_high', 'low': 'weekly_low'}, inplace=True)
+
     if compute_indicators:
         sma_indicator = SMAIndicator(close=weekly['close'], window=5, fillna=True)
         weekly['weekly_sma'] = sma_indicator.sma_indicator()
         weekly['weekly_momentum'] = weekly['close'].pct_change() * 100
+        # Compute weekly volatility as a ratio
+        weekly['weekly_volatility'] = (weekly['weekly_high'] - weekly['weekly_low']) / weekly['weekly_low']
     return weekly
 
 ---
@@ -158,6 +178,10 @@ def fetch_historical_ohlcv_data(symbol: str, timeframe: str, start_date: str,
                                 limit_per_request: int = 1000, pause_sec: float = 1.0, 
                                 exchange_id: str = 'binance', single_fetch: bool = False,
                                 time_offset_ms: int = 1, max_retries: int = 3) -> pd.DataFrame:
+    """
+    Fetch historical OHLCV data for the specified symbol and timeframe starting from start_date.
+    Uses caching to reduce duplicate API calls.
+    """
     try:
         exchange_class = getattr(ccxt, exchange_id)
         exchange = exchange_class({'enableRateLimit': True})
@@ -207,7 +231,7 @@ def fetch_historical_ohlcv_data(symbol: str, timeframe: str, start_date: str,
             df = pd.DataFrame(ohlcv_list, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
             df.set_index('timestamp', inplace=True)
-            return df.copy()  # 반환 전에 복사하여 캐시된 객체의 변형 방지
+            return df.copy()  # Return a copy to prevent external modifications
         except Exception as e:
             logger.error(f"DataFrame 변환 에러: {e}", exc_info=True)
             return pd.DataFrame()
@@ -217,6 +241,9 @@ def fetch_historical_ohlcv_data(symbol: str, timeframe: str, start_date: str,
 
 @lru_cache(maxsize=32)
 def fetch_latest_ohlcv_data(symbol: str, timeframe: str, limit: int = 500, exchange_id: str = 'binance') -> pd.DataFrame:
+    """
+    Fetch the latest OHLCV data for the specified symbol and timeframe.
+    """
     try:
         exchange_class = getattr(ccxt, exchange_id)
         exchange = exchange_class({'enableRateLimit': True})
@@ -247,6 +274,10 @@ def fetch_latest_ohlcv_data(symbol: str, timeframe: str, limit: int = 500, excha
 def get_top_market_cap_symbols(exchange_id: str = 'binance', quote_currency: str = 'USDT', 
                                required_start_date: str = "2018-01-01", count: int = 5, 
                                pause_sec: float = 1.0) -> list:
+    """
+    Retrieve top market cap symbols based on trading volume that have historical data
+    starting from the required_start_date.
+    """
     try:
         exchange_class = getattr(ccxt, exchange_id)
         exchange = exchange_class({'enableRateLimit': True})
@@ -307,7 +338,7 @@ logger = setup_logger(__name__)
 
 # In-memory cache for fetched OHLCV data (to avoid duplicate API calls)
 _cache_lock = threading.Lock()
-_ohlcv_cache = {}
+_ohlcv_cache: dict = {}
 
 def collect_and_store_ohlcv_data(
     symbols: List[str],
@@ -321,7 +352,11 @@ def collect_and_store_ohlcv_data(
     exchange_id: str = 'binance',
     time_offset_ms: int = 1
 ) -> None:
-    def process_symbol_tf(symbol, tf):
+    """
+    Collect OHLCV data for given symbols and timeframes, and store them into the database.
+    Uses threading to fetch data concurrently.
+    """
+    def process_symbol_tf(symbol: str, tf: str) -> None:
         # Create a cache key including all parameters that affect the API call
         key = (symbol, tf, use_historical, start_date, limit_per_request, latest_limit, exchange_id, time_offset_ms)
         with _cache_lock:
