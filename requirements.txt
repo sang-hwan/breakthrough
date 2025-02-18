@@ -8,3 +8,4 @@ ccxt
 hmmlearn
 python-dotenv
 pytest
+pydantic
