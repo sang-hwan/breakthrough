@@ -1,3 +1,4 @@
+[strategies module code]
 # strategies/base_strategy.py
 from logs.logger_config import setup_logger
 

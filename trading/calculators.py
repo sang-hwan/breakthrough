@@ -5,6 +5,10 @@ from logs.logger_config import setup_logger
 
 logger = setup_logger(__name__)
 
+# ★ 커스텀 예외 클래스 추가
+class InvalidEntryPriceError(ValueError):
+    pass
+
 def calculate_atr(data: pd.DataFrame, period: int = 14) -> pd.DataFrame:
     """
     Calculates the Average True Range (ATR) for the given data.
@@ -39,10 +43,10 @@ def calculate_dynamic_stop_and_take(entry_price: float, atr: float, risk_params:
     Calculates dynamic stop-loss and take-profit prices based on ATR and risk parameters.
     """
     if entry_price <= 0:
-        logger.error("Invalid entry_price <= 0: {}".format(entry_price))
-        raise ValueError("entry_price must be positive.")
+        logger.error(f"Invalid entry_price: {entry_price}. Must be positive.")
+        raise InvalidEntryPriceError(f"Invalid entry_price: {entry_price}. Must be positive.")
     if atr <= 0:
-        logger.warning("ATR value is non-positive ({}). Using fallback ATR value from risk_params if available.".format(atr))
+        logger.warning(f"ATR value is non-positive ({atr}). Using fallback ATR value from risk_params if available.")
         fallback_atr = risk_params.get("fallback_atr", entry_price * 0.01)
         if fallback_atr <= 0:
             fallback_atr = entry_price * 0.01
@@ -72,10 +76,10 @@ def adjust_trailing_stop(current_stop: float, current_price: float, highest_pric
     Incorporates weekly high and volatility if available to better capture weekly extremes.
     """
     if current_price <= 0 or highest_price <= 0:
-        logger.error("Invalid current_price or highest_price: current_price={}, highest_price={}".format(current_price, highest_price))
+        logger.error(f"Invalid current_price ({current_price}) or highest_price ({highest_price}).")
         raise ValueError("current_price and highest_price must be positive.")
     if trailing_percentage < 0:
-        logger.error("Invalid trailing_percentage < 0: {}".format(trailing_percentage))
+        logger.error(f"Invalid trailing_percentage ({trailing_percentage}). Must be non-negative.")
         raise ValueError("trailing_percentage must be non-negative.")
     try:
         if current_stop is None or current_stop <= 0:
@@ -104,8 +108,8 @@ def calculate_partial_exit_targets(entry_price: float, partial_exit_ratio: float
     Can adjust targets based on weekly momentum if provided.
     """
     if entry_price <= 0:
-        logger.error("Invalid entry_price <= 0: {}".format(entry_price))
-        raise ValueError("entry_price must be positive.")
+        logger.error(f"Invalid entry_price: {entry_price}. Must be positive.")
+        raise InvalidEntryPriceError(f"Invalid entry_price: {entry_price}. Must be positive.")
     try:
         if use_weekly_target and weekly_momentum is not None:
             adjusted_partial = partial_profit_ratio + weekly_adjustment_factor * weekly_momentum

@@ -1,6 +1,6 @@
 # tests/test_weekly_strategies.py
-import pytest
 import pandas as pd
+import pytest
 from strategies.trading_strategies import TradingStrategies
 
 @pytest.fixture
@@ -13,12 +13,12 @@ def weekly_data_breakout():
     """
     주간 돌파 전략 테스트용 DataFrame 생성.
     인덱스: 2주치 데이터 (예: 2023-01-02, 2023-01-09)
-    컬럼: high, low, close
+    컬럼: weekly_high, weekly_low, close
     """
     dates = [pd.to_datetime("2023-01-02"), pd.to_datetime("2023-01-09")]
     data = {
-        "high": [100, None],
-        "low": [90, None],
+        "weekly_high": [100, None],
+        "weekly_low": [90, None],
         "close": [95, None]
     }
     df = pd.DataFrame(data, index=dates)
@@ -41,7 +41,7 @@ def weekly_data_momentum():
 def test_weekly_breakout_enter_long(ts_instance, weekly_data_breakout):
     """
     전 주 고점을 1% 이상 돌파한 경우 "enter_long" 신호가 반환되어야 함.
-    예: 첫 주 high=100, 두 번째 주의 close를 102로 설정하면 102 >= 101.0 → "enter_long"
+    예: 첫 주 weekly_high=100, 두 번째 주의 close를 102로 설정하면 102 >= 101.0 → "enter_long"
     """
     df = weekly_data_breakout.copy()
     df.at[df.index[1], "close"] = 102
@@ -52,7 +52,7 @@ def test_weekly_breakout_enter_long(ts_instance, weekly_data_breakout):
 def test_weekly_breakout_exit_all(ts_instance, weekly_data_breakout):
     """
     전 주 저점을 1% 이상 하락한 경우 "exit_all" 신호가 반환되어야 함.
-    예: 첫 주 low=90, 두 번째 주의 close를 88로 설정하면 88 <= 89.1 → "exit_all"
+    예: 첫 주 weekly_low=90, 두 번째 주의 close를 88로 설정하면 88 <= 89.1 → "exit_all"
     """
     df = weekly_data_breakout.copy()
     df.at[df.index[1], "close"] = 88
@@ -63,7 +63,7 @@ def test_weekly_breakout_exit_all(ts_instance, weekly_data_breakout):
 def test_weekly_breakout_hold(ts_instance, weekly_data_breakout):
     """
     돌파 조건 미충족 시 "hold" 신호 반환.
-    예: 첫 주 high=100, 두 번째 주 close=95 → "hold"
+    예: 첫 주 weekly_high=100, 두 번째 주 close=95 → "hold"
     """
     df = weekly_data_breakout.copy()
     df.at[df.index[1], "close"] = 95

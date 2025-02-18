@@ -1,6 +1,7 @@
 # trading/asset_manager.py
 from logs.logger_config import setup_logger
-from datetime import datetime, timedelta
+from datetime import timedelta
+import pandas as pd
 
 class AssetManager:
     _instances = {}
@@ -16,6 +17,8 @@ class AssetManager:
         if hasattr(self, '_initialized') and self._initialized:
             return
 
+        if account is None:
+            raise ValueError("Account must not be None.")
         self.account = account
         self.logger = setup_logger(__name__)
         self.min_rebalance_threshold = min_rebalance_threshold
@@ -31,8 +34,10 @@ class AssetManager:
         return (round(self.account.spot_balance, 4), round(self.account.stablecoin_balance, 4))
 
     def rebalance(self, market_regime):
-        current_time = datetime.now()
+        # ★ 현재 시간: Asia/Seoul 기준으로 얻도록 수정
+        current_time = pd.Timestamp.now('Asia/Seoul')
         if self.last_rebalance_time and (current_time - self.last_rebalance_time < self.min_rebalance_interval):
+            self.logger.debug("Rebalance skipped due to interval constraint.")
             return
 
         total_assets = self.account.spot_balance + self.account.stablecoin_balance
@@ -41,7 +46,6 @@ class AssetManager:
             return
 
         regime = market_regime.lower()
-        # --- 수정: "enter_long" 및 "exit_all" 신호에 따른 자산 배분 처리 ---
         if regime in ["bullish", "enter_long"]:
             desired_spot = total_assets * (1.0 if regime == "enter_long" else 0.90)
         elif regime in ["bearish", "exit_all"]:
@@ -55,16 +59,21 @@ class AssetManager:
         current_spot = self.account.spot_balance
         diff_ratio = abs(current_spot - desired_spot) / total_assets
         if diff_ratio < self.min_rebalance_threshold:
+            self.logger.debug("No significant imbalance detected; skipping rebalance.")
             return
 
-        if current_spot < desired_spot:
-            amount_to_convert = desired_spot - current_spot
-            converted = self.account.convert_to_spot(amount_to_convert)
-            self.logger.debug(f"Rebalance ({market_regime.capitalize()}): Converted {converted:.2f} from stablecoin to spot.")
-        else:
-            amount_to_convert = current_spot - desired_spot
-            converted = self.account.convert_to_stablecoin(amount_to_convert)
-            self.logger.debug(f"Rebalance ({market_regime.capitalize()}): Converted {converted:.2f} from spot to stablecoin.")
+        try:
+            if current_spot < desired_spot:
+                amount_to_convert = desired_spot - current_spot
+                converted = self.account.convert_to_spot(amount_to_convert)
+                self.logger.debug(f"Rebalance ({market_regime.capitalize()}): Converted {converted:.2f} from stablecoin to spot.")
+            else:
+                amount_to_convert = current_spot - desired_spot
+                converted = self.account.convert_to_stablecoin(amount_to_convert)
+                self.logger.debug(f"Rebalance ({market_regime.capitalize()}): Converted {converted:.2f} from spot to stablecoin.")
+        except Exception as e:
+            self.logger.error(f"Rebalance conversion failed: {e}", exc_info=True)
+            return
 
         self.last_rebalance_time = current_time
         new_state = self._get_account_state()

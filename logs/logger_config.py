@@ -5,6 +5,7 @@ import queue
 from logging.handlers import RotatingFileHandler, QueueHandler, QueueListener
 from dotenv import load_dotenv
 from logs.aggregating_handler import AggregatingHandler
+import threading
 
 load_dotenv()
 
@@ -61,6 +62,7 @@ class LineRotatingFileHandler(RotatingFileHandler):
         except Exception:
             self.handleError(record)
 
+# 전역 큐
 log_queue = queue.Queue(-1)
 queue_listener = None
 
@@ -68,6 +70,7 @@ def initialize_root_logger():
     root_logger = logging.getLogger()
     root_logger.setLevel(detail_level)
     
+    # 기존 핸들러 모두 제거
     for handler in root_logger.handlers[:]:
         root_logger.removeHandler(handler)
     
@@ -96,7 +99,7 @@ def initialize_root_logger():
     queue_listener = QueueListener(log_queue, console_handler)
     queue_listener.start()
     
-    # Aggregator handler (주간 신호 로깅 포함) 추가
+    # AggregatingHandler 추가 (주간 신호 로깅 포함)
     if AggregatingHandler is not None:
         aggregator_handler = AggregatingHandler(level=detail_level)
         aggregator_handler.addFilter(lambda record: not getattr(record, '_is_summary', False))

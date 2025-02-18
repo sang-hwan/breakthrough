@@ -33,6 +33,12 @@ class Backtester:
         self.df_weekly = None
         self.last_rebalance_time = None
         self.last_weekly_close_date = None
+        # ★ Clock 추상화: 모든 시간 연산은 Asia/Seoul 기준으로 처리
+        self.clock = lambda: pd.Timestamp.now('Asia/Seoul')
+
+    def get_current_time(self):
+        """현재 시각(Asia/Seoul 기준)을 반환하는 메서드"""
+        return self.clock()
 
     def load_data(self, short_table_format, long_table_format, short_tf, long_tf, 
                   start_date=None, end_date=None, extra_tf=None, use_weekly=False):
@@ -365,7 +371,7 @@ class Backtester:
 
     def run_backtest(self, dynamic_params=None, walk_forward_days: int = None, holdout_period: tuple = None):
         if dynamic_params is None:
-            dynamic_params = self.config_manager.get_defaults()
+            dynamic_params = self.config_manager.get_dynamic_params()
         try:
             self.df_long['returns'] = self.df_long['close'].pct_change().fillna(0)
             self.df_long['volatility'] = self.df_long['returns'].rolling(window=20).std().fillna(0)

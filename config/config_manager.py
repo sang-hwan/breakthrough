@@ -25,6 +25,14 @@ class TradingConfig(BaseModel):
     weekly_breakout_threshold: float = Field(default=0.01, gt=0)
     weekly_momentum_threshold: float = Field(default=0.5, gt=0)
     weekly_risk_coefficient: float = Field(default=1.0, gt=0)
+    # 추가: 동적 가중치 산출 관련 파라미터 (optional)
+    weight_vol_threshold: float = Field(default=0.05, gt=0)
+    vol_weight_factor: float = Field(default=0.9, gt=0)
+    liquidity_weight_high: float = Field(default=0.8, gt=0, lt=1)
+    liquidity_weight_low: float = Field(default=0.6, gt=0, lt=1)
+    
+    class Config:
+        extra = "allow"
 
 class ConfigManager:
     _instance = None
@@ -40,6 +48,8 @@ class ConfigManager:
 
         # 기본 설정 파라미터를 Pydantic 모델로 관리
         self.defaults = TradingConfig()
+        # 동적 파라미터 저장 변수 (업데이트 시 사용)
+        self.dynamic_params = self.defaults.model_dump()
         
         # 민감도 분석 대상 파라미터 (최적화 병합 시 평균 적용)
         self.sensitivity_keys = [
@@ -56,12 +66,19 @@ class ConfigManager:
 
     def get_defaults(self) -> dict:
         """기본 설정 파라미터를 사전 형태로 복사하여 반환."""
-        return self.defaults.dict()
+        return self.defaults.model_dump()
+
+    def get_dynamic_params(self) -> dict:
+        """
+        동적 업데이트가 반영된 현재 설정 파라미터를 반환합니다.
+        (업데이트가 없으면 기본 설정을 반환)
+        """
+        return self.dynamic_params.copy()
 
     def update_with_market_data(self, market_data: dict) -> dict:
         """
         시장 데이터를 반영하여 설정 파라미터를 동적으로 업데이트합니다.
-        (주요 입력: volatility, trend, trend_strength, volume, weekly_volatility, weekly_low, weekly_high)
+        (업데이트가 없으면 기본 설정을 반환)
         """
         config_dict = self.get_defaults()
 
@@ -113,8 +130,9 @@ class ConfigManager:
             self.logger.error(f"Validation error in updated configuration: {e}", exc_info=True)
             raise
 
-        self.logger.debug(f"Updated config with market data: {updated_config.dict()}")
-        return updated_config.dict()
+        self.dynamic_params = updated_config.model_dump()
+        self.logger.debug(f"Updated config with market data: {self.dynamic_params}")
+        return self.dynamic_params
 
     def merge_optimized(self, optimized: dict) -> dict:
         """
@@ -140,5 +158,7 @@ class ConfigManager:
             self.logger.error(f"Validation error in merged configuration: {e}", exc_info=True)
             raise
 
-        self.logger.debug(f"Merged configuration: {merged_config.dict()}")
-        return merged_config.dict()
+        self.logger.debug(f"Merged configuration: {merged_config.model_dump()}")
+        # 업데이트된 동적 파라미터에도 반영
+        self.dynamic_params = merged_config.model_dump()
+        return self.dynamic_params

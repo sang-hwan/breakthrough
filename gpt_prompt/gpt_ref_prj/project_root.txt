@@ -1,3 +1,4 @@
+[project root code]
 **.env**
 # Database 설정
 DB_USER=postgres

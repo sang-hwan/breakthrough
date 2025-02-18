@@ -1,3 +1,4 @@
+[data module code]
 # data/db/db_config.py
 import os
 from dotenv import load_dotenv
@@ -136,7 +137,8 @@ def aggregate_to_weekly(
     resample_rule: str = "W-MON",
     label: str = "left",
     closed: str = "left",
-    timezone: str = None
+    timezone: str = None,
+    sma_window: int = 5
 ) -> pd.DataFrame:
     """
     Aggregate OHLCV data to a weekly frequency, and optionally compute technical indicators.
@@ -149,19 +151,35 @@ def aggregate_to_weekly(
         label (str): Labeling convention for the resample (default "left").
         closed (str): Which side is closed (default "left").
         timezone (str): Optional timezone string (e.g., "UTC", "Asia/Seoul") to convert the index.
+        sma_window (int): Window size for computing weekly SMA.
 
     Returns:
         pd.DataFrame: Weekly aggregated DataFrame with columns:
                       open, weekly_high, weekly_low, close, volume, and, if requested,
                       weekly_sma, weekly_momentum, weekly_volatility.
     """
+    # Validate required columns
+    required_columns = {"open", "high", "low", "close", "volume"}
+    missing = required_columns - set(df.columns)
+    if missing:
+        logger.error(f"Input DataFrame is missing required columns: {missing}")
+        return pd.DataFrame()
+
+    # Ensure index is datetime type
+    if not pd.api.types.is_datetime64_any_dtype(df.index):
+        try:
+            df.index = pd.to_datetime(df.index)
+        except Exception as e:
+            logger.error(f"Failed to convert index to datetime: {e}", exc_info=True)
+            return pd.DataFrame()
+
     if df.empty:
         logger.error("Input DataFrame for aggregation is empty.")
         return df
 
     try:
         if timezone:
-            # 만약 타임존 지정 시, 기존 인덱스가 timezone-naive라면 UTC로 간주 후 변환
+            # If timezone is specified and the index is naive, localize to UTC then convert
             if df.index.tz is None:
                 df = df.tz_localize('UTC')
             df = df.tz_convert(timezone)
@@ -184,18 +202,20 @@ def aggregate_to_weekly(
         logger.error("Aggregated weekly DataFrame is empty after resampling.")
         return weekly
 
-    # 컬럼 명칭 재지정: 전략 모듈에서 쉽게 참조할 수 있도록 high→weekly_high, low→weekly_low
+    # Rename columns for easier reference in strategies
     weekly.rename(columns={'high': 'weekly_high', 'low': 'weekly_low'}, inplace=True)
 
     if compute_indicators:
         try:
-            # 주간 SMA: 기본적으로 5주간의 단순 이동 평균
-            sma_indicator = SMAIndicator(close=weekly['close'], window=5, fillna=True)
+            # Weekly SMA: using a parameterized window (default 5)
+            sma_indicator = SMAIndicator(close=weekly['close'], window=sma_window, fillna=True)
             weekly['weekly_sma'] = sma_indicator.sma_indicator()
-            # 주간 모멘텀: 주간 종가의 백분율 변화
+            # Weekly momentum: percentage change of the weekly close
             weekly['weekly_momentum'] = weekly['close'].pct_change() * 100
-            # 주간 변동성: (주간 최고가 - 주간 최저가) / 주간 최저가
-            weekly['weekly_volatility'] = (weekly['weekly_high'] - weekly['weekly_low']) / weekly['weekly_low']
+            # Weekly volatility: (weekly_high - weekly_low) / weekly_low, with fallback for division by zero
+            weekly['weekly_volatility'] = weekly.apply(
+                lambda row: (row['weekly_high'] - row['weekly_low']) / row['weekly_low']
+                if row['weekly_low'] != 0 else 0.0, axis=1)
         except Exception as e:
             logger.error(f"Error computing weekly indicators: {e}", exc_info=True)
 

@@ -12,16 +12,17 @@ def get_signal_with_weekly_override(backtester, row, current_time, dynamic_param
     """
     try:
         if hasattr(backtester, 'df_weekly') and backtester.df_weekly is not None and not backtester.df_weekly.empty:
-            # Get the latest weekly bar that ended on or before current_time
             weekly_bar = backtester.df_weekly.loc[backtester.df_weekly.index <= current_time].iloc[-1]
-            tolerance = 0.002  # 0.2% tolerance
-            if abs(row["close"] - weekly_bar["weekly_low"]) / weekly_bar["weekly_low"] <= tolerance:
-                backtester.logger.debug(f"Weekly override: Price {row['close']} near weekly low {weekly_bar['weekly_low']}. Signal: enter_long.")
-                return "enter_long"
-            elif abs(row["close"] - weekly_bar["weekly_high"]) / weekly_bar["weekly_high"] <= tolerance:
-                backtester.logger.debug(f"Weekly override: Price {row['close']} near weekly high {weekly_bar['weekly_high']}. Signal: exit_all.")
-                return "exit_all"
-        # Fallback to ensemble manager's signal
+            if "weekly_low" in weekly_bar and "weekly_high" in weekly_bar:
+                tolerance = 0.002  # 0.2% tolerance
+                if abs(row["close"] - weekly_bar["weekly_low"]) / weekly_bar["weekly_low"] <= tolerance:
+                    backtester.logger.debug(f"Weekly override: Price {row['close']} near weekly low {weekly_bar['weekly_low']}. Signal: enter_long.")
+                    return "enter_long"
+                elif abs(row["close"] - weekly_bar["weekly_high"]) / weekly_bar["weekly_high"] <= tolerance:
+                    backtester.logger.debug(f"Weekly override: Price {row['close']} near weekly high {weekly_bar['weekly_high']}. Signal: exit_all.")
+                    return "exit_all"
+            else:
+                backtester.logger.warning("Weekly override skipped: weekly_bar missing 'weekly_low' or 'weekly_high' keys.")
         return backtester.ensemble_manager.get_final_signal(
             row.get('market_regime', 'unknown'),
             dynamic_params.get('liquidity_info', 'high'),
@@ -81,8 +82,8 @@ def process_training_orders(backtester, dynamic_params, signal_cooldown, rebalan
             try:
                 risk_params = backtester.risk_manager.compute_risk_parameters_by_regime(
                     base_risk_params,
-                    regime=row.get('market_regime', 'unknown'),
-                    liquidity=dynamic_params.get('liquidity_info', 'high')
+                    row.get('market_regime', 'unknown'),
+                    dynamic_params.get('liquidity_info', 'high')
                 )
             except Exception as e:
                 logger.error(f"Risk parameter computation error at {current_time}: {e}", exc_info=True)
@@ -138,8 +139,8 @@ def process_extra_orders(backtester, dynamic_params):
                 try:
                     risk_params = backtester.risk_manager.compute_risk_parameters_by_regime(
                         base_risk_params,
-                        regime=regime,
-                        liquidity=dynamic_params.get('liquidity_info', 'high')
+                        regime,
+                        dynamic_params.get('liquidity_info', 'high')
                     )
                 except Exception as e:
                     logger.error(f"Risk params error (extra data) at {current_time}: {e}", exc_info=True)
@@ -174,8 +175,8 @@ def process_holdout_orders(backtester, dynamic_params, df_holdout):
                 try:
                     risk_params = backtester.risk_manager.compute_risk_parameters_by_regime(
                         base_risk_params,
-                        regime=row.get('market_regime', 'unknown'),
-                        liquidity=dynamic_params.get('liquidity_info', 'high')
+                        row.get('market_regime', 'unknown'),
+                        dynamic_params.get('liquidity_info', 'high')
                     )
                 except Exception as e:
                     logger.error(f"Risk params error (holdout) at {current_time}: {e}", exc_info=True)

@@ -36,6 +36,14 @@ def _validate_and_prepare_df(df, table_name):
             logger.error(f"Error converting index to datetime for {table_name}: {e}", exc_info=True)
             raise
 
+    # ★ 시간대 통일: 만약 index가 naive하면 'Asia/Seoul'로 로컬라이즈
+    if df.index.tz is None:
+        try:
+            df = df.tz_localize('Asia/Seoul')
+        except Exception as e:
+            logger.error(f"Error localizing index to Asia/Seoul for {table_name}: {e}", exc_info=True)
+            raise
+
     df.sort_index(inplace=True)
 
     if df.index.duplicated().any():
@@ -102,7 +110,6 @@ def load_data(backtester, short_table_format, long_table_format, short_tf, long_
             logger.error(f"Extra 데이터 로드 에러: {e}", exc_info=True)
     if use_weekly:
         try:
-            # 주간 데이터 집계: ohlcv_aggregator에서 weekly_high, weekly_low, weekly_volatility 등이 계산됨.
             backtester.df_weekly = aggregate_to_weekly(backtester.df_short, compute_indicators=True)
             if backtester.df_weekly.empty:
                 logger.warning("주간 데이터 집계 결과가 비어있습니다.")

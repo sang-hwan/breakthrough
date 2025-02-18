@@ -1,3 +1,4 @@
+[markets module code]
 # markets/regime_filter.py
 from logs.logger_config import setup_logger
 

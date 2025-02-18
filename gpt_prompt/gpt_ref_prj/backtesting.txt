@@ -1,3 +1,4 @@
+[backtesting module code]
 # backtesting/steps/data_loader.py
 from logs.logger_config import setup_logger
 from data.db.db_manager import fetch_ohlcv_records
@@ -34,6 +35,14 @@ def _validate_and_prepare_df(df, table_name):
                 df = df[~df.index.isnull()]
         except Exception as e:
             logger.error(f"Error converting index to datetime for {table_name}: {e}", exc_info=True)
+            raise
+
+    # ★ 시간대 통일: 만약 index가 naive하면 'Asia/Seoul'로 로컬라이즈
+    if df.index.tz is None:
+        try:
+            df = df.tz_localize('Asia/Seoul')
+        except Exception as e:
+            logger.error(f"Error localizing index to Asia/Seoul for {table_name}: {e}", exc_info=True)
             raise
 
     df.sort_index(inplace=True)
@@ -102,7 +111,6 @@ def load_data(backtester, short_table_format, long_table_format, short_tf, long_
             logger.error(f"Extra 데이터 로드 에러: {e}", exc_info=True)
     if use_weekly:
         try:
-            # 주간 데이터 집계: ohlcv_aggregator에서 weekly_high, weekly_low, weekly_volatility 등이 계산됨.
             backtester.df_weekly = aggregate_to_weekly(backtester.df_short, compute_indicators=True)
             if backtester.df_weekly.empty:
                 logger.warning("주간 데이터 집계 결과가 비어있습니다.")
@@ -153,16 +161,17 @@ def get_signal_with_weekly_override(backtester, row, current_time, dynamic_param
     """
     try:
         if hasattr(backtester, 'df_weekly') and backtester.df_weekly is not None and not backtester.df_weekly.empty:
-            # Get the latest weekly bar that ended on or before current_time
             weekly_bar = backtester.df_weekly.loc[backtester.df_weekly.index <= current_time].iloc[-1]
-            tolerance = 0.002  # 0.2% tolerance
-            if abs(row["close"] - weekly_bar["weekly_low"]) / weekly_bar["weekly_low"] <= tolerance:
-                backtester.logger.debug(f"Weekly override: Price {row['close']} near weekly low {weekly_bar['weekly_low']}. Signal: enter_long.")
-                return "enter_long"
-            elif abs(row["close"] - weekly_bar["weekly_high"]) / weekly_bar["weekly_high"] <= tolerance:
-                backtester.logger.debug(f"Weekly override: Price {row['close']} near weekly high {weekly_bar['weekly_high']}. Signal: exit_all.")
-                return "exit_all"
-        # Fallback to ensemble manager's signal
+            if "weekly_low" in weekly_bar and "weekly_high" in weekly_bar:
+                tolerance = 0.002  # 0.2% tolerance
+                if abs(row["close"] - weekly_bar["weekly_low"]) / weekly_bar["weekly_low"] <= tolerance:
+                    backtester.logger.debug(f"Weekly override: Price {row['close']} near weekly low {weekly_bar['weekly_low']}. Signal: enter_long.")
+                    return "enter_long"
+                elif abs(row["close"] - weekly_bar["weekly_high"]) / weekly_bar["weekly_high"] <= tolerance:
+                    backtester.logger.debug(f"Weekly override: Price {row['close']} near weekly high {weekly_bar['weekly_high']}. Signal: exit_all.")
+                    return "exit_all"
+            else:
+                backtester.logger.warning("Weekly override skipped: weekly_bar missing 'weekly_low' or 'weekly_high' keys.")
         return backtester.ensemble_manager.get_final_signal(
             row.get('market_regime', 'unknown'),
             dynamic_params.get('liquidity_info', 'high'),
@@ -222,8 +231,8 @@ def process_training_orders(backtester, dynamic_params, signal_cooldown, rebalan
             try:
                 risk_params = backtester.risk_manager.compute_risk_parameters_by_regime(
                     base_risk_params,
-                    regime=row.get('market_regime', 'unknown'),
-                    liquidity=dynamic_params.get('liquidity_info', 'high')
+                    row.get('market_regime', 'unknown'),
+                    dynamic_params.get('liquidity_info', 'high')
                 )
             except Exception as e:
                 logger.error(f"Risk parameter computation error at {current_time}: {e}", exc_info=True)
@@ -279,8 +288,8 @@ def process_extra_orders(backtester, dynamic_params):
                 try:
                     risk_params = backtester.risk_manager.compute_risk_parameters_by_regime(
                         base_risk_params,
-                        regime=regime,
-                        liquidity=dynamic_params.get('liquidity_info', 'high')
+                        regime,
+                        dynamic_params.get('liquidity_info', 'high')
                     )
                 except Exception as e:
                     logger.error(f"Risk params error (extra data) at {current_time}: {e}", exc_info=True)
@@ -315,8 +324,8 @@ def process_holdout_orders(backtester, dynamic_params, df_holdout):
                 try:
                     risk_params = backtester.risk_manager.compute_risk_parameters_by_regime(
                         base_risk_params,
-                        regime=row.get('market_regime', 'unknown'),
-                        liquidity=dynamic_params.get('liquidity_info', 'high')
+                        row.get('market_regime', 'unknown'),
+                        dynamic_params.get('liquidity_info', 'high')
                     )
                 except Exception as e:
                     logger.error(f"Risk params error (holdout) at {current_time}: {e}", exc_info=True)
@@ -382,6 +391,12 @@ class Backtester:
         self.df_weekly = None
         self.last_rebalance_time = None
         self.last_weekly_close_date = None
+        # ★ Clock 추상화: 모든 시간 연산은 Asia/Seoul 기준으로 처리
+        self.clock = lambda: pd.Timestamp.now('Asia/Seoul')
+
+    def get_current_time(self):
+        """현재 시각(Asia/Seoul 기준)을 반환하는 메서드"""
+        return self.clock()
 
     def load_data(self, short_table_format, long_table_format, short_tf, long_tf, 
                   start_date=None, end_date=None, extra_tf=None, use_weekly=False):
@@ -714,7 +729,7 @@ class Backtester:
 
     def run_backtest(self, dynamic_params=None, walk_forward_days: int = None, holdout_period: tuple = None):
         if dynamic_params is None:
-            dynamic_params = self.config_manager.get_defaults()
+            dynamic_params = self.config_manager.get_dynamic_params()
         try:
             self.df_long['returns'] = self.df_long['close'].pct_change().fillna(0)
             self.df_long['volatility'] = self.df_long['returns'].rolling(window=20).std().fillna(0)
