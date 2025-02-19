@@ -25,7 +25,6 @@ class Position:
         self.total_splits: int = total_splits
         self.executed_splits: int = 0
         self.allocation_plan: list = allocation_plan if allocation_plan is not None else []
-        # 초기 극값 설정: LONG은 최고, SHORT는 최저
         if self.side == "SHORT":
             self.lowest_price: float = initial_price
         else:
@@ -35,10 +34,6 @@ class Position:
     def add_execution(self, entry_price: float, size: float, stop_loss: float = None,
                       take_profit: float = None, entry_time=None, exit_targets: list = None,
                       trade_type: str = "unknown", min_order_size: float = 1e-8) -> None:
-        """
-        포지션 실행 추가:
-          - exit_targets: [(target_price, exit_ratio), ...] 형식의 리스트
-        """
         if size < min_order_size:
             logger.warning("Execution size below minimum order size; execution not added.")
             return
@@ -60,7 +55,6 @@ class Position:
             'trade_type': trade_type,
             'closed': False
         }
-        # 포지션 방향에 따라 초기 극값 설정
         if self.side == "SHORT":
             execution["lowest_price_since_entry"] = entry_price
         else:
@@ -70,11 +64,6 @@ class Position:
         logger.debug(f"Execution added: entry_price={entry_price}, size={size}, type={trade_type}")
 
     def update_extremum(self, current_price: float) -> None:
-        """
-        포지션의 각 미체결 실행에 대해, 현재 가격을 반영하여
-        LONG 포지션인 경우 최고 가격, SHORT 포지션인 경우 최저 가격을 업데이트합니다.
-        후행 스톱 및 청산 타이밍 결정에 활용됩니다.
-        """
         for record in self.executions:
             if record.get("closed", False):
                 continue
@@ -91,17 +80,14 @@ class Position:
         logger.debug(f"Extremum values updated with current_price={current_price}")
 
     def get_total_size(self) -> float:
-        """미체결 실행의 총 사이즈를 반환합니다."""
         return sum(record['size'] for record in self.executions if not record.get("closed", False))
 
     def get_average_entry_price(self) -> float:
-        """미체결 실행의 평균 진입 가격을 계산하여 반환합니다."""
         total_cost = sum(record['entry_price'] * record['size'] for record in self.executions if not record.get("closed", False))
         total_qty = self.get_total_size()
         return total_cost / total_qty if total_qty > 0 else 0.0
 
     def remove_execution(self, index: int) -> None:
-        """지정한 인덱스의 실행 내역을 제거합니다."""
         if 0 <= index < len(self.executions):
             self.executions.pop(index)
             logger.debug(f"Execution removed at index {index}")
@@ -109,16 +95,9 @@ class Position:
             logger.warning(f"Failed to remove execution: invalid index {index}")
 
     def is_empty(self) -> bool:
-        """모든 실행이 종료되었는지 확인합니다."""
         return all(record.get("closed", False) for record in self.executions)
 
     def partial_close_execution(self, index: int, close_ratio: float, min_order_size: float = 1e-8) -> float:
-        """
-        부분 청산: 지정된 비율(close_ratio, 0~1)만큼 실행의 사이즈를 감소시키며,
-        남은 수량이 최소 주문 수량보다 작으면 해당 실행을 종료합니다.
-        Returns:
-          - 청산된 수량
-        """
         if not (0 < close_ratio <= 1):
             logger.error("close_ratio must be between 0 and 1.")
             return 0.0

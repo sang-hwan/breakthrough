@@ -140,7 +140,6 @@ class WeeklyBreakoutStrategy(BaseStrategy):
                 return "hold"
             prev_week = weekly_data.iloc[-2]
             current_week = weekly_data.iloc[-1]
-            # 주간 극값 신호 판단: aggregator에서 재명명된 'weekly_low', 'weekly_high' 사용
             price_data = {"current_price": current_week.get('close')}
             weekly_extremes = {"weekly_low": prev_week.get('weekly_low'), "weekly_high": prev_week.get('weekly_high')}
             extreme_signal = determine_weekly_extreme_signal(price_data, weekly_extremes, threshold=breakout_threshold)
@@ -190,10 +189,7 @@ class TradingStrategies:
         self.weekly_momentum = self.ensemble.weekly_momentum_strategy
 
     def get_final_signal(self, market_regime, liquidity_info, data, current_time, data_weekly=None, **kwargs):
-        # 우선 Ensemble의 최종 신호를 획득
         ensemble_signal = self.ensemble.get_final_signal(market_regime, liquidity_info, data, current_time, data_weekly, **kwargs)
-        # HMM 기반 시장 레짐에 따른 신호 override:
-        # 예를 들어, bearish 레짐이면 위험 관리 차원에서 강제 청산(exit_all)을 적용합니다.
         if market_regime == "bearish":
             self.logger.debug("Market regime bearish: overriding final signal to exit_all")
             return "exit_all"

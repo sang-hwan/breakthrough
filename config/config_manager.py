@@ -1,6 +1,6 @@
 # config/config_manager.py
 from logs.logger_config import setup_logger
-from pydantic import BaseModel, Field, ValidationError, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, model_validator
 from typing import Literal
 
 class TradingConfig(BaseModel):
@@ -8,30 +8,35 @@ class TradingConfig(BaseModel):
     
     sma_period: int = Field(default=200, ge=1)
     atr_period: int = Field(default=14, ge=1)
-    atr_multiplier: float = Field(default=2.07, gt=0)
-    dynamic_sl_adjustment: float = Field(default=1.18, gt=0)
-    profit_ratio: float = Field(default=0.098, gt=0)
+    atr_multiplier: float = Field(default=2.07, gt=0, le=10)
+    dynamic_sl_adjustment: float = Field(default=1.18, gt=0, le=5)
+    profit_ratio: float = Field(default=0.098, gt=0, le=1.0)
     use_trailing_stop: bool = True
-    trailing_percent: float = Field(default=0.045, gt=0)
+    trailing_percent: float = Field(default=0.045, gt=0, le=0.5)
     partial_exit_ratio: float = Field(default=0.5, gt=0, lt=1)
-    partial_profit_ratio: float = Field(default=0.03, gt=0)
-    final_profit_ratio: float = Field(default=0.06, gt=0)
-    risk_per_trade: float = Field(default=0.0162, gt=0)
+    partial_profit_ratio: float = Field(default=0.03, gt=0, le=1.0)
+    final_profit_ratio: float = Field(default=0.06, gt=0, le=1.0)
+    risk_per_trade: float = Field(default=0.0162, gt=0, le=1.0)
     total_splits: int = Field(default=3, ge=1)
     allocation_mode: Literal['equal', 'pyramid_up', 'pyramid_down'] = "equal"
-    scale_in_threshold: float = Field(default=0.0153, gt=0)
+    scale_in_threshold: float = Field(default=0.0153, gt=0, le=1.0)
     hmm_confidence_threshold: float = Field(default=0.8, ge=0, le=1)
     liquidity_info: Literal['high', 'low'] = "high"
-    volatility_multiplier: float = Field(default=1.0, gt=0)
+    volatility_multiplier: float = Field(default=1.0, gt=0, le=5)
     use_candle_pattern: bool = True
-    weekly_breakout_threshold: float = Field(default=0.01, gt=0)
-    weekly_momentum_threshold: float = Field(default=0.5, gt=0)
-    weekly_risk_coefficient: float = Field(default=1.0, gt=0)
-    # 추가: 동적 가중치 산출 관련 파라미터 (optional)
-    weight_vol_threshold: float = Field(default=0.05, gt=0)
-    vol_weight_factor: float = Field(default=0.9, gt=0)
+    weekly_breakout_threshold: float = Field(default=0.01, gt=0, le=0.1)
+    weekly_momentum_threshold: float = Field(default=0.5, gt=0, le=1.0)
+    weekly_risk_coefficient: float = Field(default=1.0, gt=0, le=5)
+    weight_vol_threshold: float = Field(default=0.05, gt=0, le=1)
+    vol_weight_factor: float = Field(default=0.9, gt=0, le=2)
     liquidity_weight_high: float = Field(default=0.8, gt=0, lt=1)
     liquidity_weight_low: float = Field(default=0.6, gt=0, lt=1)
+
+    @model_validator(mode="after")
+    def check_profit_ratios(cls, model: "TradingConfig") -> "TradingConfig":
+        if model.partial_profit_ratio >= model.final_profit_ratio:
+            raise ValueError("partial_profit_ratio must be less than final_profit_ratio")
+        return model
 
 class ConfigManager:
     _instance = None
@@ -60,7 +65,7 @@ class ConfigManager:
             "weekly_momentum_threshold"
         ]
         self.logger = setup_logger(__name__)
-        self.logger.debug("ConfigManager initialized with default parameters.")
+        self.logger.info("ConfigManager initialized with default parameters.")
         self._initialized = True
 
     def get_defaults(self) -> dict:
@@ -120,17 +125,16 @@ class ConfigManager:
             if spread_ratio > 0.05:
                 config_dict["weekly_breakout_threshold"] = max(config_dict["weekly_breakout_threshold"] * 0.8, 0.005)
                 config_dict["weekly_momentum_threshold"] = min(config_dict["weekly_momentum_threshold"] * 1.05, 0.7)
-                self.logger.debug(f"Weekly strategy parameters adjusted due to high spread ratio: {spread_ratio:.2f}")
+                self.logger.info(f"Weekly strategy parameters adjusted due to high spread ratio: {spread_ratio:.2f}")
 
         try:
-            # 업데이트된 파라미터를 Pydantic을 통해 검증
             updated_config = TradingConfig(**config_dict)
-        except ValidationError as e:
-            self.logger.error(f"Validation error in updated configuration: {e}", exc_info=True)
+        except Exception as e:
+            self.logger.error("Validation error in updated configuration: " + str(e))
             raise
 
         self.dynamic_params = updated_config.model_dump()
-        self.logger.debug(f"Updated config with market data: {self.dynamic_params}")
+        self.logger.info(f"Updated config with market data: {self.dynamic_params}")
         return self.dynamic_params
 
     def merge_optimized(self, optimized: dict) -> dict:
@@ -153,11 +157,22 @@ class ConfigManager:
 
         try:
             merged_config = TradingConfig(**merged_dict)
-        except ValidationError as e:
-            self.logger.error(f"Validation error in merged configuration: {e}", exc_info=True)
+        except Exception as e:
+            self.logger.error("Validation error in merged configuration: " + str(e))
             raise
 
-        self.logger.debug(f"Merged configuration: {merged_config.model_dump()}")
-        # 업데이트된 동적 파라미터에도 반영
+        self.logger.info(f"Merged configuration: {merged_config.model_dump()}")
         self.dynamic_params = merged_config.model_dump()
         return self.dynamic_params
+
+    def validate_params(self, params: dict) -> dict:
+        """
+        전달받은 파라미터를 TradingConfig 모델을 통해 검증합니다.
+        유효하지 않은 경우 기본 설정을 반환합니다.
+        """
+        try:
+            validated = TradingConfig(**params)
+            return validated.model_dump()
+        except Exception as e:
+            self.logger.error("Dynamic parameter validation failed: " + str(e))
+            return self.get_defaults()

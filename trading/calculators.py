@@ -5,48 +5,61 @@ from logs.logger_config import setup_logger
 
 logger = setup_logger(__name__)
 
-# ★ 커스텀 예외 클래스 추가
 class InvalidEntryPriceError(ValueError):
     pass
 
-def calculate_atr(data: pd.DataFrame, period: int = 14) -> pd.DataFrame:
-    """
-    Calculates the Average True Range (ATR) for the given data.
-    Incorporates fallback logic when data variability is low.
-    """
+def calculate_atr(data: pd.DataFrame, period: int = 14, min_atr: float = None) -> pd.DataFrame:
+    required_cols = ['high', 'low', 'close']
+    for col in required_cols:
+        if col not in data.columns:
+            raise ValueError(f"Missing required column: {col}")
+    
+    data = data[data['high'] >= data['low']].copy()
+    
+    data.loc[data['close'] < data['low'], 'close'] = data['low']
+    data.loc[data['close'] > data['high'], 'close'] = data['high']
+    
+    range_series = data['high'] - data['low']
+    typical_range = range_series.median()
+    if typical_range > 0:
+        data = data[range_series <= (3 * typical_range)]
+    else:
+        logger.debug("Typical range is zero; skipping outlier filtering.")
+    
+    effective_period = period if len(data) >= period else len(data)
+    
     try:
-        if len(data) < period:
+        if effective_period < 1:
+            data['atr'] = 0
+        elif len(data) < effective_period:
             data['atr'] = data['high'] - data['low']
         else:
             atr_indicator = ta.volatility.AverageTrueRange(
                 high=data['high'],
                 low=data['low'],
                 close=data['close'],
-                window=period,
+                window=effective_period,
                 fillna=True
             )
             data['atr'] = atr_indicator.average_true_range()
     except Exception as e:
-        logger.error(f"calculate_atr error: {e}", exc_info=True)
+        logger.error("calculate_atr error: " + str(e))
         data['atr'] = data['high'] - data['low']
     
-    avg_range = (data['high'] - data['low']).mean()
     avg_close = data['close'].mean()
-    if avg_range < avg_close * 0.001:
-        fallback_atr = data['atr'].mean() if data['atr'].mean() > 0 else avg_close * 0.01
-        logger.warning(f"Data variability is low (avg_range={avg_range:.6f}). Using fallback ATR value: {fallback_atr:.6f}.")
-        data['atr'] = data['atr'].apply(lambda x: fallback_atr if x < fallback_atr else x)
+    if min_atr is None:
+        min_atr = avg_close * 0.01
+
+    data['atr'] = data['atr'].apply(lambda x: max(x, min_atr))
+    
     return data
 
 def calculate_dynamic_stop_and_take(entry_price: float, atr: float, risk_params: dict):
-    """
-    Calculates dynamic stop-loss and take-profit prices based on ATR and risk parameters.
-    """
     if entry_price <= 0:
         logger.error(f"Invalid entry_price: {entry_price}. Must be positive.")
         raise InvalidEntryPriceError(f"Invalid entry_price: {entry_price}. Must be positive.")
     if atr <= 0:
-        logger.warning(f"ATR value is non-positive ({atr}). Using fallback ATR value from risk_params if available.")
+        logger.error(f"ATR value is non-positive ({atr}). Using fallback ATR value from risk_params if available.")
         fallback_atr = risk_params.get("fallback_atr", entry_price * 0.01)
         if fallback_atr <= 0:
             fallback_atr = entry_price * 0.01
@@ -60,21 +73,16 @@ def calculate_dynamic_stop_and_take(entry_price: float, atr: float, risk_params:
         stop_loss_price = entry_price - (atr * atr_multiplier * volatility_multiplier)
         take_profit_price = entry_price * (1 + profit_ratio)
         if stop_loss_price <= 0:
-            logger.warning("Computed stop_loss_price is non-positive; adjusting to at least 50% of entry_price.")
+            logger.error("Computed stop_loss_price is non-positive; adjusting to at least 50% of entry_price.")
             stop_loss_price = entry_price * 0.5
-        logger.debug(f"Calculated stop_loss={stop_loss_price:.2f}, take_profit={take_profit_price:.2f} "
-                     f"(entry_price={entry_price}, atr={atr}, atr_multiplier={atr_multiplier}, profit_ratio={profit_ratio})")
+        logger.debug(f"Calculated stop_loss={stop_loss_price:.2f}, take_profit={take_profit_price:.2f} (entry_price={entry_price}, atr={atr}, atr_multiplier={atr_multiplier}, profit_ratio={profit_ratio})")
         return stop_loss_price, take_profit_price
     except Exception as e:
-        logger.error(f"calculate_dynamic_stop_and_take error: {e}", exc_info=True)
+        logger.error("calculate_dynamic_stop_and_take error: " + str(e))
         raise
 
 def adjust_trailing_stop(current_stop: float, current_price: float, highest_price: float, trailing_percentage: float,
                            volatility: float = 0.0, weekly_high: float = None, weekly_volatility: float = None) -> float:
-    """
-    Adjusts the trailing stop price based on current market conditions.
-    Incorporates weekly high and volatility if available to better capture weekly extremes.
-    """
     if current_price <= 0 or highest_price <= 0:
         logger.error(f"Invalid current_price ({current_price}) or highest_price ({highest_price}).")
         raise ValueError("current_price and highest_price must be positive.")
@@ -92,21 +100,16 @@ def adjust_trailing_stop(current_stop: float, current_price: float, highest_pric
         else:
             candidate_stop = new_stop_intraday
         adjusted_stop = candidate_stop if candidate_stop > current_stop and candidate_stop < current_price else current_stop
-        logger.debug(f"Adjusted trailing stop: {adjusted_stop:.2f} "
-                     f"(current_stop={current_stop}, candidate_stop={candidate_stop}, current_price={current_price})")
+        logger.debug(f"Adjusted trailing stop: {adjusted_stop:.2f} (current_stop={current_stop}, candidate_stop={candidate_stop}, current_price={current_price})")
         return adjusted_stop
     except Exception as e:
-        logger.error(f"adjust_trailing_stop error: {e}", exc_info=True)
+        logger.error("adjust_trailing_stop error: " + str(e))
         raise
 
 def calculate_partial_exit_targets(entry_price: float, partial_exit_ratio: float = 0.5,
                                      partial_profit_ratio: float = 0.03, final_profit_ratio: float = 0.06,
                                      final_exit_ratio: float = 1.0, use_weekly_target: bool = False,
                                      weekly_momentum: float = None, weekly_adjustment_factor: float = 0.5):
-    """
-    Calculates targets for partial exits based on entry price and profit ratios.
-    Can adjust targets based on weekly momentum if provided.
-    """
     if entry_price <= 0:
         logger.error(f"Invalid entry_price: {entry_price}. Must be positive.")
         raise InvalidEntryPriceError(f"Invalid entry_price: {entry_price}. Must be positive.")
@@ -119,9 +122,8 @@ def calculate_partial_exit_targets(entry_price: float, partial_exit_ratio: float
             adjusted_final = final_profit_ratio
         partial_target = entry_price * (1 + adjusted_partial)
         final_target = entry_price * (1 + adjusted_final)
-        logger.debug(f"Partial targets: partial={partial_target:.2f}, final={final_target:.2f} "
-                     f"(entry_price={entry_price}, adjusted_partial={adjusted_partial}, adjusted_final={adjusted_final})")
+        logger.debug(f"Partial targets: partial={partial_target:.2f}, final={final_target:.2f} (entry_price={entry_price}, adjusted_partial={adjusted_partial}, adjusted_final={adjusted_final})")
         return [(partial_target, partial_exit_ratio), (final_target, final_exit_ratio)]
     except Exception as e:
-        logger.error(f"calculate_partial_exit_targets error: {e}", exc_info=True)
+        logger.error("calculate_partial_exit_targets error: " + str(e))
         raise

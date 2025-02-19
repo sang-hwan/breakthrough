@@ -20,7 +20,7 @@ def run_sensitivity_analysis(param_settings,
     if base_dynamic_params is None:
         base_dynamic_params = ConfigManager().get_defaults()
 
-    logger.debug(f"Starting sensitivity analysis over assets {assets}")
+    logger.info(f"Starting sensitivity analysis over assets {assets}")
     results = {}
     param_names = list(param_settings.keys())
     combinations = list(product(*(param_settings[name] for name in param_names)))
@@ -44,7 +44,7 @@ def run_sensitivity_analysis(param_settings,
                     )
                     for name, val in combo_key:
                         dynamic_params[name] = val
-                    trades, _ = bt.run_backtest(dynamic_params=dynamic_params)
+                    trades, _ = bt.run_backtest_pipeline(dynamic_params=dynamic_params)
                     from backtesting.performance import compute_performance
                     perf = compute_performance(trades)
                     run_metrics.append(perf)

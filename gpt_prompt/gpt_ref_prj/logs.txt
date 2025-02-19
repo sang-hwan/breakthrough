@@ -166,7 +166,6 @@ import queue
 from logging.handlers import RotatingFileHandler, QueueHandler, QueueListener
 from dotenv import load_dotenv
 from logs.aggregating_handler import AggregatingHandler
-import threading
 
 load_dotenv()
 
@@ -183,11 +182,11 @@ class OneLineFormatter(logging.Formatter):
         return formatted.replace("\n", " | ")
 
 class LineRotatingFileHandler(RotatingFileHandler):
-    def __init__(self, base_filename, mode='a', max_lines=1000, backupCount=10, encoding=None, delay=False):
+    def __init__(self, base_filename, mode='a', max_lines=1000, encoding=None, delay=False):
         self.base_filename = base_filename
         self.current_index = 0
         self._set_current_filename()
-        super().__init__(self.current_filename, mode, maxBytes=0, backupCount=backupCount, encoding=encoding, delay=delay)
+        super().__init__(self.current_filename, mode, maxBytes=0, encoding=encoding, delay=delay)
         self.max_lines = max_lines
         self.current_line_count = 0
 
@@ -201,12 +200,6 @@ class LineRotatingFileHandler(RotatingFileHandler):
             self.stream.close()
             self.stream = None
         self.current_index += 1
-        if self.backupCount > 0 and self.current_index >= self.backupCount:
-            base, ext = os.path.splitext(self.base_filename)
-            oldest_index = self.current_index - self.backupCount
-            old_file = self.base_filename if oldest_index == 0 else f"{base}{oldest_index}{ext}"
-            if os.path.exists(old_file):
-                os.remove(old_file)
         self._set_current_filename()
         self.mode = 'w'
         self.stream = self._open()
@@ -223,7 +216,6 @@ class LineRotatingFileHandler(RotatingFileHandler):
         except Exception:
             self.handleError(record)
 
-# 전역 큐
 log_queue = queue.Queue(-1)
 queue_listener = None
 
@@ -231,14 +223,12 @@ def initialize_root_logger():
     root_logger = logging.getLogger()
     root_logger.setLevel(detail_level)
     
-    # 기존 핸들러 모두 제거
     for handler in root_logger.handlers[:]:
         root_logger.removeHandler(handler)
     
     file_handler = LineRotatingFileHandler(
         base_filename=BASE_LOG_FILE,
         max_lines=1000,
-        backupCount=10,
         encoding="utf-8",
         delay=True
     )
@@ -260,7 +250,6 @@ def initialize_root_logger():
     queue_listener = QueueListener(log_queue, console_handler)
     queue_listener.start()
     
-    # AggregatingHandler 추가 (주간 신호 로깅 포함)
     if AggregatingHandler is not None:
         aggregator_handler = AggregatingHandler(level=detail_level)
         aggregator_handler.addFilter(lambda record: not getattr(record, '_is_summary', False))
@@ -298,6 +287,7 @@ def shutdown_logging():
 
 ---
 
+# logs/logging_util.py
 import threading
 import os
 import glob

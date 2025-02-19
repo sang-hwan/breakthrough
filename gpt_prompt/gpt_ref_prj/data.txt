@@ -412,12 +412,7 @@ def collect_and_store_ohlcv_data(
     exchange_id: str = 'binance',
     time_offset_ms: int = 1
 ) -> None:
-    """
-    Collect OHLCV data for given symbols and timeframes, and store them into the database.
-    Uses threading to fetch data concurrently.
-    """
     def process_symbol_tf(symbol: str, tf: str) -> None:
-        # Create a cache key including all parameters that affect the API call
         key = (symbol, tf, use_historical, start_date, limit_per_request, latest_limit, exchange_id, time_offset_ms)
         with _cache_lock:
             if key in _ohlcv_cache:
@@ -458,10 +453,8 @@ def collect_and_store_ohlcv_data(
         time.sleep(pause_sec)  # 짧은 대기 시간으로 API rate limit 준수
 
     tasks = []
-    # 최대 동시 작업 수는 상황에 맞게 조정 (여기서는 최대 10개)
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
         for symbol in symbols:
             for tf in timeframes:
                 tasks.append(executor.submit(process_symbol_tf, symbol, tf))
-        # 모든 작업이 완료될 때까지 대기
         concurrent.futures.wait(tasks)

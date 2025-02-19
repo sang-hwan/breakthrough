@@ -29,7 +29,7 @@ def determine_market_regime(price_data: dict) -> str:
         else:
             regime = "sideways"
         
-        logger.debug(f"시장 레짐 결정: {regime} (변화율: {change_percent:.2%})")
+        logger.info(f"시장 레짐 결정: {regime} (변화율: {change_percent:.2%})")
         return regime
     except Exception as e:
         logger.error(f"시장 레짐 결정 중 에러 발생: {e}", exc_info=True)
@@ -48,7 +48,7 @@ def filter_regime(price_data: dict, target_regime: str = "bullish") -> bool:
     """
     regime = determine_market_regime(price_data)
     match = (regime == target_regime)
-    logger.debug(f"레짐 필터링: 목표={target_regime}, 결정={regime}, 일치 여부={match}")
+    logger.info(f"레짐 필터링: 목표={target_regime}, 결정={regime}, 일치 여부={match}")
     return match
 
 def determine_weekly_extreme_signal(price_data: dict, weekly_data: dict, threshold: float = 0.002) -> str:
@@ -73,10 +73,10 @@ def determine_weekly_extreme_signal(price_data: dict, weekly_data: dict, thresho
             return ""
         
         if abs(current_price - weekly_low) / weekly_low <= threshold:
-            logger.debug(f"주간 저점 신호 감지: current_price={current_price}, weekly_low={weekly_low}")
+            logger.info(f"주간 저점 신호 감지: current_price={current_price}, weekly_low={weekly_low}")
             return "enter_long"
         elif abs(weekly_high - current_price) / weekly_high <= threshold:
-            logger.debug(f"주간 고점 신호 감지: current_price={current_price}, weekly_high={weekly_high}")
+            logger.info(f"주간 고점 신호 감지: current_price={current_price}, weekly_high={weekly_high}")
             return "exit_all"
         return ""
     except Exception as e:

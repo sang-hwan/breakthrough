@@ -18,7 +18,7 @@ class RiskManager:
         weekly_risk_coefficient: float = 1.0
     ) -> float:
         if available_balance <= 0:
-            self.logger.error(f"Invalid available_balance ({available_balance}). Must be positive.")
+            self.logger.error(f"Available balance is {available_balance}; no funds available for trading.")
             return 0.0
         if not (0 < risk_percentage <= 1):
             self.logger.error(f"Invalid risk_percentage ({risk_percentage}). Must be between 0 and 1.")
@@ -36,7 +36,7 @@ class RiskManager:
 
         price_diff = abs(entry_price - stop_loss)
         if price_diff == 0:
-            self.logger.warning("Zero price difference between entry and stop_loss; assigning minimal epsilon to price_diff.")
+            self.logger.error("Zero price difference between entry and stop_loss; assigning minimal epsilon to price_diff.")
             price_diff = entry_price * 1e-4
 
         max_risk = available_balance * risk_percentage
@@ -93,34 +93,33 @@ class RiskManager:
         trade_type: str = "scale_in",
         dynamic_volatility: float = 1.0
     ):
-        if not position or position.is_empty():
-            return
+        try:
+            if not position or position.is_empty():
+                return
 
-        if scale_in_threshold < 0:
-            self.logger.error(f"Invalid scale_in_threshold ({scale_in_threshold}). Must be non-negative.")
-            return
-
-        while position.executed_splits < position.total_splits:
-            next_split = position.executed_splits
-            target_price = position.initial_price * (1 + scale_in_threshold * (next_split + 1)) * dynamic_volatility
-            if current_price < target_price:
-                break
-            if next_split < len(position.allocation_plan):
-                portion = position.allocation_plan[next_split]
-            else:
-                break
-            chunk_size = position.maximum_size * portion
-            executed_price = current_price * (1 + slippage_rate)
-            position.add_execution(
-                entry_price=executed_price,
-                size=chunk_size,
-                stop_loss=stop_loss,
-                take_profit=take_profit,
-                entry_time=entry_time,
-                trade_type=trade_type
-            )
-            position.executed_splits += 1
-            self.logger.debug(f"Scaled in: split {next_split+1}, executed_price={executed_price:.2f}, chunk_size={chunk_size:.8f}")
+            while position.executed_splits < position.total_splits:
+                next_split = position.executed_splits
+                target_price = position.initial_price * (1 + scale_in_threshold * (next_split + 1)) * dynamic_volatility
+                if current_price < target_price:
+                    break
+                if next_split < len(position.allocation_plan):
+                    portion = position.allocation_plan[next_split]
+                else:
+                    break
+                chunk_size = position.maximum_size * portion
+                executed_price = current_price * (1 + slippage_rate)
+                position.add_execution(
+                    entry_price=executed_price,
+                    size=chunk_size,
+                    stop_loss=stop_loss,
+                    take_profit=take_profit,
+                    entry_time=entry_time,
+                    trade_type=trade_type
+                )
+                position.executed_splits += 1
+                self.logger.debug(f"Scaled in: split {next_split+1}, executed_price={executed_price:.2f}, chunk_size={chunk_size:.8f}")
+        except Exception as e:
+            self.logger.error("Error in attempt_scale_in_position: " + str(e))
 
     def compute_risk_parameters_by_regime(
         self,
@@ -153,8 +152,8 @@ class RiskManager:
                 risk_params['profit_ratio'] = base_params['profit_ratio'] * bearish_profit_ratio_multiplier
             elif regime == "sideways":
                 if liquidity is None:
-                    self.logger.error("Liquidity info required for sideways regime")
-                    raise ValueError("Liquidity info required for sideways regime")
+                    self.logger.error("Liquidity info required for sideways regime; using default risk parameters.")
+                    return base_params
                 liquidity = liquidity.lower()
                 if liquidity == "high":
                     risk_params['risk_per_trade'] = base_params['risk_per_trade'] * high_liquidity_risk_multiplier
@@ -165,11 +164,11 @@ class RiskManager:
                     risk_params['atr_multiplier'] = base_params['atr_multiplier'] * low_atr_multiplier_factor
                     risk_params['profit_ratio'] = base_params['profit_ratio'] * low_profit_ratio_multiplier
             elif regime == "unknown":
-                self.logger.warning("Market regime is unknown, using base risk parameters.")
+                self.logger.error("Market regime is unknown, using base risk parameters.")
                 risk_params = base_params
             else:
-                self.logger.error(f"Invalid market regime: {regime}")
-                raise ValueError("Invalid market regime. Must be 'bullish', 'bearish', or 'sideways'.")
+                self.logger.error(f"Invalid market regime: {regime}; using default risk parameters.")
+                return base_params
             current_volatility = base_params.get("current_volatility", None)
             if current_volatility is not None:
                 if current_volatility > 0.05:
@@ -181,7 +180,7 @@ class RiskManager:
             self.logger.debug(f"Computed risk parameters: {risk_params}")
             return risk_params
         except Exception as e:
-            self.logger.error(f"Error computing risk parameters: {e}", exc_info=True)
+            self.logger.error("Error computing risk parameters: " + str(e))
             raise
 
     def adjust_trailing_stop(
@@ -214,7 +213,7 @@ class RiskManager:
             self.logger.debug(f"Adjusted trailing stop: {adjusted_stop:.2f} (current_stop={current_stop}, candidate_stop={candidate_stop}, current_price={current_price})")
             return adjusted_stop
         except Exception as e:
-            self.logger.error(f"adjust_trailing_stop error: {e}", exc_info=True)
+            self.logger.error("adjust_trailing_stop error: " + str(e))
             raise
 
     def calculate_partial_exit_targets(
@@ -229,7 +228,7 @@ class RiskManager:
         weekly_adjustment_factor: float = 0.5
     ):
         if entry_price <= 0:
-            self.logger.error(f"Invalid entry_price: {entry_price}. Must be positive.")
+            self.logger.error(f"Invalid entry_price: {entry_price}; must be positive.")
             raise ValueError(f"Invalid entry_price: {entry_price}. Must be positive.")
         try:
             if use_weekly_target and weekly_momentum is not None:
@@ -243,5 +242,5 @@ class RiskManager:
             self.logger.debug(f"Partial targets: partial={partial_target:.2f}, final={final_target:.2f} (entry_price={entry_price}, adjusted_partial={adjusted_partial}, adjusted_final={adjusted_final})")
             return [(partial_target, partial_exit_ratio), (final_target, final_exit_ratio)]
         except Exception as e:
-            self.logger.error(f"calculate_partial_exit_targets error: {e}", exc_info=True)
+            self.logger.error("calculate_partial_exit_targets error: " + str(e))
             raise

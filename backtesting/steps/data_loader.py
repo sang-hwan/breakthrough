@@ -36,7 +36,6 @@ def _validate_and_prepare_df(df, table_name):
             logger.error(f"Error converting index to datetime for {table_name}: {e}", exc_info=True)
             raise
 
-    # 인덱스를 datetime으로 변환만 진행
     df.sort_index(inplace=True)
 
     if df.index.duplicated().any():

@@ -16,5 +16,52 @@
 그리고 정말로 모든 코드를 분석하고, 기억하고 있는지 증명해주세요.
 
 [지시사항]
+run_parameter_analysis.py 실행하면서 발생한 로그 파일을 일부분씩 공유하겠습니다. 해당 파일을 읽고, 분석해주십시오.
+
+[지시사항]
+- exc_info=True 옵션을 추가하면서 에러 로그를 목적에 맞게 잘확인할 수 있도록 문자열을 정리해주세요.
+
+다음은 프로젝트 전반에서 `logger.error()` 호출 시 **exc_info=True** 옵션이 누락된 파일 목록입니다:
+
+- **backtesting/steps/data_loader.py**  
+  - 예: 데이터프레임이 비어 있을 때의 에러 로그 등
+
+- **backtesting/backtester.py**  
+  - 인디케이터 적용, HMM 업데이트, 단기 데이터 업데이트, 주문 처리, 포지션 정리 등에서 발생하는 에러 로그
+
+- **config/config_manager.py**  
+  - 동적 파라미터 업데이트, 병합 및 검증 관련 에러 로그
+
+- **core/account.py**  
+  - 잔고 전환 관련 에러 로그 (양수 조건 체크 등)
+
+- **core/position.py**  
+  - exit_targets 등 잘못된 입력에 대한 에러 로그
+
+- **data/ohlcv/ohlcv_aggregator.py**  
+  - 필수 컬럼 누락 또는 빈 데이터프레임에 대한 에러 로그
+
+- **logs/logger_config.py**  
+  - 모듈별 AggregatingHandler 추가 실패 시의 에러 로그
+
+- **markets/regime_filter.py**  
+  - 필수 가격 데이터 누락 등 에러 로그
+
+- **markets/regime_model.py**  
+  - 입력 데이터가 비어 있을 때의 에러 로그 (예측/확률 계산 부분)
+
+- **strategies/optimizer.py**  
+  - 동적 파라미터 최적화 과정 중 발생하는 에러 로그
+
+- **trading/calculators.py**  
+  - ATR, 동적 스탑/테이크 계산 등에서 발생하는 에러 로그
+
+- **trading/risk_manager.py**  
+  - 포지션 사이즈 산출, 리스크 파라미터 계산, 트레일링 스탑, 부분 청산 목표 계산 등에서의 에러 로그
+
+- **run_strategy_performance.py**  
+  - 데이터 로드 실패나 백테스트 에러 발생 시의 에러 로그
+
+
 run 파일들 실행해서 핵심 파라미터 추출 후 파라미터 최적화(+과적합 방지)와 백테스트 진행
 → 성능 개선

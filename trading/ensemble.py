@@ -7,12 +7,10 @@ from strategies.trading_strategies import (
 from config.config_manager import ConfigManager
 
 def compute_dynamic_weights(market_volatility: float, liquidity_info: str, volume: float = None):
-    # 기본값 설정
     if market_volatility is None:
         market_volatility = 0.02
 
     config = ConfigManager().get_dynamic_params()
-    # 기본 가중치: 유동성에 따라 다르게 적용
     if liquidity_info.lower() == "high":
         short_weight = config.get("liquidity_weight_high", 0.8)
         weekly_weight = 1 - short_weight
@@ -20,14 +18,12 @@ def compute_dynamic_weights(market_volatility: float, liquidity_info: str, volum
         short_weight = config.get("liquidity_weight_low", 0.6)
         weekly_weight = 1 - short_weight
 
-    # 변동성이 기준치보다 높으면 단기 신호에 덜 의존
     vol_threshold = config.get("weight_vol_threshold", 0.05)
     if market_volatility > vol_threshold:
         factor = config.get("vol_weight_factor", 0.9)
         short_weight *= factor
         weekly_weight = 1 - short_weight
 
-    # 거래량이 낮은 경우 단기 가중치 추가 감쇄
     if volume is not None and volume < 1000:
         short_weight *= 0.8
         weekly_weight = 1 - short_weight

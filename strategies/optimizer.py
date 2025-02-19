@@ -2,7 +2,7 @@
 import optuna
 from logs.logger_config import setup_logger
 from backtesting.backtester import Backtester
-from config.config_manager import ConfigManager
+from config.config_manager import ConfigManager, TradingConfig
 
 logger = setup_logger(__name__)
 
@@ -29,6 +29,14 @@ class DynamicParameterOptimizer:
                 "weekly_momentum_threshold": trial.suggest_float("weekly_momentum_threshold", 0.3, 0.7)
             }
             dynamic_params = {**base_params, **suggested_params}
+            # Validate dynamic parameters
+            dynamic_params = self.config_manager.validate_params(dynamic_params)
+
+            try:
+                _ = TradingConfig(**dynamic_params)
+            except Exception as e:
+                logger.error("Validation error in dynamic_params: " + str(e))
+                return 1e6
 
             assets = ["BTC/USDT", "ETH/USDT", "XRP/USDT"]
             splits = [{
@@ -44,7 +52,6 @@ class DynamicParameterOptimizer:
                 for asset in assets:
                     symbol_key = asset.replace("/", "").lower()
 
-                    # Training backtest
                     bt_train = Backtester(symbol=asset, account_size=10000)
                     bt_train.load_data(
                         short_table_format=f"ohlcv_{symbol_key}_{{timeframe}}",
@@ -54,11 +61,11 @@ class DynamicParameterOptimizer:
                     )
                     try:
                         trades_train, _ = bt_train.run_backtest(dynamic_params)
-                    except Exception:
+                    except Exception as e:
+                        logger.error("Backtest train error for " + asset + ": " + str(e))
                         return 1e6
                     roi_train = sum(trade["pnl"] for trade in trades_train) / 10000 * 100
 
-                    # Test backtest
                     bt_test = Backtester(symbol=asset, account_size=10000)
                     bt_test.load_data(
                         short_table_format=f"ohlcv_{symbol_key}_{{timeframe}}",
@@ -68,11 +75,11 @@ class DynamicParameterOptimizer:
                     )
                     try:
                         trades_test, _ = bt_test.run_backtest(dynamic_params)
-                    except Exception:
+                    except Exception as e:
+                        logger.error("Backtest test error for " + asset + ": " + str(e))
                         return 1e6
                     roi_test = sum(trade["pnl"] for trade in trades_test) / 10000 * 100
 
-                    # Holdout backtest
                     bt_holdout = Backtester(symbol=asset, account_size=10000)
                     bt_holdout.load_data(
                         short_table_format=f"ohlcv_{symbol_key}_{{timeframe}}",
@@ -82,7 +89,8 @@ class DynamicParameterOptimizer:
                     )
                     try:
                         trades_holdout, _ = bt_holdout.run_backtest(dynamic_params)
-                    except Exception:
+                    except Exception as e:
+                        logger.error("Backtest holdout error for " + asset + ": " + str(e))
                         return 1e6
                     roi_holdout = sum(trade["pnl"] for trade in trades_holdout) / 10000 * 100
 
@@ -100,7 +108,8 @@ class DynamicParameterOptimizer:
             )
             return avg_score + reg_penalty
 
-        except Exception:
+        except Exception as e:
+            logger.error("Unexpected error in objective: " + str(e))
             return 1e6
 
     def optimize(self):
@@ -108,6 +117,6 @@ class DynamicParameterOptimizer:
         self.study = optuna.create_study(direction="minimize", sampler=sampler)
         self.study.optimize(self.objective, n_trials=self.n_trials)
         best_trial = self.study.best_trial
-        logger.debug(f"Best trial: {best_trial.number}, Value: {best_trial.value:.2f}")
-        logger.debug(f"Best parameters: {best_trial.params}")
+        logger.info(f"Best trial: {best_trial.number}, Value: {best_trial.value:.2f}")
+        logger.info(f"Best parameters: {best_trial.params}")
         return best_trial

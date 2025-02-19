@@ -34,8 +34,8 @@ class AssetManager:
         return (round(self.account.spot_balance, 4), round(self.account.stablecoin_balance, 4))
 
     def rebalance(self, market_regime):
-        # ★ 현재 시간: Asia/Seoul 기준으로 얻도록 수정
-        current_time = pd.Timestamp.now('Asia/Seoul')
+        # 현재 시간: Asia/Seoul 기준
+        current_time = pd.Timestamp.now()
         if self.last_rebalance_time and (current_time - self.last_rebalance_time < self.min_rebalance_interval):
             self.logger.debug("Rebalance skipped due to interval constraint.")
             return

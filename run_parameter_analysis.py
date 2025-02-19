@@ -47,13 +47,12 @@ def parse_periods(periods_str, default_start, default_end):
     return period_list if period_list else [(default_start, default_end)]
 
 def run_parameter_analysis():
-    # 기존 로그 파일 삭제 및 루트 로거 초기화
     LoggingUtil.clear_log_files()
     initialize_root_logger()
 
     args = parse_args()
     logger = setup_logger(__name__)
-    logger.debug("Starting parameter sensitivity analysis.")
+    logger.info("Starting parameter sensitivity analysis.")
 
     assets = parse_assets(args.assets)
     periods = parse_periods(args.periods, args.start_date, args.end_date)
@@ -75,7 +74,7 @@ def run_parameter_analysis():
         start_val = default_val * 0.9
         end_val = default_val * 1.1
         param_settings[pname] = np.linspace(start_val, end_val, args.param_steps)
-        logger.debug(f"Analyzing {pname} over range {start_val:.4f} to {end_val:.4f}")
+        logger.info(f"Analyzing {pname} over range {start_val:.4f} to {end_val:.4f}")
 
     results_all = run_sensitivity_analysis(
         param_settings, assets, args.short_tf, args.long_tf, args.start_date, args.end_date, periods
