@@ -183,7 +183,7 @@ class OneLineFormatter(logging.Formatter):
         return formatted.replace("\n", " | ")
 
 class LineRotatingFileHandler(RotatingFileHandler):
-    def __init__(self, base_filename, mode='a', max_lines=1000, backupCount=7, encoding=None, delay=False):
+    def __init__(self, base_filename, mode='a', max_lines=1000, backupCount=10, encoding=None, delay=False):
         self.base_filename = base_filename
         self.current_index = 0
         self._set_current_filename()
@@ -238,7 +238,7 @@ def initialize_root_logger():
     file_handler = LineRotatingFileHandler(
         base_filename=BASE_LOG_FILE,
         max_lines=1000,
-        backupCount=7,
+        backupCount=10,
         encoding="utf-8",
         delay=True
     )

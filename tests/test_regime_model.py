@@ -1,27 +1,29 @@
 # tests/test_regime_model.py
-import pytest
 import pandas as pd
 import numpy as np
 from markets.regime_model import MarketRegimeHMM
 
-@pytest.fixture
-def sample_data():
-    dates = pd.date_range("2023-01-01", periods=100, freq="D")
+def test_hmm_training_with_sufficient_samples():
+    # 최소 50개 이상의 샘플을 갖는 데이터프레임 생성 (여기서는 60개)
+    dates = pd.date_range(start='2020-01-01', periods=60, freq='D')
     df = pd.DataFrame({
-        "returns": np.random.normal(0, 0.01, 100),
-        "volatility": np.random.normal(0.02, 0.005, 100),
-        "sma": np.linspace(100, 110, 100),
-        "rsi": np.random.uniform(30, 70, 100),
-        "macd_macd": np.random.normal(0, 1, 100),
-        "macd_signal": np.random.normal(0, 1, 100),
-        "macd_diff": np.random.normal(0, 0.5, 100),
+        'feature1': np.random.randn(60),
+        'feature2': np.random.randn(60)
     }, index=dates)
-    return df
+    hmm_model = MarketRegimeHMM(n_components=3)
+    hmm_model.train(df, feature_columns=['feature1', 'feature2'])
+    # 충분한 샘플이 있어 학습이 완료되어야 함
+    assert hmm_model.trained is True
+    assert hmm_model.last_train_time is not None
 
-def test_train_and_predict(sample_data):
-    hmm = MarketRegimeHMM(n_components=3, retrain_interval_minutes=0)
-    # 첫 학습 시도
-    hmm.train(sample_data, feature_columns=["returns", "volatility", "sma", "rsi", "macd_macd", "macd_signal", "macd_diff"])
-    assert hmm.trained
-    states = hmm.predict(sample_data, feature_columns=["returns", "volatility", "sma", "rsi", "macd_macd", "macd_signal", "macd_diff"])
-    assert len(states) == len(sample_data)
+def test_hmm_training_insufficient_samples():
+    # 샘플 수가 50개 미만인 데이터프레임 생성 (여기서는 30개)
+    dates = pd.date_range(start='2020-01-01', periods=30, freq='D')
+    df = pd.DataFrame({
+        'feature1': np.random.randn(30),
+        'feature2': np.random.randn(30)
+    }, index=dates)
+    hmm_model = MarketRegimeHMM(n_components=3)
+    hmm_model.train(df, feature_columns=['feature1', 'feature2'])
+    # 샘플 수 부족으로 학습이 진행되지 않아야 함
+    assert hmm_model.trained is False

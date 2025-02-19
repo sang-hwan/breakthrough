@@ -36,14 +36,7 @@ def _validate_and_prepare_df(df, table_name):
             logger.error(f"Error converting index to datetime for {table_name}: {e}", exc_info=True)
             raise
 
-    # ★ 시간대 통일: 만약 index가 naive하면 'Asia/Seoul'로 로컬라이즈
-    if df.index.tz is None:
-        try:
-            df = df.tz_localize('Asia/Seoul')
-        except Exception as e:
-            logger.error(f"Error localizing index to Asia/Seoul for {table_name}: {e}", exc_info=True)
-            raise
-
+    # 인덱스를 datetime으로 변환만 진행
     df.sort_index(inplace=True)
 
     if df.index.duplicated().any():

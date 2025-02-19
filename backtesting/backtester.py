@@ -33,11 +33,9 @@ class Backtester:
         self.df_weekly = None
         self.last_rebalance_time = None
         self.last_weekly_close_date = None
-        # ★ Clock 추상화: 모든 시간 연산은 Asia/Seoul 기준으로 처리
-        self.clock = lambda: pd.Timestamp.now('Asia/Seoul')
+        self.clock = lambda: pd.Timestamp.now()
 
     def get_current_time(self):
-        """현재 시각(Asia/Seoul 기준)을 반환하는 메서드"""
         return self.clock()
 
     def load_data(self, short_table_format, long_table_format, short_tf, long_tf, 

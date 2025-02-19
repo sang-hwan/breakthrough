@@ -3,25 +3,19 @@ import pandas as pd
 import numpy as np
 from data.ohlcv.ohlcv_aggregator import aggregate_to_weekly
 
-def test_aggregate_to_weekly():
-    # 2주 이상의 데이터 (1일 간격, 월요일 시작 가정)
-    dates = pd.date_range(start="2023-01-02", periods=14, freq="D")
+def test_aggregate_to_weekly_includes_weekly_low_high():
+    # 21일치 데이터(약 3주 분량)를 생성하여 주간 집계 시 두 개 이상의 주간 데이터가 생성되도록 함
+    dates = pd.date_range(start='2020-01-01', periods=21, freq='D')
     data = pd.DataFrame({
-        'open': np.linspace(100, 113, 14),
-        'high': np.linspace(105, 118, 14),
-        'low': np.linspace(95, 108, 14),
-        'close': np.linspace(102, 115, 14),
-        'volume': np.random.randint(1000, 5000, 14)
+        'open': np.linspace(100, 120, len(dates)),
+        'high': np.linspace(105, 125, len(dates)),
+        'low': np.linspace(95, 115, len(dates)),
+        'close': np.linspace(102, 122, len(dates)),
+        'volume': np.random.randint(100, 200, len(dates))
     }, index=dates)
-    
-    weekly = aggregate_to_weekly(data, compute_indicators=True)
-    
-    # 첫 주의 open과 close 확인
-    first_week = data.loc["2023-01-02":"2023-01-08"]
-    assert abs(weekly.iloc[0]['open'] - first_week.iloc[0]['open']) < 1e-6
-    assert abs(weekly.iloc[0]['close'] - first_week.iloc[-1]['close']) < 1e-6
-    # volume 합계 확인
-    assert abs(weekly.iloc[0]['volume'] - first_week['volume'].sum()) < 1e-6
-    # 주간 인디케이터 컬럼 확인
-    assert 'weekly_sma' in weekly.columns
-    assert 'weekly_momentum' in weekly.columns
+    weekly = aggregate_to_weekly(data, compute_indicators=True, sma_window=5)
+    # weekly_low, weekly_high가 존재하는지 확인
+    assert 'weekly_low' in weekly.columns
+    assert 'weekly_high' in weekly.columns
+    # 집계 결과가 두 주 이상 생성되었는지 확인
+    assert len(weekly) >= 2

@@ -1,10 +1,12 @@
 [config module code]
 # config/config_manager.py
 from logs.logger_config import setup_logger
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, ConfigDict
 from typing import Literal
 
 class TradingConfig(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    
     sma_period: int = Field(default=200, ge=1)
     atr_period: int = Field(default=14, ge=1)
     atr_multiplier: float = Field(default=2.07, gt=0)
@@ -31,9 +33,6 @@ class TradingConfig(BaseModel):
     vol_weight_factor: float = Field(default=0.9, gt=0)
     liquidity_weight_high: float = Field(default=0.8, gt=0, lt=1)
     liquidity_weight_low: float = Field(default=0.6, gt=0, lt=1)
-    
-    class Config:
-        extra = "allow"
 
 class ConfigManager:
     _instance = None
