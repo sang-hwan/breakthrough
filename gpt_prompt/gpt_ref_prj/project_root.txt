@@ -162,14 +162,14 @@ def run_strategy_performance():
                 use_weekly=True
             )
         except Exception as e:
-            logger.error(f"Data load failed for {symbol}: {e}")
+            logger.error(f"Data load failed for {symbol}: {e}", exc_info=True)
             continue
 
         try:
             trades, _ = backtester.run_backtest(dynamic_params=best_params)
             logger.info(f"Backtest complete for {symbol}: {len(trades)} trades executed.")
         except Exception as e:
-            logger.error(f"Backtest error for {symbol}: {e}")
+            logger.error(f"Backtest error for {symbol}: {e}", exc_info=True)
             continue
 
         if trades:

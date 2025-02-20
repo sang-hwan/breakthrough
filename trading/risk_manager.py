@@ -1,6 +1,8 @@
 # trading/risk_manager.py
 from logs.logger_config import setup_logger
 
+logger = setup_logger(__name__)
+
 class RiskManager:
     def __init__(self):
         self.logger = setup_logger(__name__)
@@ -18,25 +20,25 @@ class RiskManager:
         weekly_risk_coefficient: float = 1.0
     ) -> float:
         if available_balance <= 0:
-            self.logger.error(f"Available balance is {available_balance}; no funds available for trading.")
+            self.logger.error(f"Available balance is {available_balance}; no funds available for trading.", exc_info=True)
             return 0.0
         if not (0 < risk_percentage <= 1):
-            self.logger.error(f"Invalid risk_percentage ({risk_percentage}). Must be between 0 and 1.")
+            self.logger.error(f"Invalid risk_percentage ({risk_percentage}). Must be between 0 and 1.", exc_info=True)
             return 0.0
         if fee_rate < 0:
-            self.logger.error(f"Invalid fee_rate ({fee_rate}). Must be non-negative.")
+            self.logger.error(f"Invalid fee_rate ({fee_rate}). Must be non-negative.", exc_info=True)
             return 0.0
         if volatility < 0 or (weekly_volatility is not None and weekly_volatility < 0):
-            self.logger.error("Volatility values must be non-negative.")
+            self.logger.error("Volatility values must be non-negative.", exc_info=True)
             return 0.0
 
         if entry_price <= 0 or stop_loss <= 0:
-            self.logger.error(f"Invalid entry_price ({entry_price}) or stop_loss ({stop_loss}). Must be positive.")
+            self.logger.error(f"Invalid entry_price ({entry_price}) or stop_loss ({stop_loss}). Must be positive.", exc_info=True)
             return 0.0
 
         price_diff = abs(entry_price - stop_loss)
         if price_diff == 0:
-            self.logger.error("Zero price difference between entry and stop_loss; assigning minimal epsilon to price_diff.")
+            self.logger.error("Zero price difference between entry and stop_loss; assigning minimal epsilon to price_diff.", exc_info=True)
             price_diff = entry_price * 1e-4
 
         max_risk = available_balance * risk_percentage
@@ -44,7 +46,7 @@ class RiskManager:
         loss_per_unit = price_diff + fee_amount
 
         if loss_per_unit <= 0:
-            self.logger.error("Non-positive loss per unit computed.")
+            self.logger.error("Non-positive loss per unit computed.", exc_info=True)
             return 0.0
 
         computed_size = max_risk / loss_per_unit
@@ -119,7 +121,7 @@ class RiskManager:
                 position.executed_splits += 1
                 self.logger.debug(f"Scaled in: split {next_split+1}, executed_price={executed_price:.2f}, chunk_size={chunk_size:.8f}")
         except Exception as e:
-            self.logger.error("Error in attempt_scale_in_position: " + str(e))
+            self.logger.error("Error in attempt_scale_in_position: " + str(e), exc_info=True)
 
     def compute_risk_parameters_by_regime(
         self,
@@ -152,7 +154,7 @@ class RiskManager:
                 risk_params['profit_ratio'] = base_params['profit_ratio'] * bearish_profit_ratio_multiplier
             elif regime == "sideways":
                 if liquidity is None:
-                    self.logger.error("Liquidity info required for sideways regime; using default risk parameters.")
+                    self.logger.error("Liquidity info required for sideways regime; using default risk parameters.", exc_info=True)
                     return base_params
                 liquidity = liquidity.lower()
                 if liquidity == "high":
@@ -164,10 +166,10 @@ class RiskManager:
                     risk_params['atr_multiplier'] = base_params['atr_multiplier'] * low_atr_multiplier_factor
                     risk_params['profit_ratio'] = base_params['profit_ratio'] * low_profit_ratio_multiplier
             elif regime == "unknown":
-                self.logger.error("Market regime is unknown, using base risk parameters.")
+                self.logger.error("Market regime is unknown, using base risk parameters.", exc_info=True)
                 risk_params = base_params
             else:
-                self.logger.error(f"Invalid market regime: {regime}; using default risk parameters.")
+                self.logger.error(f"Invalid market regime: {regime}; using default risk parameters.", exc_info=True)
                 return base_params
             current_volatility = base_params.get("current_volatility", None)
             if current_volatility is not None:
@@ -180,7 +182,7 @@ class RiskManager:
             self.logger.debug(f"Computed risk parameters: {risk_params}")
             return risk_params
         except Exception as e:
-            self.logger.error("Error computing risk parameters: " + str(e))
+            self.logger.error("Error computing risk parameters: " + str(e), exc_info=True)
             raise
 
     def adjust_trailing_stop(
@@ -194,10 +196,10 @@ class RiskManager:
         weekly_volatility: float = None
     ) -> float:
         if current_price <= 0 or highest_price <= 0:
-            self.logger.error(f"Invalid current_price ({current_price}) or highest_price ({highest_price}).")
+            self.logger.error(f"Invalid current_price ({current_price}) or highest_price ({highest_price}).", exc_info=True)
             raise ValueError("current_price and highest_price must be positive.")
         if trailing_percentage < 0:
-            self.logger.error(f"Invalid trailing_percentage ({trailing_percentage}). Must be non-negative.")
+            self.logger.error(f"Invalid trailing_percentage ({trailing_percentage}). Must be non-negative.", exc_info=True)
             raise ValueError("trailing_percentage must be non-negative.")
         try:
             if current_stop is None or current_stop <= 0:
@@ -213,7 +215,7 @@ class RiskManager:
             self.logger.debug(f"Adjusted trailing stop: {adjusted_stop:.2f} (current_stop={current_stop}, candidate_stop={candidate_stop}, current_price={current_price})")
             return adjusted_stop
         except Exception as e:
-            self.logger.error("adjust_trailing_stop error: " + str(e))
+            self.logger.error("adjust_trailing_stop error: " + str(e), exc_info=True)
             raise
 
     def calculate_partial_exit_targets(
@@ -228,7 +230,7 @@ class RiskManager:
         weekly_adjustment_factor: float = 0.5
     ):
         if entry_price <= 0:
-            self.logger.error(f"Invalid entry_price: {entry_price}; must be positive.")
+            self.logger.error(f"Invalid entry_price: {entry_price}; must be positive.", exc_info=True)
             raise ValueError(f"Invalid entry_price: {entry_price}. Must be positive.")
         try:
             if use_weekly_target and weekly_momentum is not None:
@@ -242,5 +244,5 @@ class RiskManager:
             self.logger.debug(f"Partial targets: partial={partial_target:.2f}, final={final_target:.2f} (entry_price={entry_price}, adjusted_partial={adjusted_partial}, adjusted_final={adjusted_final})")
             return [(partial_target, partial_exit_ratio), (final_target, final_exit_ratio)]
         except Exception as e:
-            self.logger.error("calculate_partial_exit_targets error: " + str(e))
+            self.logger.error("calculate_partial_exit_targets error: " + str(e), exc_info=True)
             raise

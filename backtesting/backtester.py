@@ -48,7 +48,7 @@ class Backtester:
         try:
             apply_indicators(self)
         except Exception as e:
-            self.logger.error("Error applying indicators: " + str(e))
+            self.logger.error("Error applying indicators: " + str(e), exc_info=True)
             raise
 
     def update_hmm_regime(self, dynamic_params):
@@ -62,7 +62,7 @@ class Backtester:
             feature_change_threshold = dynamic_params.get('hmm_feature_change_threshold', 0.01)
 
             if len(self.df_long) < min_samples:
-                self.logger.error(f"Not enough samples for HMM training (min required: {min_samples}). Skipping HMM update.")
+                self.logger.error(f"Not enough samples for HMM training (min required: {min_samples}).", exc_info=True)
                 return pd.Series(["unknown"] * len(self.df_long), index=self.df_long.index)
 
             if self.hmm_model is None or self.last_hmm_training_datetime is None or (current_dt - self.last_hmm_training_datetime) >= retrain_interval:
@@ -94,7 +94,7 @@ class Backtester:
                 adjusted_regimes.append(regime)
             return pd.Series(adjusted_regimes, index=self.df_long.index)
         except Exception as e:
-            self.logger.error("Error updating HMM regime: " + str(e))
+            self.logger.error("Error updating HMM regime: " + str(e), exc_info=True)
             return pd.Series(["unknown"] * len(self.df_long), index=self.df_long.index)
 
     def update_short_dataframe(self, regime_series, dynamic_params):
@@ -105,7 +105,7 @@ class Backtester:
             default_atr_multiplier = dynamic_params.get("default_atr_multiplier", 2.0)
             self.df_short["stop_loss_price"] = self.df_short["close"] - (self.df_short["atr"] * default_atr_multiplier)
         except Exception as e:
-            self.logger.error("Error updating short dataframe: " + str(e))
+            self.logger.error("Error updating short dataframe: " + str(e), exc_info=True)
             raise
 
     def handle_walk_forward_window(self, current_time, row):
@@ -135,7 +135,7 @@ class Backtester:
                         self.account.update_after_trade(trade_detail)
             self.positions = []
         except Exception as e:
-            self.logger.error("Error during walk-forward window handling: " + str(e))
+            self.logger.error("Error during walk-forward window handling: " + str(e), exc_info=True)
             raise
 
     def handle_weekly_end(self, current_time, row):
@@ -165,7 +165,7 @@ class Backtester:
                         self.account.update_after_trade(trade_detail)
             self.positions = []
         except Exception as e:
-            self.logger.error("Error during weekly end handling: " + str(e))
+            self.logger.error("Error during weekly end handling: " + str(e), exc_info=True)
             raise
 
     def process_bullish_entry(self, current_time, row, risk_params, dynamic_params):
@@ -178,7 +178,7 @@ class Backtester:
             stop_loss_price = row.get("stop_loss_price")
             if stop_loss_price is None:
                 stop_loss_price = close_price * 0.95
-                self.logger.error(f"Missing stop_loss_price for bullish entry at {current_time}. Using default stop_loss_price={stop_loss_price:.2f}.")
+                self.logger.error(f"Missing stop_loss_price for bullish entry at {current_time}. Using default stop_loss_price={stop_loss_price:.2f}.", exc_info=True)
 
             for pos in self.positions:
                 if pos.side == "LONG":
@@ -255,7 +255,7 @@ class Backtester:
                 self.account.add_position(new_position)
                 self.last_signal_time = current_time
         except Exception as e:
-            self.logger.error("Error processing bullish entry: " + str(e))
+            self.logger.error("Error processing bullish entry: " + str(e), exc_info=True)
             raise
 
     def process_bearish_exit(self, current_time, row):
@@ -284,7 +284,7 @@ class Backtester:
                         self.account.update_after_trade(trade_detail)
             self.last_signal_time = current_time
         except Exception as e:
-            self.logger.error("Error processing bearish exit: " + str(e))
+            self.logger.error("Error processing bearish exit: " + str(e), exc_info=True)
             raise
 
     def process_sideways_trade(self, current_time, row, risk_params, dynamic_params):
@@ -303,7 +303,7 @@ class Backtester:
                 elif close_price > mean_price + std_price:
                     self.process_bearish_exit(current_time, row)
         except Exception as e:
-            self.logger.error("Error processing sideways trade: " + str(e))
+            self.logger.error("Error processing sideways trade: " + str(e), exc_info=True)
             raise
 
     def update_positions(self, current_time, row):
@@ -321,7 +321,7 @@ class Backtester:
                         )
                         exec_record["stop_loss"] = new_stop
         except Exception as e:
-            self.logger.error("Error updating positions: " + str(e))
+            self.logger.error("Error updating positions: " + str(e), exc_info=True)
             raise
 
     def finalize_all_positions(self):
@@ -352,7 +352,7 @@ class Backtester:
                         self.account.update_after_trade(trade_detail)
             self.positions = []
         except Exception as e:
-            self.logger.error("Error finalizing positions: " + str(e))
+            self.logger.error("Error finalizing positions: " + str(e), exc_info=True)
             raise
 
     def monitor_orders(self, current_time, row):
@@ -365,7 +365,7 @@ class Backtester:
                         if entry_price > 0 and abs(current_price - entry_price) / entry_price > 0.05:
                             self.logger.debug(f"Significant price move for position {pos.position_id} at {current_time}.")
         except Exception as e:
-            self.logger.error("Error monitoring orders: " + str(e))
+            self.logger.error("Error monitoring orders: " + str(e), exc_info=True)
             raise
 
     def run_backtest(self, dynamic_params=None, walk_forward_days: int = None, holdout_period: tuple = None):
@@ -378,26 +378,26 @@ class Backtester:
                 self.df_long['returns'] = self.df_long['close'].pct_change().fillna(0)
                 self.df_long['volatility'] = self.df_long['returns'].rolling(window=20).std().fillna(0)
             except Exception as e:
-                self.logger.error("Error computing returns/volatility: " + str(e))
+                self.logger.error("Error computing returns/volatility: " + str(e), exc_info=True)
                 raise
 
             try:
                 self.apply_indicators()
             except Exception as e:
-                self.logger.error("Error during indicator application: " + str(e))
+                self.logger.error("Error during indicator application: " + str(e), exc_info=True)
                 raise
 
             try:
                 from backtesting.steps.hmm_manager import update_hmm
                 regime_series = update_hmm(self, dynamic_params)
             except Exception as e:
-                self.logger.error("Error updating HMM: " + str(e))
+                self.logger.error("Error updating HMM: " + str(e), exc_info=True)
                 regime_series = pd.Series(["unknown"] * len(self.df_long), index=self.df_long.index)
 
             try:
                 self.update_short_dataframe(regime_series, dynamic_params)
             except Exception as e:
-                self.logger.error("Error updating short dataframe: " + str(e))
+                self.logger.error("Error updating short dataframe: " + str(e), exc_info=True)
                 raise
 
             if holdout_period:
@@ -427,7 +427,7 @@ class Backtester:
                 process_holdout_orders(self, dynamic_params, df_holdout)
                 finalize_orders(self)
             except Exception as e:
-                self.logger.error("Error during order processing: " + str(e))
+                self.logger.error("Error during order processing: " + str(e), exc_info=True)
                 raise
 
             available_balance = self.account.get_available_balance()
@@ -439,7 +439,7 @@ class Backtester:
             return self.trades, self.trade_logs
 
         except Exception as e:
-            self.logger.error("Fatal error in run_backtest: " + str(e))
+            self.logger.error("Fatal error in run_backtest: " + str(e), exc_info=True)
             raise
 
     def run_backtest_pipeline(self, dynamic_params=None, walk_forward_days: int = None, holdout_period: tuple = None):
@@ -447,7 +447,7 @@ class Backtester:
         available_balance = self.account.get_available_balance()
         self.logger.debug(f"Post-backtest account available balance: {available_balance:.2f}")
         if self.positions:
-            self.logger.error("There are still open positions after backtest finalization.")
+            self.logger.error("There are still open positions after backtest finalization.", exc_info=True)
         else:
             self.logger.debug("All positions have been successfully closed.")
         return trades, trade_logs

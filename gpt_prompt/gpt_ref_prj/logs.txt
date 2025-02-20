@@ -251,11 +251,14 @@ def initialize_root_logger():
     queue_listener.start()
     
     if AggregatingHandler is not None:
-        aggregator_handler = AggregatingHandler(level=detail_level)
-        aggregator_handler.addFilter(lambda record: not getattr(record, '_is_summary', False))
-        aggregator_formatter = OneLineFormatter('[%(asctime)s] %(levelname)s:%(name)s:%(filename)s:%(funcName)s: %(message)s')
-        aggregator_handler.setFormatter(aggregator_formatter)
-        root_logger.addHandler(aggregator_handler)
+        try:
+            aggregator_handler = AggregatingHandler(level=detail_level)
+            aggregator_handler.addFilter(lambda record: not getattr(record, '_is_summary', False))
+            aggregator_formatter = OneLineFormatter('[%(asctime)s] %(levelname)s:%(name)s:%(filename)s:%(funcName)s: %(message)s')
+            aggregator_handler.setFormatter(aggregator_formatter)
+            root_logger.addHandler(aggregator_handler)
+        except Exception as e:
+            logging.getLogger().error("Failed to add module-specific AggregatingHandler: " + str(e), exc_info=True)
 
 def setup_logger(module_name: str) -> logging.Logger:
     logger = logging.getLogger(module_name)
@@ -268,7 +271,7 @@ def setup_logger(module_name: str) -> logging.Logger:
         agg_handler.setFormatter(formatter)
         logger.addHandler(agg_handler)
     except Exception as e:
-        logger.error("모듈별 AggregatingHandler 추가 실패: %s", e)
+        logger.error("Module-specific AggregatingHandler addition failed: " + str(e), exc_info=True)
     return logger
 
 def shutdown_logging():

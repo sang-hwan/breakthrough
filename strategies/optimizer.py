@@ -35,7 +35,7 @@ class DynamicParameterOptimizer:
             try:
                 _ = TradingConfig(**dynamic_params)
             except Exception as e:
-                logger.error("Validation error in dynamic_params: " + str(e))
+                logger.error("Validation error in dynamic_params: " + str(e), exc_info=True)
                 return 1e6
 
             assets = ["BTC/USDT", "ETH/USDT", "XRP/USDT"]
@@ -62,7 +62,7 @@ class DynamicParameterOptimizer:
                     try:
                         trades_train, _ = bt_train.run_backtest(dynamic_params)
                     except Exception as e:
-                        logger.error("Backtest train error for " + asset + ": " + str(e))
+                        logger.error("Backtest train error for " + asset + ": " + str(e), exc_info=True)
                         return 1e6
                     roi_train = sum(trade["pnl"] for trade in trades_train) / 10000 * 100
 
@@ -76,7 +76,7 @@ class DynamicParameterOptimizer:
                     try:
                         trades_test, _ = bt_test.run_backtest(dynamic_params)
                     except Exception as e:
-                        logger.error("Backtest test error for " + asset + ": " + str(e))
+                        logger.error("Backtest test error for " + asset + ": " + str(e), exc_info=True)
                         return 1e6
                     roi_test = sum(trade["pnl"] for trade in trades_test) / 10000 * 100
 
@@ -90,7 +90,7 @@ class DynamicParameterOptimizer:
                     try:
                         trades_holdout, _ = bt_holdout.run_backtest(dynamic_params)
                     except Exception as e:
-                        logger.error("Backtest holdout error for " + asset + ": " + str(e))
+                        logger.error("Backtest holdout error for " + asset + ": " + str(e), exc_info=True)
                         return 1e6
                     roi_holdout = sum(trade["pnl"] for trade in trades_holdout) / 10000 * 100
 
@@ -109,7 +109,7 @@ class DynamicParameterOptimizer:
             return avg_score + reg_penalty
 
         except Exception as e:
-            logger.error("Unexpected error in objective: " + str(e))
+            logger.error("Unexpected error in objective: " + str(e), exc_info=True)
             return 1e6
 
     def optimize(self):

@@ -23,7 +23,7 @@ def _set_cached_ohlcv(table_name, start_date, end_date, df):
 
 def _validate_and_prepare_df(df, table_name):
     if df.empty:
-        logger.error(f"DataFrame for {table_name} is empty.")
+        logger.error(f"DataFrame for {table_name} is empty.", exc_info=True)
         return df
 
     if not pd.api.types.is_datetime64_any_dtype(df.index):
@@ -72,7 +72,7 @@ def load_data(backtester, short_table_format, long_table_format, short_tf, long_
         backtester.df_long = df_long
         
         if backtester.df_short.empty or backtester.df_long.empty:
-            logger.error("데이터 로드 실패: short 또는 long 데이터가 비어있습니다.")
+            logger.error("데이터 로드 실패: short 또는 long 데이터가 비어있습니다.", exc_info=True)
             raise ValueError("No data loaded")
         
         logger.debug(f"데이터 로드 완료: short 데이터 {len(backtester.df_short)}행, long 데이터 {len(backtester.df_long)}행")

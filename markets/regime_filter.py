@@ -17,7 +17,7 @@ def determine_market_regime(price_data: dict) -> str:
         current_price = price_data.get("current_price")
         previous_price = price_data.get("previous_price")
         if current_price is None or previous_price is None:
-            logger.error("필수 가격 데이터 누락: 'current_price' 또는 'previous_price'가 제공되지 않음.")
+            logger.error("필수 가격 데이터 누락: 'current_price' 또는 'previous_price'가 제공되지 않음.", exc_info=True)
             return "unknown"
         
         change_percent = (current_price - previous_price) / previous_price
@@ -69,7 +69,7 @@ def determine_weekly_extreme_signal(price_data: dict, weekly_data: dict, thresho
         weekly_low = weekly_data.get("weekly_low")
         weekly_high = weekly_data.get("weekly_high")
         if current_price is None or weekly_low is None or weekly_high is None:
-            logger.error("필수 데이터 누락: 'current_price', 'weekly_low', 'weekly_high' 모두 제공되어야 합니다.")
+            logger.error("필수 데이터 누락: 'current_price', 'weekly_low', 'weekly_high' 모두 제공되어야 합니다.", exc_info=True)
             return ""
         
         if abs(current_price - weekly_low) / weekly_low <= threshold:

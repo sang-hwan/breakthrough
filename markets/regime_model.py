@@ -75,7 +75,7 @@ class MarketRegimeHMM:
 
     def predict(self, data: pd.DataFrame, feature_columns: list = None) -> np.ndarray:
         if data.empty:
-            self.logger.error("Input data is empty. Prediction aborted.")
+            self.logger.error("Input data is empty. Prediction aborted.", exc_info=True)
             raise ValueError("Input data is empty.")
         feature_columns = feature_columns or data.columns.tolist()
         if not self.trained:
@@ -92,7 +92,7 @@ class MarketRegimeHMM:
 
     def predict_proba(self, data: pd.DataFrame, feature_columns: list = None) -> np.ndarray:
         if data.empty:
-            self.logger.error("Input data is empty. predict_proba aborted.")
+            self.logger.error("Input data is empty. predict_proba aborted.", exc_info=True)
             raise ValueError("Input data is empty.")
         feature_columns = feature_columns or data.columns.tolist()
         if not self.trained:
@@ -113,14 +113,6 @@ class MarketRegimeHMM:
         self.logger.info("HMM model update completed.")
 
     def map_state_to_regime(self, state: int) -> str:
-        """
-        HMM에서 예측한 상태(state)를 시장 레짐 문자열로 매핑합니다.
-        n_components가 3일 경우, 기본 매핑은:
-            0 -> 'bullish'
-            1 -> 'bearish'
-            2 -> 'sideways'
-        그 외의 경우, 'state_{state}' 형식의 문자열을 반환합니다.
-        """
         if self.n_components == 3:
             mapping = {0: "bullish", 1: "bearish", 2: "sideways"}
             return mapping.get(state, f"state_{state}")
@@ -128,12 +120,6 @@ class MarketRegimeHMM:
             return f"state_{state}"
 
     def predict_regime_labels(self, data: pd.DataFrame, feature_columns: list = None) -> list:
-        """
-        HMM 모델로부터 상태 예측을 받고, 이를 시장 레짐 문자열로 매핑하여 반환합니다.
-        
-        반환값:
-          - list: 각 샘플에 대해 예측된 시장 레짐 문자열의 리스트.
-        """
         states = self.predict(data, feature_columns)
         regime_labels = [self.map_state_to_regime(s) for s in states]
         self.logger.info(f"Regime labels predicted: {regime_labels}")

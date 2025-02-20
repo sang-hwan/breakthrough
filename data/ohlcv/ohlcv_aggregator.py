@@ -36,7 +36,7 @@ def aggregate_to_weekly(
     required_columns = {"open", "high", "low", "close", "volume"}
     missing = required_columns - set(df.columns)
     if missing:
-        logger.error(f"Input DataFrame is missing required columns: {missing}")
+        logger.error(f"Input DataFrame is missing required columns: {missing}", exc_info=True)
         return pd.DataFrame()
 
     # Ensure index is datetime type
@@ -48,7 +48,7 @@ def aggregate_to_weekly(
             return pd.DataFrame()
 
     if df.empty:
-        logger.error("Input DataFrame for aggregation is empty.")
+        logger.error("Input DataFrame for aggregation is empty.", exc_info=True)
         return df
 
     try:
@@ -73,7 +73,7 @@ def aggregate_to_weekly(
         return pd.DataFrame()
 
     if weekly.empty:
-        logger.error("Aggregated weekly DataFrame is empty after resampling.")
+        logger.error("Aggregated weekly DataFrame is empty after resampling.", exc_info=True)
         return weekly
 
     # Rename columns for easier reference in strategies
@@ -92,5 +92,4 @@ def aggregate_to_weekly(
                 if row['weekly_low'] != 0 else 0.0, axis=1)
         except Exception as e:
             logger.error(f"Error computing weekly indicators: {e}", exc_info=True)
-
     return weekly

@@ -7,19 +7,11 @@ logger = setup_logger(__name__)
 class Position:
     def __init__(self, side: str = "LONG", initial_price: float = None, maximum_size: float = 0.0,
                  total_splits: int = 1, allocation_plan: list = None) -> None:
-        """
-        포지션 생성:
-          - side: 거래 방향 ("LONG" 또는 "SHORT")
-          - initial_price: 진입 가격 (필수)
-          - maximum_size: 최대 포지션 사이즈
-          - total_splits: 분할 진입 횟수
-          - allocation_plan: 각 분할 진입 비율 (미지정 시 빈 리스트)
-        """
         if initial_price is None or initial_price <= 0:
             raise ValueError("Initial price must be positive.")
         self.position_id: str = str(uuid.uuid4())
         self.side: str = side.upper()
-        self.executions: list = []  # 실행 내역 리스트
+        self.executions: list = []
         self.initial_price: float = initial_price
         self.maximum_size: float = maximum_size
         self.total_splits: int = total_splits
@@ -38,7 +30,7 @@ class Position:
             logger.warning("Execution size below minimum order size; execution not added.")
             return
         if exit_targets and not isinstance(exit_targets, list):
-            logger.error("exit_targets must be a list.")
+            logger.error("exit_targets must be a list.", exc_info=True)
             return
 
         targets = []
@@ -99,7 +91,7 @@ class Position:
 
     def partial_close_execution(self, index: int, close_ratio: float, min_order_size: float = 1e-8) -> float:
         if not (0 < close_ratio <= 1):
-            logger.error("close_ratio must be between 0 and 1.")
+            logger.error("close_ratio must be between 0 and 1.", exc_info=True)
             return 0.0
         if 0 <= index < len(self.executions):
             record = self.executions[index]
