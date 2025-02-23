@@ -9,7 +9,7 @@ from config.config_manager import ConfigManager
 logger = setup_logger(__name__)
 
 def run_sensitivity_analysis(param_settings,
-                             assets=["BTC/USDT"],
+                             assets,
                              short_tf="4h", long_tf="1d",
                              start_date="2018-06-01", end_date="2020-12-31",
                              periods=None,

@@ -260,6 +260,10 @@ def initialize_root_logger():
         except Exception as e:
             logging.getLogger().error("Failed to add module-specific AggregatingHandler: " + str(e), exc_info=True)
 
+    # 외부 라이브러리 로그 레벨 조정: ccxt 및 urllib3의 로그를 WARNING 이상으로 설정
+    logging.getLogger("ccxt").setLevel(logging.WARNING)
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
+
 def setup_logger(module_name: str) -> logging.Logger:
     logger = logging.getLogger(module_name)
     logger.setLevel(detail_level)

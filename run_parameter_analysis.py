@@ -6,6 +6,7 @@ from logs.logger_config import setup_logger, initialize_root_logger, shutdown_lo
 from logs.logging_util import LoggingUtil
 from strategies.param_analysis import run_sensitivity_analysis
 from logs.final_report import generate_parameter_sensitivity_report
+from data.db.db_manager import get_unique_symbol_list
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -16,8 +17,8 @@ def parse_args():
                         help="Comma-separated list of parameter names to analyze.")
     parser.add_argument("--param_steps", type=int, default=3, 
                         help="Number of steps for each parameter (default: 3)")
-    parser.add_argument("--assets", type=str, default="BTC/USDT", 
-                        help="Comma-separated list of assets (default: BTC/USDT)")
+    parser.add_argument("--assets", type=str, default="",
+                        help="Optional: Comma-separated list of assets. If not provided, DB will be queried for unique symbols.")
     parser.add_argument("--short_tf", type=str, default="4h", 
                         help="Short time frame (default: 4h)")
     parser.add_argument("--long_tf", type=str, default="1d", 
@@ -54,7 +55,12 @@ def run_parameter_analysis():
     logger = setup_logger(__name__)
     logger.info("Starting parameter sensitivity analysis.")
 
-    assets = parse_assets(args.assets)
+    if args.assets:
+        assets = parse_assets(args.assets)
+    else:
+        assets = get_unique_symbol_list() or ["BTC/USDT"]
+    logger.info(f"Assets for analysis: {assets}")
+
     periods = parse_periods(args.periods, args.start_date, args.end_date)
 
     from config.config_manager import ConfigManager

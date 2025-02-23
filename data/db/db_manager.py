@@ -17,8 +17,8 @@ def insert_on_conflict(table: Any, conn: Any, keys: list, data_iter: Iterable) -
         cur = raw_conn.cursor()
         values = list(data_iter)
         columns = ", ".join(keys)
-        sql = f"INSERT INTO {table.name} ({columns}) VALUES %s ON CONFLICT (timestamp) DO NOTHING"
-        execute_values(cur, sql, values)
+        sql_str = f"INSERT INTO {table.name} ({columns}) VALUES %s ON CONFLICT (timestamp) DO NOTHING"
+        execute_values(cur, sql_str, values)
         cur.close()
     except Exception as e:
         logger.error(f"insert_on_conflict 에러: {e}", exc_info=True)
@@ -104,3 +104,44 @@ def fetch_ohlcv_records(table_name: str = 'ohlcv_data', start_date: str = None, 
     except Exception as e:
         logger.error(f"데이터 로드 에러 ({table_name}): {e}", exc_info=True)
         return pd.DataFrame()
+
+def get_unique_symbol_list(db_config: Dict[str, Any] = None) -> list:
+    """
+    DB 내 public 스키마에서 테이블 이름을 조회하고,
+    "ohlcv_{symbol}_{timeframe}" 형식에 맞는 테이블들을 분석하여 고유 symbol (예: BTC/USDT)을 반환합니다.
+    만약 db_config가 제공되지 않으면 기본 DATABASE 설정을 사용합니다.
+    """
+    if db_config is None:
+        db_config = DATABASE
+    try:
+        engine = create_engine(
+            f"postgresql://{db_config['user']}:{db_config['password']}@"
+            f"{db_config['host']}:{db_config['port']}/{db_config['dbname']}",
+            pool_pre_ping=True
+        )
+        with engine.connect() as conn:
+            result = conn.execute(text("SELECT tablename FROM pg_tables WHERE schemaname = 'public'"))
+            tables = [row[0] for row in result]
+    except Exception as e:
+        logger.error(f"Error fetching table names: {e}", exc_info=True)
+        return []
+
+    symbol_set = set()
+    for table in tables:
+        # 테이블 이름이 ohlcv_ 로 시작하면 형식: ohlcv_{symbol}_{timeframe} 임을 가정
+        if table.startswith("ohlcv_"):
+            parts = table.split("_")
+            if len(parts) >= 3:
+                symbol_key = parts[1]  # 예: 'btcusdt'
+                symbol_set.add(symbol_key)
+
+    # symbol_key를 표준 형식(BTC/USDT)으로 변환 (간단 규칙: 뒤에 'usdt'가 있으면)
+    symbols = []
+    for s in symbol_set:
+        if s.endswith("usdt"):
+            base = s[:-4].upper()
+            symbol = f"{base}/USDT"
+            symbols.append(symbol)
+        else:
+            symbols.append(s.upper())
+    return list(sorted(symbols))

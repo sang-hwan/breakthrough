@@ -6,6 +6,7 @@ from backtesting.backtester import Backtester
 from backtesting.performance import compute_performance
 from logs.final_report import generate_final_report
 from config.config_manager import ConfigManager
+from data.db.db_manager import get_unique_symbol_list
 
 def run_strategy_performance():
     LoggingUtil.clear_log_files()
@@ -14,8 +15,11 @@ def run_strategy_performance():
     logger = setup_logger(__name__)
     logger.info("Starting full project test.")
 
+    assets = get_unique_symbol_list() or ["BTC/USDT", "ETH/USDT", "XRP/USDT"]
+    logger.info(f"Assets for strategy performance: {assets}")
+
     logger.info("Starting Walk-Forward parameter optimization.")
-    optimizer = DynamicParameterOptimizer(n_trials=10)
+    optimizer = DynamicParameterOptimizer(n_trials=10, assets=assets)
     best_trial = optimizer.optimize()
 
     config_manager = ConfigManager()
@@ -25,9 +29,8 @@ def run_strategy_performance():
     start_date = "2018-06-01"
     end_date = "2025-02-01"
     timeframes = {"short_tf": "4h", "long_tf": "1d"}
-    symbols = ["BTC/USDT", "ETH/USDT", "XRP/USDT"]
 
-    for symbol in symbols:
+    for symbol in assets:
         symbol_key = symbol.replace("/", "").lower()
         backtester = Backtester(symbol=symbol, account_size=10000)
         try:

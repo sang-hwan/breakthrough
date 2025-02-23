@@ -16,14 +16,16 @@ import optuna
 from logs.logger_config import setup_logger
 from backtesting.backtester import Backtester
 from config.config_manager import ConfigManager, TradingConfig
+from data.db.db_manager import get_unique_symbol_list
 
 logger = setup_logger(__name__)
 
 class DynamicParameterOptimizer:
-    def __init__(self, n_trials=10):
+    def __init__(self, n_trials=10, assets=None):
         self.n_trials = n_trials
         self.study = None
         self.config_manager = ConfigManager()
+        self.assets = assets if assets is not None else (get_unique_symbol_list() or ["BTC/USDT", "ETH/USDT", "XRP/USDT"])
 
     def objective(self, trial):
         try:
@@ -42,7 +44,6 @@ class DynamicParameterOptimizer:
                 "weekly_momentum_threshold": trial.suggest_float("weekly_momentum_threshold", 0.3, 0.7)
             }
             dynamic_params = {**base_params, **suggested_params}
-            # Validate dynamic parameters
             dynamic_params = self.config_manager.validate_params(dynamic_params)
 
             try:
@@ -51,7 +52,6 @@ class DynamicParameterOptimizer:
                 logger.error("Validation error in dynamic_params: " + str(e), exc_info=True)
                 return 1e6
 
-            assets = ["BTC/USDT", "ETH/USDT", "XRP/USDT"]
             splits = [{
                 "train_start": "2018-06-01",
                 "train_end": "2020-12-31",
@@ -62,9 +62,8 @@ class DynamicParameterOptimizer:
 
             total_score, num_evaluations = 0.0, 0
             for split in splits:
-                for asset in assets:
+                for asset in self.assets:
                     symbol_key = asset.replace("/", "").lower()
-
                     bt_train = Backtester(symbol=asset, account_size=10000)
                     bt_train.load_data(
                         short_table_format=f"ohlcv_{symbol_key}_{{timeframe}}",
@@ -147,7 +146,7 @@ from config.config_manager import ConfigManager
 logger = setup_logger(__name__)
 
 def run_sensitivity_analysis(param_settings,
-                             assets=["BTC/USDT"],
+                             assets,
                              short_tf="4h", long_tf="1d",
                              start_date="2018-06-01", end_date="2020-12-31",
                              periods=None,
