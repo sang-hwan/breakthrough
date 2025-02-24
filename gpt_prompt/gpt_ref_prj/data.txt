@@ -403,13 +403,13 @@ def get_top_volume_symbols(exchange_id: str = 'binance', quote_currency: str = '
                            required_start_date: str = "2018-01-01", count: int = 5, 
                            pause_sec: float = 1.0) -> list:
     """
-    Retrieve the top symbols based on trading volume (quoteVolume) that have historical data
+    Retrieve the top symbols based on market capitalization that have historical data
     available since the required_start_date.
     
-    This function creates a single ccxt exchange instance to load market data and tickers,
-    sorts the USDT symbols by their quoteVolume in descending order, and filters out symbols
-    without data prior to the required_start_date. It returns a list of tuples, where each tuple
-    contains (symbol, onboard_date) as a string in "%Y-%m-%d %H:%M:%S" format.
+    This function creates a single ccxt exchange instance to load market data,
+    sorts the USDT symbols by their market capitalization (extracted from the exchange's 'info')
+    in descending order, and filters out symbols without data prior to the required_start_date.
+    It returns a list of tuples, where each tuple contains (symbol, onboard_date) as a string in "%Y-%m-%d %H:%M:%S" format.
     """
     try:
         exchange_class = getattr(ccxt, exchange_id)
@@ -424,24 +424,24 @@ def get_top_volume_symbols(exchange_id: str = 'binance', quote_currency: str = '
     usdt_symbols = [symbol for symbol in markets if symbol.endswith('/' + quote_currency)]
     logger.debug(f"Found {len(usdt_symbols)} USDT symbols.")
 
-    try:
-        logger.debug("Fetching tickers...")
-        tickers = exchange.fetch_tickers()
-        logger.debug("Tickers fetched successfully.")
-    except Exception as e:
-        logger.error(f"티커 수집 에러: {e}", exc_info=True)
-        tickers = {}
-
-    symbol_volumes = []
+    symbol_market_caps = []
     for symbol in usdt_symbols:
-        ticker = tickers.get(symbol, {})
-        volume = ticker.get('quoteVolume', 0)
-        symbol_volumes.append((symbol, volume))
-    
-    symbol_volumes.sort(key=lambda x: x[1] if x[1] is not None else 0, reverse=True)
-    
+        market_info = markets.get(symbol, {})
+        cap = None
+        if market_info:
+            cap = market_info.get('info', {}).get('marketCap')
+        if cap is None:
+            cap = 0
+        try:
+            cap = float(cap)
+        except Exception:
+            cap = 0
+        symbol_market_caps.append((symbol, cap))
+
+    symbol_market_caps.sort(key=lambda x: x[1] if x[1] is not None else 0, reverse=True)
+
     valid_symbols = []
-    for symbol, volume in symbol_volumes:
+    for symbol, cap in symbol_market_caps:
         df = fetch_historical_ohlcv_data(symbol, '1d', required_start_date, 
                                          limit_per_request=1, pause_sec=pause_sec, 
                                          exchange_id=exchange_id, single_fetch=True,
