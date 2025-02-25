@@ -283,21 +283,20 @@ def create_database_if_not_exists(db_config):
 def run_update_ohlcv_data():
     create_database_if_not_exists(DATABASE)
     
-    # get_top_volume_symbols now returns a list of tuples: (symbol, onboard_date)
-    symbols_with_onboard = get_top_volume_symbols(exchange_id='binance', quote_currency='USDT', count=5)
+    # get_top_volume_symbols는 (symbol, first_available_date) 튜플 리스트를 반환합니다.
+    symbols_with_onboard = get_top_volume_symbols(exchange_id='binance', quote_currency='USDT', count=3)
     if not symbols_with_onboard:
         logger.error("No valid symbols found from Binance.")
         sys.exit(1)
-    logger.debug(f"Top symbols (with onboardDate): {symbols_with_onboard}")
+    logger.debug(f"Top symbols (with onboard date): {symbols_with_onboard}")
     
-    # For further processing, we extract just the symbol names for table naming
-    symbols = [item[0] if isinstance(item, tuple) else item for item in symbols_with_onboard]
-    
-    timeframes = ["1d", "4h", "1h", "15m"]
-    
-    # get_latest_onboard_date now accepts symbols in either form.
-    global_start_date = get_latest_onboard_date(symbols, exchange_id='binance')
+    # get_latest_onboard_date는 심볼 튜플을 그대로 받습니다.
+    global_start_date = get_latest_onboard_date(symbols_with_onboard, exchange_id='binance')
     logger.debug(f"Unified start date for all symbols: {global_start_date}")
+    
+    # 테이블명 생성 등에서 사용할 심볼 이름만 추출합니다.
+    symbols = [item[0] for item in symbols_with_onboard]
+    timeframes = ["1d", "4h", "1h", "15m"]
     
     end_date = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     

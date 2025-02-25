@@ -8,23 +8,6 @@ from functools import lru_cache
 
 logger = setup_logger(__name__)
 
-def extract_onboard_date(market_info) -> str:
-    """
-    Extract onboardDate from the given market_info dictionary.
-    Returns a string in "%Y-%m-%d %H:%M:%S" format.
-    If unavailable or error occurs, returns the default "2018-01-01 00:00:00".
-    """
-    default_date = "2018-01-01 00:00:00"
-    if market_info:
-        onboard = market_info.get('info', {}).get('onboardDate')
-        if onboard:
-            try:
-                onboard_dt = datetime.fromtimestamp(int(onboard) / 1000)
-                return onboard_dt.strftime("%Y-%m-%d %H:%M:%S")
-            except Exception:
-                return default_date
-    return default_date
-
 @lru_cache(maxsize=32)
 def fetch_historical_ohlcv_data(symbol: str, timeframe: str, start_date: str, 
                                 limit_per_request: int = 1000, pause_sec: float = 1.0, 
@@ -32,10 +15,8 @@ def fetch_historical_ohlcv_data(symbol: str, timeframe: str, start_date: str,
                                 time_offset_ms: int = 1, max_retries: int = 3,
                                 exchange_instance=None) -> pd.DataFrame:
     """
-    Fetch historical OHLCV data for the specified symbol and timeframe starting from start_date.
-    Uses caching to reduce duplicate API calls.
-    
-    If exchange_instance is provided, it will be reused instead of creating a new instance.
+    지정 심볼과 timeframe에 대해 start_date부터의 역사적 OHLCV 데이터를 가져옵니다.
+    exchange_instance가 제공되면 이를 재사용합니다.
     """
     if exchange_instance is None:
         try:
@@ -51,7 +32,6 @@ def fetch_historical_ohlcv_data(symbol: str, timeframe: str, start_date: str,
         exchange = exchange_instance
 
     try:
-        # 만약 start_date가 "YYYY-MM-DD" 형식이면 시간 부분(" 00:00:00")을 추가합니다.
         if len(start_date.strip()) == 10:
             start_date += " 00:00:00"
         since = exchange.parse8601(datetime.strptime(start_date, "%Y-%m-%d %H:%M:%S").isoformat())
@@ -94,7 +74,7 @@ def fetch_historical_ohlcv_data(symbol: str, timeframe: str, start_date: str,
             df = pd.DataFrame(ohlcv_list, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
             df.set_index('timestamp', inplace=True)
-            return df.copy()  # Return a copy to prevent external modifications
+            return df.copy()
         except Exception as e:
             logger.error(f"DataFrame 변환 에러: {e}", exc_info=True)
             return pd.DataFrame()
@@ -105,7 +85,7 @@ def fetch_historical_ohlcv_data(symbol: str, timeframe: str, start_date: str,
 @lru_cache(maxsize=32)
 def fetch_latest_ohlcv_data(symbol: str, timeframe: str, limit: int = 500, exchange_id: str = 'binance') -> pd.DataFrame:
     """
-    Fetch the latest OHLCV data for the specified symbol and timeframe.
+    지정 심볼과 timeframe에 대해 최신 OHLCV 데이터를 가져옵니다.
     """
     try:
         exchange_class = getattr(ccxt, exchange_id)
@@ -135,16 +115,16 @@ def fetch_latest_ohlcv_data(symbol: str, timeframe: str, limit: int = 500, excha
         return pd.DataFrame()
 
 def get_top_volume_symbols(exchange_id: str = 'binance', quote_currency: str = 'USDT', 
-                           required_start_date: str = "2018-01-01", count: int = 5, 
-                           pause_sec: float = 1.0) -> list:
+                           count: int = 5, pause_sec: float = 1.0) -> list:
     """
-    Retrieve the top symbols based on market capitalization that have historical data
-    available since the required_start_date.
+    Binance의 경우 거래량(quoteVolume)을 시총 대용 지표로 사용하여,
+    거래소 내에서 유효한 심볼 중 상위 'count' 개를 선택합니다.
+    스테이블 코인(예: USDT, BUSD, USDC 등)은 모두 제외합니다.
     
-    This function creates a single ccxt exchange instance to load market data,
-    sorts the USDT symbols by their market capitalization (extracted from the exchange's 'info')
-    in descending order, and filters out symbols without data prior to the required_start_date.
-    It returns a list of tuples, where each tuple contains (symbol, onboard_date) as a string in "%Y-%m-%d %H:%M:%S" format.
+    각 심볼에 대해 fetch_historical_ohlcv_data() (limit=1)를 호출하여 최초 제공일을 구한 후,
+    (symbol, first_available_date) 튜플 리스트로 반환합니다.
+    
+    (파일 간 호환: 기존 required_start_date 매개변수가 제거되었습니다.)
     """
     try:
         exchange_class = getattr(ccxt, exchange_id)
@@ -156,66 +136,114 @@ def get_top_volume_symbols(exchange_id: str = 'binance', quote_currency: str = '
         logger.error(f"{exchange_id}에서 마켓 로드 에러: {e}", exc_info=True)
         return []
 
+    # USDT 심볼 추출
     usdt_symbols = [symbol for symbol in markets if symbol.endswith('/' + quote_currency)]
-    logger.debug(f"Found {len(usdt_symbols)} USDT symbols.")
+    
+    stable_coins = {
+        # 기존 주요 스테이블 코인
+        "USDT", "BUSD", "USDC", "DAI", "TUSD", "PAX", "USDP", "GUSD", "MIM", "UST",
+        
+        # 최신 주요 스테이블 코인 추가
+        "USDe",  # Ethena USD (synthetic dollar)
+        "FDUSD",  # First Digital USD
+        "PYUSD",  # PayPal USD
+        "USD0",  # Usual USD
+        "FRAX",  # Frax Finance Stablecoin
+        "USDY",  # Ondo USD Yield
+        "USDD",  # Tron-based stablecoin
+        "EURS",  # Stasis Euro stablecoin
 
-    symbol_market_caps = []
-    for symbol in usdt_symbols:
-        market_info = markets.get(symbol, {})
-        cap = None
-        if market_info:
-            cap = market_info.get('info', {}).get('marketCap')
-        if cap is None:
-            cap = 0
+        # 추가된 주요 스테이블 코인 (2023~2025년 신규)
+        "RLUSD",  # Ripple USD
+        "GHO",  # Aave Stablecoin
+        "crvUSD",  # Curve Finance Stablecoin
+        "LUSD",  # Liquity USD (ETH-backed stablecoin)
+        "XAU₮",  # Tether Gold (Gold-backed stablecoin)
+        "PAXG",  # Paxos Gold
+        "EUROC",  # Circle Euro Coin
+    }
+    
+    filtered_symbols = [symbol for symbol in usdt_symbols if symbol.split('/')[0] not in stable_coins]
+    logger.debug(f"Filtered symbols (excluding stablecoins): {len(filtered_symbols)} out of {len(usdt_symbols)}")
+
+    # Binance의 경우 거래량을 시총 대신 사용합니다.
+    if exchange_id == 'binance':
         try:
-            cap = float(cap)
-        except Exception:
-            cap = 0
-        symbol_market_caps.append((symbol, cap))
-
-    symbol_market_caps.sort(key=lambda x: x[1] if x[1] is not None else 0, reverse=True)
+            tickers = exchange.fetch_tickers()
+        except Exception as e:
+            logger.error(f"Error fetching tickers from {exchange_id}: {e}", exc_info=True)
+            tickers = {}
+        symbol_volumes = []
+        for symbol in filtered_symbols:
+            ticker = tickers.get(symbol, {})
+            vol = ticker.get('quoteVolume', 0)
+            try:
+                vol = float(vol)
+            except Exception:
+                vol = 0
+            symbol_volumes.append((symbol, vol))
+        symbol_volumes.sort(key=lambda x: x[1], reverse=True)
+        sorted_symbols = [item[0] for item in symbol_volumes]
+    else:
+        # Binance가 아닌 경우, 기존 marketCap 정보를 사용합니다.
+        symbol_caps = []
+        for symbol in filtered_symbols:
+            market_info = markets.get(symbol, {})
+            cap = market_info.get('info', {}).get('marketCap')
+            if cap is None:
+                cap = 0
+            try:
+                cap = float(cap)
+            except Exception:
+                cap = 0
+            symbol_caps.append((symbol, cap))
+        symbol_caps.sort(key=lambda x: x[1], reverse=True)
+        sorted_symbols = [item[0] for item in symbol_caps]
 
     valid_symbols = []
-    for symbol, cap in symbol_market_caps:
-        df = fetch_historical_ohlcv_data(symbol, '1d', required_start_date, 
+    # 모든 심볼에 대해 첫 데이터 제공일을 가져옵니다.
+    for symbol in sorted_symbols:
+        # 확인용 start_date는 "2018-01-01"으로 고정합니다.
+        df = fetch_historical_ohlcv_data(symbol, '1d', "2018-01-01", 
                                          limit_per_request=1, pause_sec=pause_sec, 
                                          exchange_id=exchange_id, single_fetch=True,
                                          exchange_instance=exchange)
         if df.empty:
             continue
         first_timestamp = df.index.min()
-        if first_timestamp > pd.to_datetime(required_start_date):
-            continue
-        # onboardDate 추출
-        market_info = exchange.markets.get(symbol)
-        onboard_str = extract_onboard_date(market_info)
-        valid_symbols.append((symbol, onboard_str))
+        first_date_str = first_timestamp.strftime("%Y-%m-%d %H:%M:%S")
+        valid_symbols.append((symbol, first_date_str))
         if len(valid_symbols) >= count:
             break
 
     if len(valid_symbols) < count:
-        logger.warning(f"경고: {required_start_date} 이전 데이터가 있는 유효 심볼이 {len(valid_symbols)}개 밖에 없습니다.")
+        logger.warning(f"경고: 유효한 데이터가 있는 심볼이 {len(valid_symbols)}개 밖에 없습니다.")
     return valid_symbols
 
 def get_latest_onboard_date(symbols: list, exchange_id: str = 'binance') -> str:
     """
-    For the given list of symbols, retrieve each symbol's onboardDate using extract_onboard_date,
-    and return the latest date as a string in "%Y-%m-%d %H:%M:%S" format.
-    If retrieval fails, returns the default "2018-01-01 00:00:00".
+    전달된 심볼 리스트(튜플 또는 단순 심볼 문자열)에 대해 최초 데이터 제공일(=onboardDate)을 구합니다.
+    Binance의 경우 get_top_volume_symbols에서 (symbol, first_available_date) 튜플로 전달할 수 있으며,
+    이를 이용하여 가장 늦은(최근) 날짜를 구합니다.
+    
+    (파일 간 호환: 기존 get_latest_onboard_date의 매개변수 타입과 동작이 변경되었습니다.)
     """
     onboard_dates = []
     try:
-        exchange_class = getattr(ccxt, exchange_id)
-        exchange = exchange_class({'enableRateLimit': True, 'timeout': 30000})
-        exchange.load_markets()
         for item in symbols:
-            # symbols may be a list of tuples (symbol, onboard_date) or just symbol strings.
             if isinstance(item, tuple):
-                symbol = item[0]
+                onboard_str = item[1]
             else:
-                symbol = item
-            market_info = exchange.markets.get(symbol)
-            onboard_str = extract_onboard_date(market_info)
+                exchange_class = getattr(ccxt, exchange_id)
+                exchange = exchange_class({'enableRateLimit': True, 'timeout': 30000})
+                exchange.load_markets()
+                df = fetch_historical_ohlcv_data(item, '1d', "2018-01-01", 
+                                                 limit_per_request=1, single_fetch=True, 
+                                                 exchange_instance=exchange)
+                if df.empty:
+                    onboard_str = "2018-01-01 00:00:00"
+                else:
+                    onboard_str = df.index.min().strftime("%Y-%m-%d %H:%M:%S")
             try:
                 dt = datetime.strptime(onboard_str, "%Y-%m-%d %H:%M:%S")
                 onboard_dates.append(dt)
