@@ -20,7 +20,7 @@ def run_sensitivity_analysis(param_settings,
     if base_dynamic_params is None:
         base_dynamic_params = ConfigManager().get_defaults()
 
-    logger.info(f"Starting sensitivity analysis over assets {assets}")
+    logger.info(f"Starting sensitivity analysis over assets: {assets}")
     results = {}
     param_names = list(param_settings.keys())
     combinations = list(product(*(param_settings[name] for name in param_names)))
@@ -32,10 +32,10 @@ def run_sensitivity_analysis(param_settings,
         combo_key = tuple(sorted(zip(param_names, combo)))
         run_metrics = []
         for asset in assets:
+            symbol_key = asset.replace("/", "").lower()
             for s_date, e_date in periods:
                 try:
                     bt = Backtester(symbol=asset, account_size=10000)
-                    symbol_key = asset.replace("/", "").lower()
                     bt.load_data(
                         short_table_format=f"ohlcv_{symbol_key}_{{timeframe}}",
                         long_table_format=f"ohlcv_{symbol_key}_{{timeframe}}",
@@ -45,10 +45,14 @@ def run_sensitivity_analysis(param_settings,
                     for name, val in combo_key:
                         dynamic_params[name] = val
                     trades, _ = bt.run_backtest_pipeline(dynamic_params=dynamic_params)
-                    from backtesting.performance import compute_performance
-                    perf = compute_performance(trades)
-                    run_metrics.append(perf)
-                except Exception:
+                    if trades:
+                        from backtesting.performance import compute_performance
+                        perf = compute_performance(trades)
+                        run_metrics.append(perf)
+                    else:
+                        logger.warning(f"No trades executed for {asset} during period {s_date} to {e_date} with combination {combo_key}.")
+                except Exception as e:
+                    logger.error(f"Error during sensitivity analysis for {asset} with combination {combo_key}: {e}", exc_info=True)
                     continue
         if run_metrics:
             aggregated = {}

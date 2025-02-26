@@ -55,6 +55,15 @@ def calculate_atr(data: pd.DataFrame, period: int = 14, min_atr: float = None) -
     return data
 
 def calculate_dynamic_stop_and_take(entry_price: float, atr: float, risk_params: dict):
+    """
+    개선된 동적 스톱로스 및 테이크프로핏 계산:
+      - entry_price와 atr 값의 유효성을 검증합니다.
+      - atr_multiplier는 1.0 ~ 5.0 범위로 제한하며, risk_reward_ratio (기본 2.0)를 사용하여 스톱로스와의 차이를 기반으로 테이크프로핏 가격을 계산합니다.
+    
+    계산식:
+      stop_loss_price = entry_price - (atr * atr_multiplier * volatility_multiplier)
+      take_profit_price = entry_price + (entry_price - stop_loss_price) * risk_reward_ratio
+    """
     if entry_price <= 0:
         logger.error(f"Invalid entry_price: {entry_price}. Must be positive.", exc_info=True)
         raise InvalidEntryPriceError(f"Invalid entry_price: {entry_price}. Must be positive.")
@@ -66,19 +75,49 @@ def calculate_dynamic_stop_and_take(entry_price: float, atr: float, risk_params:
         atr = fallback_atr
     try:
         atr_multiplier = risk_params.get("atr_multiplier", 2.0)
-        profit_ratio = risk_params.get("profit_ratio", 0.05)
         volatility_multiplier = risk_params.get("volatility_multiplier", 1.0)
-        atr_multiplier = max(0.1, min(atr_multiplier, 10))
-        profit_ratio = max(0.001, min(profit_ratio, 1))
+        risk_reward_ratio = risk_params.get("risk_reward_ratio", 2.0)
+        
+        # 제한된 범위 내에서 값 보정
+        atr_multiplier = max(1.0, min(atr_multiplier, 5.0))
+        risk_reward_ratio = max(1.0, min(risk_reward_ratio, 5.0))
+        
         stop_loss_price = entry_price - (atr * atr_multiplier * volatility_multiplier)
-        take_profit_price = entry_price * (1 + profit_ratio)
         if stop_loss_price <= 0:
             logger.error("Computed stop_loss_price is non-positive; adjusting to at least 50% of entry_price.", exc_info=True)
             stop_loss_price = entry_price * 0.5
-        logger.debug(f"Calculated stop_loss={stop_loss_price:.2f}, take_profit={take_profit_price:.2f} (entry_price={entry_price}, atr={atr}, atr_multiplier={atr_multiplier}, profit_ratio={profit_ratio})")
+        
+        take_profit_price = entry_price + (entry_price - stop_loss_price) * risk_reward_ratio
+        
+        logger.debug(f"Calculated stop_loss={stop_loss_price:.2f}, take_profit={take_profit_price:.2f} "
+                     f"(entry_price={entry_price}, atr={atr}, atr_multiplier={atr_multiplier}, "
+                     f"volatility_multiplier={volatility_multiplier}, risk_reward_ratio={risk_reward_ratio})")
         return stop_loss_price, take_profit_price
     except Exception as e:
         logger.error("calculate_dynamic_stop_and_take error: " + str(e), exc_info=True)
+        raise
+
+def calculate_partial_exit_targets(entry_price: float, partial_exit_ratio: float = 0.5,
+                                     partial_profit_ratio: float = 0.03, final_profit_ratio: float = 0.06,
+                                     final_exit_ratio: float = 1.0, use_weekly_target: bool = False,
+                                     weekly_momentum: float = None, weekly_adjustment_factor: float = 0.5):
+    if entry_price <= 0:
+        logger.error(f"Invalid entry_price: {entry_price}. Must be positive.", exc_info=True)
+        raise InvalidEntryPriceError(f"Invalid entry_price: {entry_price}. Must be positive.")
+    try:
+        if use_weekly_target and weekly_momentum is not None:
+            adjusted_partial = partial_profit_ratio + weekly_adjustment_factor * weekly_momentum
+            adjusted_final = final_profit_ratio + weekly_adjustment_factor * weekly_momentum
+        else:
+            adjusted_partial = partial_profit_ratio
+            adjusted_final = final_profit_ratio
+        partial_target = entry_price * (1 + adjusted_partial)
+        final_target = entry_price * (1 + adjusted_final)
+        logger.debug(f"Partial targets: partial={partial_target:.2f}, final={final_target:.2f} "
+                     f"(entry_price={entry_price}, adjusted_partial={adjusted_partial}, adjusted_final={adjusted_final})")
+        return [(partial_target, partial_exit_ratio), (final_target, final_exit_ratio)]
+    except Exception as e:
+        logger.error("calculate_partial_exit_targets error: " + str(e), exc_info=True)
         raise
 
 def adjust_trailing_stop(current_stop: float, current_price: float, highest_price: float, trailing_percentage: float,
@@ -104,26 +143,4 @@ def adjust_trailing_stop(current_stop: float, current_price: float, highest_pric
         return adjusted_stop
     except Exception as e:
         logger.error("adjust_trailing_stop error: " + str(e), exc_info=True)
-        raise
-
-def calculate_partial_exit_targets(entry_price: float, partial_exit_ratio: float = 0.5,
-                                     partial_profit_ratio: float = 0.03, final_profit_ratio: float = 0.06,
-                                     final_exit_ratio: float = 1.0, use_weekly_target: bool = False,
-                                     weekly_momentum: float = None, weekly_adjustment_factor: float = 0.5):
-    if entry_price <= 0:
-        logger.error(f"Invalid entry_price: {entry_price}. Must be positive.", exc_info=True)
-        raise InvalidEntryPriceError(f"Invalid entry_price: {entry_price}. Must be positive.")
-    try:
-        if use_weekly_target and weekly_momentum is not None:
-            adjusted_partial = partial_profit_ratio + weekly_adjustment_factor * weekly_momentum
-            adjusted_final = final_profit_ratio + weekly_adjustment_factor * weekly_momentum
-        else:
-            adjusted_partial = partial_profit_ratio
-            adjusted_final = final_profit_ratio
-        partial_target = entry_price * (1 + adjusted_partial)
-        final_target = entry_price * (1 + adjusted_final)
-        logger.debug(f"Partial targets: partial={partial_target:.2f}, final={final_target:.2f} (entry_price={entry_price}, adjusted_partial={adjusted_partial}, adjusted_final={adjusted_final})")
-        return [(partial_target, partial_exit_ratio), (final_target, final_exit_ratio)]
-    except Exception as e:
-        logger.error("calculate_partial_exit_targets error: " + str(e), exc_info=True)
         raise

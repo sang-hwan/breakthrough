@@ -126,7 +126,7 @@ class RiskManager:
     def compute_risk_parameters_by_regime(
         self,
         base_params: dict,
-        regime: str,
+        regime,  # 문자열이 아닐 경우 숫자형 매핑 시도
         liquidity: str = None,
         bullish_risk_multiplier: float = 1.1,
         bullish_atr_multiplier_factor: float = 0.9,
@@ -141,6 +141,12 @@ class RiskManager:
         high_profit_ratio_multiplier: float = 1.0,
         low_profit_ratio_multiplier: float = 0.9
     ) -> dict:
+        # regime이 문자열이 아니라면 숫자형 매핑을 시도합니다.
+        if not isinstance(regime, str):
+            try:
+                regime = {0.0: "bullish", 1.0: "bearish", 2.0: "sideways"}.get(float(regime), "unknown")
+            except Exception:
+                regime = "unknown"
         regime = regime.lower()
         risk_params = {}
         try:
@@ -166,11 +172,30 @@ class RiskManager:
                     risk_params['atr_multiplier'] = base_params['atr_multiplier'] * low_atr_multiplier_factor
                     risk_params['profit_ratio'] = base_params['profit_ratio'] * low_profit_ratio_multiplier
             elif regime == "unknown":
-                self.logger.error("Market regime is unknown, using base risk parameters.", exc_info=True)
-                risk_params = base_params
+                # 개선: unknown regime일 경우, 보수적인 위험 조정을 적용합니다.
+                self.logger.warning("Market regime is unknown; applying conservative risk adjustments.")
+                # liquidity 정보가 있다면 sideways 기준으로 조정, 없으면 기본 파라미터에 소폭 감쇄 적용
+                if liquidity is not None:
+                    liquidity = liquidity.lower()
+                    if liquidity == "high":
+                        risk_params['risk_per_trade'] = base_params['risk_per_trade'] * 0.95
+                        risk_params['atr_multiplier'] = base_params['atr_multiplier']
+                        risk_params['profit_ratio'] = base_params['profit_ratio']
+                    else:
+                        risk_params['risk_per_trade'] = base_params['risk_per_trade'] * 0.90
+                        risk_params['atr_multiplier'] = base_params['atr_multiplier']
+                        risk_params['profit_ratio'] = base_params['profit_ratio']
+                else:
+                    risk_params = {
+                        'risk_per_trade': base_params['risk_per_trade'] * 0.95,
+                        'atr_multiplier': base_params['atr_multiplier'],
+                        'profit_ratio': base_params['profit_ratio']
+                    }
             else:
                 self.logger.error(f"Invalid market regime: {regime}; using default risk parameters.", exc_info=True)
                 return base_params
+
+            # 추가: 현재 변동성이 있다면 risk_per_trade에 보정 적용
             current_volatility = base_params.get("current_volatility", None)
             if current_volatility is not None:
                 if current_volatility > 0.05:
@@ -179,6 +204,7 @@ class RiskManager:
                 else:
                     risk_params['risk_per_trade'] *= 1.1
                     self.logger.debug(f"Adjusted risk_per_trade for low volatility {current_volatility}")
+
             self.logger.debug(f"Computed risk parameters: {risk_params}")
             return risk_params
         except Exception as e:

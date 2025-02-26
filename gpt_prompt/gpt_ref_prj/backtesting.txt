@@ -413,39 +413,51 @@ class Backtester:
 
             if len(self.df_long) < min_samples:
                 self.logger.error(f"Not enough samples for HMM training (min required: {min_samples}).", exc_info=True)
-                return pd.Series(["unknown"] * len(self.df_long), index=self.df_long.index)
+                return pd.Series(["sideways"] * len(self.df_long), index=self.df_long.index)
 
-            if self.hmm_model is None or self.last_hmm_training_datetime is None or (current_dt - self.last_hmm_training_datetime) >= retrain_interval:
+            if self.hmm_model is None or self.last_hmm_training_datetime is None:
                 from markets.regime_model import MarketRegimeHMM
                 self.hmm_model = MarketRegimeHMM(n_components=3, retrain_interval_minutes=retrain_interval_minutes)
                 training_data = self.df_long if len(self.df_long) <= max_samples else self.df_long.tail(max_samples)
-                if self.last_hmm_training_datetime is not None and hasattr(self.hmm_model, 'last_feature_stats') and self.hmm_model.last_feature_stats is not None:
-                    current_means = training_data[hmm_features].mean()
-                    diff = abs(current_means - self.hmm_model.last_feature_stats).mean()
-                    if diff < feature_change_threshold:
-                        self.logger.debug(f"HMM retraining skipped: feature change {diff:.6f} below threshold {feature_change_threshold}")
-                    else:
-                        self.hmm_model.train(training_data, feature_columns=hmm_features)
-                        self.last_hmm_training_datetime = current_dt
-                        self.logger.debug(f"HMM retrained at {current_dt} with feature change diff {diff:.6f}")
-                else:
+                self.hmm_model.train(training_data, feature_columns=hmm_features)
+                self.last_hmm_training_datetime = current_dt
+                self.logger.debug(f"HMM trained at {current_dt}")
+            else:
+                training_data = self.df_long if len(self.df_long) <= max_samples else self.df_long.tail(max_samples)
+                current_means = training_data[hmm_features].mean()
+                diff = (np.abs(current_means - self.hmm_model.last_feature_stats).mean() 
+                        if self.hmm_model.last_feature_stats is not None else np.inf)
+                if (current_dt - self.last_hmm_training_datetime) >= retrain_interval or diff >= feature_change_threshold:
                     self.hmm_model.train(training_data, feature_columns=hmm_features)
                     self.last_hmm_training_datetime = current_dt
-                    self.logger.debug(f"HMM trained at {current_dt}")
-            regime_predictions = self.hmm_model.predict(self.df_long, feature_columns=hmm_features)
-            regime_map = {0: "bullish", 1: "bearish", 2: "sideways"}
-            adjusted_regimes = []
-            self.df_long['long_term_sma'] = self.df_long['close'].rolling(window=dynamic_params.get('sma_period', 200), min_periods=1).mean()
-            for idx, pred in enumerate(regime_predictions):
-                if self.df_long['close'].iloc[idx] > self.df_long['long_term_sma'].iloc[idx]:
-                    regime = regime_map.get(pred, "unknown")
+                    self.logger.debug(f"HMM retrained at {current_dt} with feature change diff {diff:.6f}")
                 else:
-                    regime = "bearish"
-                adjusted_regimes.append(regime)
+                    self.logger.debug(f"HMM retraining skipped: elapsed time and feature change diff ({diff:.6f}) do not warrant retraining.")
+
+            # 동적 상태 매핑을 위해 HMM의 예측 결과를 사용
+            predicted_regimes = self.hmm_model.predict_regime_labels(self.df_long, feature_columns=hmm_features)
+            
+            # long_term_sma 계산 (sma_period는 dynamic_params에서 제공)
+            sma_period = dynamic_params.get('sma_period', 200)
+            self.df_long['long_term_sma'] = self.df_long['close'].rolling(window=sma_period, min_periods=1).mean()
+            
+            adjusted_regimes = []
+            # 각 시점의 종가와 장기 SMA를 비교하여 일정 임계치 이상 차이가 나면 override
+            for idx, predicted in enumerate(predicted_regimes):
+                close_price = self.df_long['close'].iloc[idx]
+                sma_price = self.df_long['long_term_sma'].iloc[idx]
+                threshold = 0.01 * sma_price  # SMA의 1% 차이 임계치
+                if close_price < sma_price - threshold:
+                    adjusted_regime = "bearish"
+                elif close_price > sma_price + threshold:
+                    adjusted_regime = "bullish"
+                else:
+                    adjusted_regime = predicted
+                adjusted_regimes.append(adjusted_regime)
             return pd.Series(adjusted_regimes, index=self.df_long.index)
         except Exception as e:
             self.logger.error("Error updating HMM regime: " + str(e), exc_info=True)
-            return pd.Series(["unknown"] * len(self.df_long), index=self.df_long.index)
+            return pd.Series(["sideways"] * len(self.df_long), index=self.df_long.index)
 
     def update_short_dataframe(self, regime_series, dynamic_params):
         try:
@@ -742,7 +754,7 @@ class Backtester:
                 regime_series = update_hmm(self, dynamic_params)
             except Exception as e:
                 self.logger.error("Error updating HMM: " + str(e), exc_info=True)
-                regime_series = pd.Series(["unknown"] * len(self.df_long), index=self.df_long.index)
+                regime_series = pd.Series(["sideways"] * len(self.df_long), index=self.df_long.index)
 
             try:
                 self.update_short_dataframe(regime_series, dynamic_params)

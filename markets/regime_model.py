@@ -44,14 +44,19 @@ class MarketRegimeHMM:
 
         if self.last_train_time is not None:
             elapsed = current_last_time - self.last_train_time
-            if elapsed < timedelta(minutes=self.retrain_interval_minutes):
-                self.logger.info(f"HMM retraining skipped: only {elapsed.total_seconds()/60:.2f} minutes elapsed since last training.")
-                return
+            retrain_interval = timedelta(minutes=self.retrain_interval_minutes)
+            # 만약 이전 피처 통계가 있다면, 현재 평균과의 차이를 계산
             if self.last_feature_stats is not None:
                 current_means = training_data[feature_columns].mean()
                 diff = np.abs(current_means - self.last_feature_stats).mean()
-                if diff < self.retrain_feature_threshold:
-                    self.logger.info(f"HMM retraining skipped: feature mean change {diff:.6f} below threshold {self.retrain_feature_threshold}.")
+                if elapsed < retrain_interval and diff < self.retrain_feature_threshold:
+                    self.logger.info(
+                        f"HMM retraining skipped: only {elapsed.total_seconds()/60:.2f} minutes elapsed and feature mean change {diff:.6f} is below threshold {self.retrain_feature_threshold}."
+                    )
+                    return
+            else:
+                if elapsed < retrain_interval:
+                    self.logger.info(f"HMM retraining skipped: only {elapsed.total_seconds()/60:.2f} minutes elapsed.")
                     return
 
         X = training_data[feature_columns].values
@@ -113,9 +118,20 @@ class MarketRegimeHMM:
         self.logger.info("HMM model update completed.")
 
     def map_state_to_regime(self, state: int) -> str:
-        if self.n_components == 3:
-            mapping = {0: "bullish", 1: "bearish", 2: "sideways"}
-            return mapping.get(state, f"state_{state}")
+        # 동적으로 모델 상태를 매핑: 학습된 HMM의 첫 번째 피처(예: 수익률) 평균값 기준 정렬
+        if self.trained and self.model.means_ is not None and len(self.model.means_) == self.n_components:
+            # 첫 번째 피처(예: returns) 평균값 추출
+            returns_means = [mean[0] for mean in self.model.means_]
+            # 오름차순으로 정렬: 가장 낮은 값이 bearish, 가장 높은 값이 bullish, 중간이 sideways
+            sorted_indices = sorted(range(len(returns_means)), key=lambda i: returns_means[i])
+            mapping = {}
+            if self.n_components == 3:
+                mapping[sorted_indices[0]] = "bearish"
+                mapping[sorted_indices[1]] = "sideways"
+                mapping[sorted_indices[2]] = "bullish"
+                return mapping.get(state, f"state_{state}")
+            else:
+                return f"state_{state}"
         else:
             return f"state_{state}"
 

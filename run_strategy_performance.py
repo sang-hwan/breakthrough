@@ -6,7 +6,16 @@ from backtesting.backtester import Backtester
 from backtesting.performance import compute_performance
 from logs.final_report import generate_final_report
 from config.config_manager import ConfigManager
-from data.db.db_manager import get_unique_symbol_list
+from data.db.db_manager import get_unique_symbol_list, get_date_range
+from data.db.db_config import DATABASE
+
+def get_default_date_range(symbol: str, timeframe: str = "1d") -> tuple:
+    symbol_key = symbol.replace("/", "").lower()
+    table_name = f"ohlcv_{symbol_key}_{timeframe}"
+    start_date, end_date = get_date_range(table_name, DATABASE)
+    if start_date is None or end_date is None:
+        start_date, end_date = "2018-01-01 00:00:00", "2025-12-31 23:59:59"
+    return start_date, end_date
 
 def run_strategy_performance():
     LoggingUtil.clear_log_files()
@@ -26,8 +35,9 @@ def run_strategy_performance():
     best_params = config_manager.merge_optimized(best_trial.params)
     logger.info(f"Optimal parameters determined: {best_params}")
 
-    start_date = "2018-06-01"
-    end_date = "2025-02-01"
+    # DB에서 대표 심볼의 1d 테이블을 통해 날짜 범위를 조회
+    default_start, default_end = get_default_date_range(assets[0], "1d")
+    logger.info(f"Using date range from DB: {default_start} to {default_end}")
     timeframes = {"short_tf": "4h", "long_tf": "1d"}
 
     for symbol in assets:
@@ -39,8 +49,8 @@ def run_strategy_performance():
                 long_table_format=f"ohlcv_{symbol_key}_{{timeframe}}",
                 short_tf=timeframes["short_tf"],
                 long_tf=timeframes["long_tf"],
-                start_date=start_date,
-                end_date=end_date,
+                start_date=default_start,
+                end_date=default_end,
                 use_weekly=True
             )
         except Exception as e:

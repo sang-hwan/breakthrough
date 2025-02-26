@@ -41,7 +41,8 @@ class DynamicParameterOptimizer:
                 "partial_profit_ratio": trial.suggest_float("partial_profit_ratio", 0.02, 0.04),
                 "final_profit_ratio": trial.suggest_float("final_profit_ratio", 0.05, 0.1),
                 "weekly_breakout_threshold": trial.suggest_float("weekly_breakout_threshold", 0.005, 0.02),
-                "weekly_momentum_threshold": trial.suggest_float("weekly_momentum_threshold", 0.3, 0.7)
+                "weekly_momentum_threshold": trial.suggest_float("weekly_momentum_threshold", 0.3, 0.7),
+                "risk_reward_ratio": trial.suggest_float("risk_reward_ratio", 1.0, 5.0)
             }
             dynamic_params = {**base_params, **suggested_params}
             dynamic_params = self.config_manager.validate_params(dynamic_params)
@@ -52,6 +53,7 @@ class DynamicParameterOptimizer:
                 logger.error("Validation error in dynamic_params: " + str(e), exc_info=True)
                 return 1e6
 
+            # 테스트 기간 설정
             splits = [{
                 "train_start": "2018-06-01",
                 "train_end": "2020-12-31",
@@ -61,58 +63,57 @@ class DynamicParameterOptimizer:
             holdout = {"holdout_start": "2024-01-01", "holdout_end": "2025-02-01"}
 
             total_score, num_evaluations = 0.0, 0
+
             for split in splits:
                 for asset in self.assets:
                     symbol_key = asset.replace("/", "").lower()
-                    bt_train = Backtester(symbol=asset, account_size=10000)
-                    bt_train.load_data(
-                        short_table_format=f"ohlcv_{symbol_key}_{{timeframe}}",
-                        long_table_format=f"ohlcv_{symbol_key}_{{timeframe}}",
-                        short_tf="4h", long_tf="1d",
-                        start_date=split["train_start"], end_date=split["train_end"]
-                    )
                     try:
+                        # Train phase
+                        bt_train = Backtester(symbol=asset, account_size=10000)
+                        bt_train.load_data(
+                            short_table_format=f"ohlcv_{symbol_key}_{{timeframe}}",
+                            long_table_format=f"ohlcv_{symbol_key}_{{timeframe}}",
+                            short_tf="4h", long_tf="1d",
+                            start_date=split["train_start"], end_date=split["train_end"]
+                        )
                         trades_train, _ = bt_train.run_backtest(dynamic_params)
-                    except Exception as e:
-                        logger.error("Backtest train error for " + asset + ": " + str(e), exc_info=True)
-                        return 1e6
-                    roi_train = sum(trade["pnl"] for trade in trades_train) / 10000 * 100
+                        roi_train = sum(trade["pnl"] for trade in trades_train) / 10000 * 100
 
-                    bt_test = Backtester(symbol=asset, account_size=10000)
-                    bt_test.load_data(
-                        short_table_format=f"ohlcv_{symbol_key}_{{timeframe}}",
-                        long_table_format=f"ohlcv_{symbol_key}_{{timeframe}}",
-                        short_tf="4h", long_tf="1d",
-                        start_date=split["test_start"], end_date=split["test_end"]
-                    )
-                    try:
+                        # Test phase
+                        bt_test = Backtester(symbol=asset, account_size=10000)
+                        bt_test.load_data(
+                            short_table_format=f"ohlcv_{symbol_key}_{{timeframe}}",
+                            long_table_format=f"ohlcv_{symbol_key}_{{timeframe}}",
+                            short_tf="4h", long_tf="1d",
+                            start_date=split["test_start"], end_date=split["test_end"]
+                        )
                         trades_test, _ = bt_test.run_backtest(dynamic_params)
-                    except Exception as e:
-                        logger.error("Backtest test error for " + asset + ": " + str(e), exc_info=True)
-                        return 1e6
-                    roi_test = sum(trade["pnl"] for trade in trades_test) / 10000 * 100
+                        roi_test = sum(trade["pnl"] for trade in trades_test) / 10000 * 100
 
-                    bt_holdout = Backtester(symbol=asset, account_size=10000)
-                    bt_holdout.load_data(
-                        short_table_format=f"ohlcv_{symbol_key}_{{timeframe}}",
-                        long_table_format=f"ohlcv_{symbol_key}_{{timeframe}}",
-                        short_tf="4h", long_tf="1d",
-                        start_date=holdout["holdout_start"], end_date=holdout["holdout_end"]
-                    )
-                    try:
+                        # Holdout phase
+                        bt_holdout = Backtester(symbol=asset, account_size=10000)
+                        bt_holdout.load_data(
+                            short_table_format=f"ohlcv_{symbol_key}_{{timeframe}}",
+                            long_table_format=f"ohlcv_{symbol_key}_{{timeframe}}",
+                            short_tf="4h", long_tf="1d",
+                            start_date=holdout["holdout_start"], end_date=holdout["holdout_end"]
+                        )
                         trades_holdout, _ = bt_holdout.run_backtest(dynamic_params)
+                        roi_holdout = sum(trade["pnl"] for trade in trades_holdout) / 10000 * 100
+
+                        overfit_penalty = abs(roi_train - roi_test)
+                        holdout_penalty = 0 if roi_holdout >= 2.0 else (2.0 - roi_holdout) * 10
+                        score = -roi_test + overfit_penalty + holdout_penalty
+                        total_score += score
+                        num_evaluations += 1
                     except Exception as e:
-                        logger.error("Backtest holdout error for " + asset + ": " + str(e), exc_info=True)
-                        return 1e6
-                    roi_holdout = sum(trade["pnl"] for trade in trades_holdout) / 10000 * 100
+                        logger.error(f"Backtest error for {asset} in split {split}: {e}", exc_info=True)
+                        # 오류 발생 시 해당 평가를 건너뜁니다.
+                        continue
 
-                    overfit_penalty = abs(roi_train - roi_test)
-                    holdout_penalty = 0 if roi_holdout >= 2.0 else (2.0 - roi_holdout) * 10
-                    score = -roi_test + overfit_penalty + holdout_penalty
-                    total_score += score
-                    num_evaluations += 1
-
-            avg_score = total_score / num_evaluations if num_evaluations else total_score
+            if num_evaluations == 0:
+                return 1e6
+            avg_score = total_score / num_evaluations
             reg_penalty = 0.1 * sum(
                 (dynamic_params.get(key, base_params.get(key, 1.0)) - base_params.get(key, 1.0)) ** 2
                 for key in ["atr_multiplier", "profit_ratio", "risk_per_trade", "scale_in_threshold",
@@ -157,7 +158,7 @@ def run_sensitivity_analysis(param_settings,
     if base_dynamic_params is None:
         base_dynamic_params = ConfigManager().get_defaults()
 
-    logger.info(f"Starting sensitivity analysis over assets {assets}")
+    logger.info(f"Starting sensitivity analysis over assets: {assets}")
     results = {}
     param_names = list(param_settings.keys())
     combinations = list(product(*(param_settings[name] for name in param_names)))
@@ -169,10 +170,10 @@ def run_sensitivity_analysis(param_settings,
         combo_key = tuple(sorted(zip(param_names, combo)))
         run_metrics = []
         for asset in assets:
+            symbol_key = asset.replace("/", "").lower()
             for s_date, e_date in periods:
                 try:
                     bt = Backtester(symbol=asset, account_size=10000)
-                    symbol_key = asset.replace("/", "").lower()
                     bt.load_data(
                         short_table_format=f"ohlcv_{symbol_key}_{{timeframe}}",
                         long_table_format=f"ohlcv_{symbol_key}_{{timeframe}}",
@@ -182,10 +183,14 @@ def run_sensitivity_analysis(param_settings,
                     for name, val in combo_key:
                         dynamic_params[name] = val
                     trades, _ = bt.run_backtest_pipeline(dynamic_params=dynamic_params)
-                    from backtesting.performance import compute_performance
-                    perf = compute_performance(trades)
-                    run_metrics.append(perf)
-                except Exception:
+                    if trades:
+                        from backtesting.performance import compute_performance
+                        perf = compute_performance(trades)
+                        run_metrics.append(perf)
+                    else:
+                        logger.warning(f"No trades executed for {asset} during period {s_date} to {e_date} with combination {combo_key}.")
+                except Exception as e:
+                    logger.error(f"Error during sensitivity analysis for {asset} with combination {combo_key}: {e}", exc_info=True)
                     continue
         if run_metrics:
             aggregated = {}
