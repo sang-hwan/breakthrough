@@ -62,7 +62,7 @@ class ConfigManager:
             "weekly_momentum_threshold"
         ]
         self.logger = setup_logger(__name__)
-        self.logger.info("ConfigManager initialized with default parameters.")
+        self.logger.debug("ConfigManager initialized with default parameters.")
         self._initialized = True
 
     def get_defaults(self) -> dict:
@@ -112,7 +112,7 @@ class ConfigManager:
             if spread_ratio > 0.05:
                 config_dict["weekly_breakout_threshold"] = max(config_dict["weekly_breakout_threshold"] * 0.8, 0.005)
                 config_dict["weekly_momentum_threshold"] = min(config_dict["weekly_momentum_threshold"] * 1.05, 0.7)
-                self.logger.info(f"Weekly strategy parameters adjusted due to high spread ratio: {spread_ratio:.2f}")
+                self.logger.debug(f"Weekly strategy parameters adjusted due to high spread ratio: {spread_ratio:.2f}")
 
         try:
             updated_config = TradingConfig(**config_dict)
@@ -121,7 +121,7 @@ class ConfigManager:
             raise
 
         self.dynamic_params = updated_config.model_dump()
-        self.logger.info(f"Updated config with market data: {self.dynamic_params}")
+        self.logger.debug(f"Updated config with market data: {self.dynamic_params}")
         return self.dynamic_params
 
     def merge_optimized(self, optimized: dict) -> dict:
@@ -143,7 +143,7 @@ class ConfigManager:
             self.logger.error("Validation error in merged configuration: " + str(e), exc_info=True)
             raise
 
-        self.logger.info(f"Merged configuration: {merged_config.model_dump()}")
+        self.logger.debug(f"Merged configuration: {merged_config.model_dump()}")
         self.dynamic_params = merged_config.model_dump()
         return self.dynamic_params
 

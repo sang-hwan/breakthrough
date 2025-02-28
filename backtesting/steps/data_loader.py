@@ -75,7 +75,12 @@ def load_data(backtester, short_table_format, long_table_format, short_tf, long_
             logger.error("데이터 로드 실패: short 또는 long 데이터가 비어있습니다.", exc_info=True)
             raise ValueError("No data loaded")
         
-        logger.debug(f"데이터 로드 완료: short 데이터 {len(backtester.df_short)}행, long 데이터 {len(backtester.df_long)}행")
+        # 핵심 이벤트 요약: 데이터 로드 완료 시, 데이터 범위와 행 수를 info 레벨로 출력
+        info_msg = (f"데이터 로드 완료: short 데이터 {len(backtester.df_short)}행 "
+                    f"(시작: {backtester.df_short.index.min()}, 종료: {backtester.df_short.index.max()}); "
+                    f"long 데이터 {len(backtester.df_long)}행 "
+                    f"(시작: {backtester.df_long.index.min()}, 종료: {backtester.df_long.index.max()})")
+        logger.debug(info_msg)
     except Exception as e:
         logger.error(f"데이터 로드 중 에러 발생: {e}", exc_info=True)
         raise

@@ -117,6 +117,6 @@ class DynamicParameterOptimizer:
         self.study = optuna.create_study(direction="minimize", sampler=sampler)
         self.study.optimize(self.objective, n_trials=self.n_trials)
         best_trial = self.study.best_trial
-        logger.info(f"Best trial: {best_trial.number}, Value: {best_trial.value:.2f}")
-        logger.info(f"Best parameters: {best_trial.params}")
+        logger.debug(f"Best trial: {best_trial.number}, Value: {best_trial.value:.2f}")
+        logger.debug(f"Best parameters: {best_trial.params}")
         return best_trial

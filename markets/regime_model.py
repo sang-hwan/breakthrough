@@ -50,17 +50,17 @@ class MarketRegimeHMM:
                 current_means = training_data[feature_columns].mean()
                 diff = np.abs(current_means - self.last_feature_stats).mean()
                 if elapsed < retrain_interval and diff < self.retrain_feature_threshold:
-                    self.logger.info(
+                    self.logger.debug(
                         f"HMM retraining skipped: only {elapsed.total_seconds()/60:.2f} minutes elapsed and feature mean change {diff:.6f} is below threshold {self.retrain_feature_threshold}."
                     )
                     return
             else:
                 if elapsed < retrain_interval:
-                    self.logger.info(f"HMM retraining skipped: only {elapsed.total_seconds()/60:.2f} minutes elapsed.")
+                    self.logger.debug(f"HMM retraining skipped: only {elapsed.total_seconds()/60:.2f} minutes elapsed.")
                     return
 
         X = training_data[feature_columns].values
-        self.logger.info(f"Starting HMM training: {X.shape[0]} samples, {X.shape[1]} features")
+        self.logger.debug(f"Starting HMM training: {X.shape[0]} samples, {X.shape[1]} features")
         try:
             with warnings.catch_warnings(record=True) as caught_warnings:
                 warnings.simplefilter("always")
@@ -76,7 +76,7 @@ class MarketRegimeHMM:
         self.trained = True
         self.last_train_time = current_last_time
         self.last_feature_stats = training_data[feature_columns].mean()
-        self.logger.info("HMM training completed successfully.")
+        self.logger.debug("HMM training completed successfully.")
 
     def predict(self, data: pd.DataFrame, feature_columns: list = None) -> np.ndarray:
         if data.empty:
@@ -92,7 +92,7 @@ class MarketRegimeHMM:
         except Exception as e:
             self.logger.error(f"HMM prediction error: {e}", exc_info=True)
             raise
-        self.logger.info(f"Prediction completed: {X.shape[0]} samples processed.")
+        self.logger.debug(f"Prediction completed: {X.shape[0]} samples processed.")
         return predicted_states
 
     def predict_proba(self, data: pd.DataFrame, feature_columns: list = None) -> np.ndarray:
@@ -109,13 +109,13 @@ class MarketRegimeHMM:
         except Exception as e:
             self.logger.error(f"predict_proba error: {e}", exc_info=True)
             raise
-        self.logger.info(f"predict_proba completed: {X.shape[0]} samples processed.")
+        self.logger.debug(f"predict_proba completed: {X.shape[0]} samples processed.")
         return probabilities
 
     def update(self, new_data: pd.DataFrame, feature_columns: list = None, max_train_samples: int = None, min_samples: int = 50) -> None:
-        self.logger.info("Starting HMM model update.")
+        self.logger.debug("Starting HMM model update.")
         self.train(new_data, feature_columns, max_train_samples, min_samples)
-        self.logger.info("HMM model update completed.")
+        self.logger.debug("HMM model update completed.")
 
     def map_state_to_regime(self, state: int) -> str:
         # 동적으로 모델 상태를 매핑: 학습된 HMM의 첫 번째 피처(예: 수익률) 평균값 기준 정렬
@@ -138,5 +138,5 @@ class MarketRegimeHMM:
     def predict_regime_labels(self, data: pd.DataFrame, feature_columns: list = None) -> list:
         states = self.predict(data, feature_columns)
         regime_labels = [self.map_state_to_regime(s) for s in states]
-        self.logger.info(f"Regime labels predicted: {regime_labels}")
+        self.logger.debug(f"Regime labels predicted: {regime_labels}")
         return regime_labels

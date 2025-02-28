@@ -71,32 +71,27 @@ class Backtester:
                 training_data = self.df_long if len(self.df_long) <= max_samples else self.df_long.tail(max_samples)
                 self.hmm_model.train(training_data, feature_columns=hmm_features)
                 self.last_hmm_training_datetime = current_dt
-                self.logger.debug(f"HMM trained at {current_dt}")
+                self.logger.debug(f"HMM 학습 완료: {current_dt}")
             else:
                 training_data = self.df_long if len(self.df_long) <= max_samples else self.df_long.tail(max_samples)
                 current_means = training_data[hmm_features].mean()
-                diff = (np.abs(current_means - self.hmm_model.last_feature_stats).mean() 
-                        if self.hmm_model.last_feature_stats is not None else np.inf)
+                diff = (abs(current_means - self.hmm_model.last_feature_stats).mean() 
+                        if self.hmm_model.last_feature_stats is not None else float('inf'))
                 if (current_dt - self.last_hmm_training_datetime) >= retrain_interval or diff >= feature_change_threshold:
                     self.hmm_model.train(training_data, feature_columns=hmm_features)
                     self.last_hmm_training_datetime = current_dt
-                    self.logger.debug(f"HMM retrained at {current_dt} with feature change diff {diff:.6f}")
+                    self.logger.debug(f"HMM 재학습 완료: {current_dt} (피처 변화 diff: {diff:.6f})")
                 else:
-                    self.logger.debug(f"HMM retraining skipped: elapsed time and feature change diff ({diff:.6f}) do not warrant retraining.")
+                    self.logger.debug(f"HMM 재학습 스킵: 시간 경과 및 피처 변화 미미 (diff: {diff:.6f}).")
 
-            # 동적 상태 매핑을 위해 HMM의 예측 결과를 사용
             predicted_regimes = self.hmm_model.predict_regime_labels(self.df_long, feature_columns=hmm_features)
-            
-            # long_term_sma 계산 (sma_period는 dynamic_params에서 제공)
             sma_period = dynamic_params.get('sma_period', 200)
             self.df_long['long_term_sma'] = self.df_long['close'].rolling(window=sma_period, min_periods=1).mean()
-            
             adjusted_regimes = []
-            # 각 시점의 종가와 장기 SMA를 비교하여 일정 임계치 이상 차이가 나면 override
             for idx, predicted in enumerate(predicted_regimes):
                 close_price = self.df_long['close'].iloc[idx]
                 sma_price = self.df_long['long_term_sma'].iloc[idx]
-                threshold = 0.01 * sma_price  # SMA의 1% 차이 임계치
+                threshold = 0.01 * sma_price
                 if close_price < sma_price - threshold:
                     adjusted_regime = "bearish"
                 elif close_price > sma_price + threshold:
@@ -128,15 +123,18 @@ class Backtester:
                         final_close = row["close"]
                         adjusted_final_close = final_close * (1 - self.final_exit_slippage) if self.final_exit_slippage else final_close
                         exit_price = adjusted_final_close * (1 - self.slippage_rate)
-                        fee = exit_price * exec_record["size"] * self.fee_rate
-                        pnl = (exit_price - exec_record["entry_price"]) * exec_record["size"] - fee
+                        size_value = exec_record["size"]
+                        if isinstance(size_value, list):
+                            size_value = sum(size_value)
+                        fee = exit_price * size_value * self.fee_rate
+                        pnl = (exit_price - exec_record["entry_price"]) * size_value - fee
                         exec_record["closed"] = True
                         trade_detail = {
                             "entry_time": exec_record["entry_time"],
                             "entry_price": exec_record["entry_price"],
                             "exit_time": current_time,
                             "exit_price": exit_price,
-                            "size": exec_record["size"],
+                            "size": size_value,
                             "pnl": pnl,
                             "reason": "walk_forward_window_close",
                             "trade_type": exec_record.get("trade_type", "unknown"),
@@ -158,15 +156,18 @@ class Backtester:
                 for exec_record in pos.executions:
                     if not exec_record.get("closed", False):
                         exit_price = adjusted_final_close * (1 - self.slippage_rate)
-                        fee = exit_price * exec_record["size"] * self.fee_rate
-                        pnl = (exit_price - exec_record["entry_price"]) * exec_record["size"] - fee
+                        size_value = exec_record["size"]
+                        if isinstance(size_value, list):
+                            size_value = sum(size_value)
+                        fee = exit_price * size_value * self.fee_rate
+                        pnl = (exit_price - exec_record["entry_price"]) * size_value - fee
                         exec_record["closed"] = True
                         trade_detail = {
                             "entry_time": exec_record["entry_time"],
                             "entry_price": exec_record["entry_price"],
                             "exit_time": current_time,
                             "exit_price": exit_price,
-                            "size": exec_record["size"],
+                            "size": size_value,
                             "pnl": pnl,
                             "reason": "weekly_end_close",
                             "trade_type": exec_record.get("trade_type", "unknown"),
@@ -277,15 +278,18 @@ class Backtester:
                 for exec_record in pos.executions:
                     if not exec_record.get("closed", False):
                         exit_price = close_price * (1 - self.slippage_rate)
-                        fee = exit_price * exec_record["size"] * self.fee_rate
-                        pnl = (exit_price - exec_record["entry_price"]) * exec_record["size"] - fee
+                        size_value = exec_record["size"]
+                        if isinstance(size_value, list):
+                            size_value = sum(size_value)
+                        fee = exit_price * size_value * self.fee_rate
+                        pnl = (exit_price - exec_record["entry_price"]) * size_value - fee
                         exec_record["closed"] = True
                         trade_detail = {
                             "entry_time": exec_record["entry_time"],
                             "entry_price": exec_record["entry_price"],
                             "exit_time": current_time,
                             "exit_price": exit_price,
-                            "size": exec_record["size"],
+                            "size": size_value,
                             "pnl": pnl,
                             "reason": "exit_regime_change",
                             "trade_type": exec_record.get("trade_type", "unknown"),
@@ -345,15 +349,18 @@ class Backtester:
                 for exec_record in pos.executions:
                     if not exec_record.get("closed", False):
                         exit_price = adjusted_final_close * (1 - self.slippage_rate)
-                        fee = exit_price * exec_record["size"] * self.fee_rate
-                        pnl = (exit_price - exec_record["entry_price"]) * exec_record["size"] - fee
+                        size_value = exec_record["size"]
+                        if isinstance(size_value, list):
+                            size_value = sum(size_value)
+                        fee = exit_price * size_value * self.fee_rate
+                        pnl = (exit_price - exec_record["entry_price"]) * size_value - fee
                         exec_record["closed"] = True
                         trade_detail = {
                             "entry_time": exec_record["entry_time"],
                             "entry_price": exec_record["entry_price"],
                             "exit_time": final_time,
                             "exit_price": exit_price,
-                            "size": exec_record["size"],
+                            "size": size_value,
                             "pnl": pnl,
                             "reason": "final_exit",
                             "trade_type": exec_record.get("trade_type", "unknown"),
@@ -395,6 +402,7 @@ class Backtester:
 
             try:
                 self.apply_indicators()
+                self.logger.debug("인디케이터 계산 완료.")
             except Exception as e:
                 self.logger.error("Error during indicator application: " + str(e), exc_info=True)
                 raise
@@ -402,6 +410,7 @@ class Backtester:
             try:
                 from backtesting.steps.hmm_manager import update_hmm
                 regime_series = update_hmm(self, dynamic_params)
+                self.logger.debug("HMM 업데이트 완료.")
             except Exception as e:
                 self.logger.error("Error updating HMM: " + str(e), exc_info=True)
                 regime_series = pd.Series(["sideways"] * len(self.df_long), index=self.df_long.index)
@@ -438,6 +447,7 @@ class Backtester:
                 process_extra_orders(self, dynamic_params)
                 process_holdout_orders(self, dynamic_params, df_holdout)
                 finalize_orders(self)
+                self.logger.debug("주문 처리 완료.")
             except Exception as e:
                 self.logger.error("Error during order processing: " + str(e), exc_info=True)
                 raise
@@ -445,9 +455,14 @@ class Backtester:
             available_balance = self.account.get_available_balance()
             self.logger.debug(f"Account available balance after backtest: {available_balance:.2f}")
 
-            total_pnl = sum(trade["pnl"] for trade in self.trades)
+            total_pnl = sum(trade.get("pnl", 0) if not isinstance(trade.get("pnl", 0), list) 
+                            else sum(trade.get("pnl", 0)) for trade in self.trades)
             roi = total_pnl / self.account.initial_balance * 100
-            self.logger.debug(f"Backtest complete: Total PnL={total_pnl:.2f}, ROI={roi:.2f}%")
+            # 최종 성과 요약을 info 레벨로 출력
+            self.logger.debug(
+                f"백테스트 결과: 거래 건수={len(self.trades)}, 계좌 잔액={available_balance:.2f}, "
+                f"총 PnL={total_pnl:.2f}, ROI={roi:.2f}%"
+            )
             return self.trades, self.trade_logs
 
         except Exception as e:
@@ -457,9 +472,9 @@ class Backtester:
     def run_backtest_pipeline(self, dynamic_params=None, walk_forward_days: int = None, holdout_period: tuple = None):
         trades, trade_logs = self.run_backtest(dynamic_params, walk_forward_days, holdout_period)
         available_balance = self.account.get_available_balance()
-        self.logger.debug(f"Post-backtest account available balance: {available_balance:.2f}")
+        self.logger.debug(f"최종 계좌 잔액: {available_balance:.2f}")
         if self.positions:
-            self.logger.error("There are still open positions after backtest finalization.", exc_info=True)
+            self.logger.error("백테스트 종료 후에도 미체결 포지션이 남아있습니다.", exc_info=True)
         else:
-            self.logger.debug("All positions have been successfully closed.")
+            self.logger.debug("모든 포지션이 정상적으로 종료되었습니다.")
         return trades, trade_logs
