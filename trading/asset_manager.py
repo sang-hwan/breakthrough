@@ -2,6 +2,7 @@
 from logs.logger_config import setup_logger
 from datetime import timedelta
 import pandas as pd
+from logs.logging_util import LoggingUtil
 
 class AssetManager:
     _instances = {}
@@ -21,6 +22,7 @@ class AssetManager:
             raise ValueError("Account must not be None.")
         self.account = account
         self.logger = setup_logger(__name__)
+        self.log_util = LoggingUtil(__name__)
         self.min_rebalance_threshold = min_rebalance_threshold
         self.min_rebalance_interval = timedelta(minutes=min_rebalance_interval_minutes)
         self.last_rebalance_time = None
@@ -34,7 +36,6 @@ class AssetManager:
         return (round(self.account.spot_balance, 4), round(self.account.stablecoin_balance, 4))
 
     def rebalance(self, market_regime):
-        # 현재 시간 (Asia/Seoul 기준)
         current_time = pd.Timestamp.now()
         if self.last_rebalance_time and (current_time - self.last_rebalance_time < self.min_rebalance_interval):
             self.logger.debug("Rebalance skipped due to interval constraint.")
@@ -45,19 +46,16 @@ class AssetManager:
             self.logger.warning("Total assets <= 0. Skipping rebalance.")
             return
 
-        # regime이 문자열이 아닌 경우 숫자형으로 변환 시도
         if not isinstance(market_regime, str):
             try:
                 market_regime = {0.0: "bullish", 1.0: "bearish", 2.0: "sideways"}.get(float(market_regime), "unknown")
             except Exception:
                 market_regime = "unknown"
         regime = market_regime.lower()
-        # unknown regime는 보수적인 sideways 상태로 처리
         if regime not in ["bullish", "bearish", "sideways"]:
             self.logger.warning(f"Market regime '{market_regime}' is unknown; treating as 'sideways'.")
             regime = "sideways"
 
-        # 각 regime에 따른 목표 현물 비중 산정
         if regime in ["bullish", "enter_long"]:
             desired_spot = total_assets * (1.0 if regime == "enter_long" else 0.90)
         elif regime in ["bearish", "exit_all"]:
@@ -88,4 +86,5 @@ class AssetManager:
         new_state = self._get_account_state()
         if new_state != self.last_account_state:
             self.last_account_state = new_state
-            self.logger.debug(f"Rebalance complete. New account state: {self.account}")
+            # 상태 변화가 감지되면 INFO 로그로 기록
+            self.log_util.log_event(f"Rebalance complete. New account state: {self.account}", state_key="asset_state")

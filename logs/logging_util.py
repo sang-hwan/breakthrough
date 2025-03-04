@@ -3,33 +3,32 @@ import threading
 import os
 import glob
 from logs.logger_config import setup_logger
+from logs.state_change_manager import StateChangeManager
 
 class LoggingUtil:
     """
     LoggingUtil는 이벤트 로깅과 로그 파일 관리를 제공합니다.
-    이벤트 발생 시 INFO/DEBUG 레벨 로그를 기록하며, clear_log_files()로 logs 폴더 내 .log 파일을 삭제합니다.
-    또한, log_weekly_signal() 메서드를 통해 주간 전략 신호 이벤트를 별도로 로깅할 수 있습니다.
+    log_event() 함수는 StateChangeManager를 이용하여 상태 변화가 있을 때만 로그를 기록합니다.
     """
+
     def __init__(self, module_name: str):
         self.module_name = module_name
         self.lock = threading.RLock()
         self.logger = setup_logger(module_name)
+        self.state_manager = StateChangeManager()  # 상태 변화 관리 인스턴스
 
-    def log_event(self, event_message: str) -> None:
-        with self.lock:
-            self.logger.debug(f"[{self.module_name}] Event: {event_message}")
-
-    def log_summary(self) -> None:
-        with self.lock:
-            self.logger.debug(f"[{self.module_name}] Summary requested.")
-
-    def log_weekly_signal(self, event_message: str) -> None:
+    def log_event(self, event_message: str, state_key: str = None) -> None:
         """
-        주간 전략 신호 이벤트를 INFO 레벨로 로깅하며, 기록에 'is_weekly_signal' 플래그를 추가합니다.
-        이를 통해 AggregatingHandler에서 별도로 집계할 수 있습니다.
+        state_key가 제공되면, 이전 상태와 비교하여 변화가 있을 때만 INFO 로그를 기록합니다.
+        상태 변화가 기록된 후, 특정 이벤트 사이클(예: 데이터 로드 완료 후)을 마치면 상태를 리셋할 수 있습니다.
         """
         with self.lock:
-            self.logger.debug(f"[WEEKLY_SIGNAL] {event_message}", extra={'is_weekly_signal': True})
+            if state_key:
+                if self.state_manager.has_changed(state_key, event_message):
+                    self.logger.info(f"[{self.module_name}] Event: {event_message}")
+            else:
+                # state_key가 없으면 무조건 기록 (예: 중요한 전역 이벤트)
+                self.logger.info(f"[{self.module_name}] Event: {event_message}")
 
     @staticmethod
     def clear_log_files():

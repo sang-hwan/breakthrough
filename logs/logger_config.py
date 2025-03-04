@@ -10,9 +10,9 @@ load_dotenv()
 
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development").lower()
 _LOG_LEVEL_FROM_ENV = os.getenv("LOG_LEVEL", None)
-file_level = getattr(logging, _LOG_LEVEL_FROM_ENV.upper(), logging.INFO) if _LOG_LEVEL_FROM_ENV else logging.INFO
-LOG_DETAIL_LEVEL = os.getenv("LOG_DETAIL_LEVEL", "DEBUG")
-detail_level = getattr(logging, LOG_DETAIL_LEVEL.upper(), logging.DEBUG)
+FILE_LOG_LEVEL = logging.INFO  # 파일 로그는 INFO 이상으로 강제 설정
+LOG_DETAIL_LEVEL = os.getenv("LOG_DETAIL_LEVEL", "INFO")  # 백테스트에서는 INFO를 기본으로 사용
+detail_level = getattr(logging, LOG_DETAIL_LEVEL.upper(), logging.INFO)
 BASE_LOG_FILE = os.path.join("logs", "project.log")
 
 class OneLineFormatter(logging.Formatter):
@@ -21,7 +21,7 @@ class OneLineFormatter(logging.Formatter):
         return formatted.replace("\n", " | ")
 
 class LineRotatingFileHandler(RotatingFileHandler):
-    def __init__(self, base_filename, mode='a', max_lines=1000, encoding=None, delay=False):
+    def __init__(self, base_filename, mode='a', max_lines=500, encoding=None, delay=False):
         self.base_filename = base_filename
         self.current_index = 0
         self._set_current_filename()
@@ -46,6 +46,8 @@ class LineRotatingFileHandler(RotatingFileHandler):
 
     def emit(self, record):
         try:
+            if record.levelno < FILE_LOG_LEVEL:
+                return
             msg = self.format(record)
             lines_in_msg = msg.count("\n") or 1
             if self.current_line_count + lines_in_msg > self.max_lines:
@@ -61,34 +63,38 @@ queue_listener = None
 def initialize_root_logger():
     root_logger = logging.getLogger()
     root_logger.setLevel(detail_level)
-    
+
+    # 기존 핸들러 제거
     for handler in root_logger.handlers[:]:
         root_logger.removeHandler(handler)
-    
+
+    # 파일 핸들러
     file_handler = LineRotatingFileHandler(
         base_filename=BASE_LOG_FILE,
-        max_lines=1000,
+        max_lines=500,
         encoding="utf-8",
         delay=True
     )
-    file_handler.setLevel(file_level)
+    file_handler.setLevel(FILE_LOG_LEVEL)
     formatter = OneLineFormatter('[%(asctime)s] %(levelname)s:%(name)s:%(filename)s:%(funcName)s: %(message)s')
     file_handler.setFormatter(formatter)
     root_logger.addHandler(file_handler)
-    
+
+    # 콘솔 핸들러
     console_handler = logging.StreamHandler()
     console_handler.setLevel(detail_level)
     console_formatter = OneLineFormatter('[%(asctime)s] %(levelname)s:%(name)s:%(filename)s:%(funcName)s: %(message)s')
     console_handler.setFormatter(console_formatter)
     console_handler.addFilter(lambda record: not getattr(record, '_is_summary', False))
-    
+
     q_handler = QueueHandler(log_queue)
     root_logger.addHandler(q_handler)
-    
+
     global queue_listener
     queue_listener = QueueListener(log_queue, console_handler)
     queue_listener.start()
-    
+
+    # AggregatingHandler 추가 (INFO 이상만 기록)
     if AggregatingHandler is not None:
         try:
             aggregator_handler = AggregatingHandler(level=detail_level)
@@ -99,7 +105,7 @@ def initialize_root_logger():
         except Exception as e:
             logging.getLogger().error("Failed to add module-specific AggregatingHandler: " + str(e), exc_info=True)
 
-    # 외부 라이브러리 로그 레벨 조정: ccxt 및 urllib3의 로그를 WARNING 이상으로 설정
+    # 외부 라이브러리 로그 레벨 조정
     logging.getLogger("ccxt").setLevel(logging.WARNING)
     logging.getLogger("urllib3").setLevel(logging.WARNING)
 

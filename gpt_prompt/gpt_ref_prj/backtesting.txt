@@ -6,8 +6,10 @@ from data.ohlcv.ohlcv_aggregator import aggregate_to_weekly
 from trading.indicators import compute_bollinger_bands
 import threading
 import pandas as pd
+from logs.logging_util import LoggingUtil  # 동적 상태 변화 로깅 유틸리티 추가
 
 logger = setup_logger(__name__)
+log_util = LoggingUtil(__name__)  # LoggingUtil 인스턴스 생성
 
 _cache_lock = threading.Lock()
 _data_cache = {}
@@ -76,12 +78,12 @@ def load_data(backtester, short_table_format, long_table_format, short_tf, long_
             logger.error("데이터 로드 실패: short 또는 long 데이터가 비어있습니다.", exc_info=True)
             raise ValueError("No data loaded")
         
-        # 핵심 이벤트 요약: 데이터 로드 완료 시, 데이터 범위와 행 수를 info 레벨로 출력
+        # 핵심 이벤트 요약: 데이터 로드 완료 시, 데이터 범위와 행 수를 동적 상태 변화 로깅으로 INFO 레벨에 기록
         info_msg = (f"데이터 로드 완료: short 데이터 {len(backtester.df_short)}행 "
                     f"(시작: {backtester.df_short.index.min()}, 종료: {backtester.df_short.index.max()}); "
                     f"long 데이터 {len(backtester.df_long)}행 "
                     f"(시작: {backtester.df_long.index.min()}, 종료: {backtester.df_long.index.max()})")
-        logger.debug(info_msg)
+        log_util.log_event(info_msg, state_key="data_load")
     except Exception as e:
         logger.error(f"데이터 로드 중 에러 발생: {e}", exc_info=True)
         raise
@@ -103,7 +105,7 @@ def load_data(backtester, short_table_format, long_table_format, short_tf, long_
                     std_multiplier=2.0,
                     fillna=True
                 )
-                logger.debug(f"Extra 데이터 로드 완료: {len(backtester.df_extra)}행")
+                log_util.log_event(f"Extra 데이터 로드 완료: {len(backtester.df_extra)}행", state_key="extra_load")
         except Exception as e:
             logger.error(f"Extra 데이터 로드 에러: {e}", exc_info=True)
     if use_weekly:
@@ -112,7 +114,7 @@ def load_data(backtester, short_table_format, long_table_format, short_tf, long_
             if backtester.df_weekly.empty:
                 logger.warning("주간 데이터 집계 결과가 비어있습니다.")
             else:
-                logger.debug(f"주간 데이터 집계 완료: {len(backtester.df_weekly)}행")
+                log_util.log_event(f"주간 데이터 집계 완료: {len(backtester.df_weekly)}행", state_key="weekly_load")
         except Exception as e:
             logger.error(f"주간 데이터 집계 에러: {e}", exc_info=True)
 
@@ -162,8 +164,10 @@ def apply_indicators(backtester):
 
 # backtesting/steps/order_manager.py
 from logs.logger_config import setup_logger
+from logs.logging_util import LoggingUtil  # 동적 상태 변화 로깅 유틸리티 추가
 
 logger = setup_logger(__name__)
+log_util = LoggingUtil(__name__)
 
 def get_signal_with_weekly_override(backtester, row, current_time, dynamic_params):
     """
@@ -178,10 +182,10 @@ def get_signal_with_weekly_override(backtester, row, current_time, dynamic_param
             if "weekly_low" in weekly_bar and "weekly_high" in weekly_bar:
                 tolerance = 0.002
                 if abs(row["close"] - weekly_bar["weekly_low"]) / weekly_bar["weekly_low"] <= tolerance:
-                    backtester.logger.debug(f"Weekly override: Price {row['close']} near weekly low {weekly_bar['weekly_low']}. Signal: enter_long.")
+                    log_util.log_event(f"Weekly override: Price {row['close']} near weekly low {weekly_bar['weekly_low']}. Signal: enter_long.", state_key="order_signal")
                     return "enter_long"
                 elif abs(row["close"] - weekly_bar["weekly_high"]) / weekly_bar["weekly_high"] <= tolerance:
-                    backtester.logger.debug(f"Weekly override: Price {row['close']} near weekly high {weekly_bar['weekly_high']}. Signal: exit_all.")
+                    log_util.log_event(f"Weekly override: Price {row['close']} near weekly high {weekly_bar['weekly_high']}. Signal: exit_all.", state_key="order_signal")
                     return "exit_all"
             else:
                 backtester.logger.warning("Weekly override skipped: weekly_bar missing 'weekly_low' or 'weekly_high' keys.")
@@ -253,13 +257,13 @@ def process_training_orders(backtester, dynamic_params, signal_cooldown, rebalan
             try:
                 if action == "enter_long":
                     backtester.process_bullish_entry(current_time, row, risk_params, dynamic_params)
-                    backtester.logger.debug(f"{current_time}: 'enter_long' 주문 실행. 잔액: {backtester.account.get_available_balance():.2f}")
+                    log_util.log_event(f"{current_time}: 'enter_long' 주문 실행. 잔액: {backtester.account.get_available_balance():.2f}", state_key="order_execution")
                 elif action == "exit_all":
                     backtester.process_bearish_exit(current_time, row)
-                    backtester.logger.debug(f"{current_time}: 'exit_all' 주문 실행. 잔액: {backtester.account.get_available_balance():.2f}")
+                    log_util.log_event(f"{current_time}: 'exit_all' 주문 실행. 잔액: {backtester.account.get_available_balance():.2f}", state_key="order_execution")
                 elif row.get('market_regime', 'unknown') == "sideways":
                     backtester.process_sideways_trade(current_time, row, risk_params, dynamic_params)
-                    backtester.logger.debug(f"{current_time}: 'sideways' 거래 실행. 잔액: {backtester.account.get_available_balance():.2f}")
+                    log_util.log_event(f"{current_time}: 'sideways' 거래 실행. 잔액: {backtester.account.get_available_balance():.2f}", state_key="order_execution")
             except Exception as e:
                 logger.error(f"Error processing order at {current_time} with action '{action}': {e}", exc_info=True)
             backtester.last_signal_time = current_time
@@ -276,7 +280,7 @@ def process_training_orders(backtester, dynamic_params, signal_cooldown, rebalan
                     except Exception as e:
                         logger.error(f"Error during rebalance at {current_time}: {e}", exc_info=True)
                     backtester.last_rebalance_time = current_time
-                backtester.logger.debug(f"{current_time}: 리밸런스 실행 후 잔액: {backtester.account.get_available_balance():.2f}")
+                log_util.log_event(f"{current_time}: 리밸런스 실행 후 잔액: {backtester.account.get_available_balance():.2f}", state_key="rebalance")
             except Exception as e:
                 logger.error(f"Error in rebalance check at {current_time}: {e}", exc_info=True)
 
@@ -314,10 +318,10 @@ def process_extra_orders(backtester, dynamic_params):
                 try:
                     if hf_signal == "enter_long":
                         backtester.process_bullish_entry(current_time, row, risk_params, dynamic_params)
-                        backtester.logger.debug(f"{current_time}: Extra 데이터에서 'enter_long' 주문 실행. 잔액: {backtester.account.get_available_balance():.2f}")
+                        log_util.log_event(f"{current_time}: Extra 데이터에서 'enter_long' 주문 실행. 잔액: {backtester.account.get_available_balance():.2f}", state_key="order_execution")
                     elif hf_signal == "exit_all":
                         backtester.process_bearish_exit(current_time, row)
-                        backtester.logger.debug(f"{current_time}: Extra 데이터에서 'exit_all' 주문 실행. 잔액: {backtester.account.get_available_balance():.2f}")
+                        log_util.log_event(f"{current_time}: Extra 데이터에서 'exit_all' 주문 실행. 잔액: {backtester.account.get_available_balance():.2f}", state_key="order_execution")
                 except Exception as e:
                     logger.error(f"Error processing extra order at {current_time} with hf_signal '{hf_signal}': {e}", exc_info=True)
                 try:
@@ -352,13 +356,13 @@ def process_holdout_orders(backtester, dynamic_params, df_holdout):
                 try:
                     if action == "enter_long":
                         backtester.process_bullish_entry(current_time, row, risk_params, dynamic_params)
-                        backtester.logger.debug(f"{current_time}: Holdout 데이터에서 'enter_long' 주문 실행. 잔액: {backtester.account.get_available_balance():.2f}")
+                        log_util.log_event(f"{current_time}: Holdout 데이터에서 'enter_long' 주문 실행. 잔액: {backtester.account.get_available_balance():.2f}", state_key="order_execution")
                     elif action == "exit_all":
                         backtester.process_bearish_exit(current_time, row)
-                        backtester.logger.debug(f"{current_time}: Holdout 데이터에서 'exit_all' 주문 실행. 잔액: {backtester.account.get_available_balance():.2f}")
+                        log_util.log_event(f"{current_time}: Holdout 데이터에서 'exit_all' 주문 실행. 잔액: {backtester.account.get_available_balance():.2f}", state_key="order_execution")
                     elif row.get('market_regime', 'unknown') == "sideways":
                         backtester.process_sideways_trade(current_time, row, risk_params, dynamic_params)
-                        backtester.logger.debug(f"{current_time}: Holdout 데이터에서 'sideways' 거래 실행. 잔액: {backtester.account.get_available_balance():.2f}")
+                        log_util.log_event(f"{current_time}: Holdout 데이터에서 'sideways' 거래 실행. 잔액: {backtester.account.get_available_balance():.2f}", state_key="order_execution")
                 except Exception as e:
                     logger.error(f"Error processing holdout order at {current_time} with action '{action}': {e}", exc_info=True)
                 try:
@@ -388,6 +392,7 @@ from core.position import Position
 from trading.asset_manager import AssetManager
 from trading.ensemble import Ensemble
 from config.config_manager import ConfigManager
+from logs.logging_util import LoggingUtil  # 동적 상태 변화 로깅 유틸리티
 
 class Backtester:
     def __init__(self, symbol="BTC/USDT", account_size=10000.0, fee_rate=0.001, 
@@ -414,6 +419,7 @@ class Backtester:
         self.last_rebalance_time = None
         self.last_weekly_close_date = None
         self.clock = lambda: pd.Timestamp.now()
+        self.state = {}  # 추가: 상태 변화 추적용
 
     def get_current_time(self):
         return self.clock()
@@ -768,6 +774,8 @@ class Backtester:
             raise
 
     def run_backtest(self, dynamic_params=None, walk_forward_days: int = None, holdout_period: tuple = None):
+        from logs.logging_util import LoggingUtil
+        log_util = LoggingUtil(__name__)
         try:
             if dynamic_params is None:
                 dynamic_params = self.config_manager.get_dynamic_params()
@@ -782,7 +790,11 @@ class Backtester:
 
             try:
                 self.apply_indicators()
-                self.logger.debug("인디케이터 계산 완료.")
+                # INFO 로그: 인디케이터 적용 결과 요약 (예: SMA, RSI, MACD diff 범위)
+                indicator_summary = (f"SMA({self.df_long['sma'].min():.2f}-{self.df_long['sma'].max():.2f}), "
+                                     f"RSI({self.df_long['rsi'].min():.2f}-{self.df_long['rsi'].max():.2f}), "
+                                     f"MACD_diff({self.df_long['macd_diff'].min():.2f}-{self.df_long['macd_diff'].max():.2f})")
+                log_util.log_event("인디케이터 적용 완료: " + indicator_summary, state_key="indicator_applied")
             except Exception as e:
                 self.logger.error("Error during indicator application: " + str(e), exc_info=True)
                 raise
@@ -790,7 +802,8 @@ class Backtester:
             try:
                 from backtesting.steps.hmm_manager import update_hmm
                 regime_series = update_hmm(self, dynamic_params)
-                self.logger.debug("HMM 업데이트 완료.")
+                hmm_summary = f"총 {len(regime_series)} 샘플, regime 분포: {regime_series.value_counts().to_dict()}"
+                log_util.log_event("HMM 업데이트 완료: " + hmm_summary, state_key="hmm_update")
             except Exception as e:
                 self.logger.error("Error updating HMM: " + str(e), exc_info=True)
                 regime_series = pd.Series(["sideways"] * len(self.df_long), index=self.df_long.index)
@@ -827,22 +840,17 @@ class Backtester:
                 process_extra_orders(self, dynamic_params)
                 process_holdout_orders(self, dynamic_params, df_holdout)
                 finalize_orders(self)
-                self.logger.debug("주문 처리 완료.")
             except Exception as e:
                 self.logger.error("Error during order processing: " + str(e), exc_info=True)
                 raise
 
             available_balance = self.account.get_available_balance()
-            self.logger.debug(f"Account available balance after backtest: {available_balance:.2f}")
-
             total_pnl = sum(trade.get("pnl", 0) if not isinstance(trade.get("pnl", 0), list) 
                             else sum(trade.get("pnl", 0)) for trade in self.trades)
             roi = total_pnl / self.account.initial_balance * 100
-            # 최종 성과 요약을 info 레벨로 출력
-            self.logger.debug(
-                f"백테스트 결과: 거래 건수={len(self.trades)}, 계좌 잔액={available_balance:.2f}, "
-                f"총 PnL={total_pnl:.2f}, ROI={roi:.2f}%"
-            )
+            performance_summary = (f"백테스트 결과: 거래 건수={len(self.trades)}, 계좌 잔액={available_balance:.2f}, "
+                                   f"총 PnL={total_pnl:.2f}, ROI={roi:.2f}%")
+            log_util.log_event(performance_summary, state_key="final_performance")
             return self.trades, self.trade_logs
 
         except Exception as e:

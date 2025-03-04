@@ -40,7 +40,7 @@ class SelectStrategy(BaseStrategy):
         ]
         final_signal = "enter_long" if "enter_long" in signals else "hold"
         if self.previous_signal != final_signal:
-            self.logger.debug(f"SelectStrategy signal changed to {final_signal} at {current_time}")
+            self.logger.info(f"SelectStrategy signal changed to {final_signal} at {current_time}")
             self.previous_signal = final_signal
         return final_signal
 
@@ -56,7 +56,7 @@ class TrendFollowingStrategy(BaseStrategy):
             return "hold"
         final_signal = "enter_long" if row.get('sma') is not None and row.get('close') > row.get('sma') else "hold"
         if self.previous_signal != final_signal:
-            self.logger.debug(f"TrendFollowingStrategy signal changed to {final_signal} at {current_time}")
+            self.logger.info(f"TrendFollowingStrategy signal changed to {final_signal} at {current_time}")
             self.previous_signal = final_signal
         return final_signal
 
@@ -77,7 +77,7 @@ class BreakoutStrategy(BaseStrategy):
         except Exception:
             final_signal = "hold"
         if self.previous_signal != final_signal:
-            self.logger.debug(f"BreakoutStrategy signal changed to {final_signal} at {current_time}")
+            self.logger.info(f"BreakoutStrategy signal changed to {final_signal} at {current_time}")
             self.previous_signal = final_signal
         return final_signal
 
@@ -97,7 +97,7 @@ class CounterTrendStrategy(BaseStrategy):
         else:
             final_signal = "hold"
         if self.previous_signal != final_signal:
-            self.logger.debug(f"CounterTrendStrategy signal changed to {final_signal} at {current_time} (RSI: {rsi})")
+            self.logger.info(f"CounterTrendStrategy signal changed to {final_signal} at {current_time} (RSI: {rsi})")
             self.previous_signal = final_signal
         return final_signal
 
@@ -124,7 +124,7 @@ class HighFrequencyStrategy(BaseStrategy):
         except Exception:
             final_signal = "hold"
         if self.previous_signal != final_signal:
-            self.logger.debug(f"HighFrequencyStrategy signal changed to {final_signal} at {current_time}")
+            self.logger.info(f"HighFrequencyStrategy signal changed to {final_signal} at {current_time}")
             self.previous_signal = final_signal
         return final_signal
 
@@ -153,7 +153,7 @@ class WeeklyBreakoutStrategy(BaseStrategy):
                 else:
                     signal = "hold"
             if self.previous_signal != signal:
-                self.logger.debug(f"WeeklyBreakoutStrategy signal changed to {signal} at {current_time}")
+                self.logger.info(f"WeeklyBreakoutStrategy signal changed to {signal} at {current_time}")
                 self.previous_signal = signal
             return signal
         except Exception:
@@ -174,7 +174,7 @@ class WeeklyMomentumStrategy(BaseStrategy):
                 return "hold"
             signal = "enter_long" if momentum >= momentum_threshold else ("exit_all" if momentum <= -momentum_threshold else "hold")
             if self.previous_signal != signal:
-                self.logger.debug(f"WeeklyMomentumStrategy signal changed to {signal} at {current_time}")
+                self.logger.info(f"WeeklyMomentumStrategy signal changed to {signal} at {current_time}")
                 self.previous_signal = signal
             return signal
         except Exception:
@@ -191,9 +191,9 @@ class TradingStrategies:
     def get_final_signal(self, market_regime, liquidity_info, data, current_time, data_weekly=None, **kwargs):
         ensemble_signal = self.ensemble.get_final_signal(market_regime, liquidity_info, data, current_time, data_weekly, **kwargs)
         if market_regime == "bearish":
-            self.logger.debug("Market regime bearish: overriding final signal to exit_all")
+            self.logger.info("Market regime bearish: overriding final signal to exit_all")
             return "exit_all"
         elif market_regime == "bullish":
-            self.logger.debug("Market regime bullish: ensuring signal is at least enter_long")
+            self.logger.info("Market regime bullish: ensuring signal is at least enter_long")
             return "enter_long" if ensemble_signal == "hold" else ensemble_signal
         return ensemble_signal

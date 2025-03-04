@@ -8,6 +8,7 @@ from core.position import Position
 from trading.asset_manager import AssetManager
 from trading.ensemble import Ensemble
 from config.config_manager import ConfigManager
+from logs.logging_util import LoggingUtil  # 동적 상태 변화 로깅 유틸리티
 
 class Backtester:
     def __init__(self, symbol="BTC/USDT", account_size=10000.0, fee_rate=0.001, 
@@ -34,6 +35,7 @@ class Backtester:
         self.last_rebalance_time = None
         self.last_weekly_close_date = None
         self.clock = lambda: pd.Timestamp.now()
+        self.state = {}  # 추가: 상태 변화 추적용
 
     def get_current_time(self):
         return self.clock()
@@ -388,6 +390,8 @@ class Backtester:
             raise
 
     def run_backtest(self, dynamic_params=None, walk_forward_days: int = None, holdout_period: tuple = None):
+        from logs.logging_util import LoggingUtil
+        log_util = LoggingUtil(__name__)
         try:
             if dynamic_params is None:
                 dynamic_params = self.config_manager.get_dynamic_params()
@@ -402,7 +406,11 @@ class Backtester:
 
             try:
                 self.apply_indicators()
-                self.logger.debug("인디케이터 계산 완료.")
+                # INFO 로그: 인디케이터 적용 결과 요약 (예: SMA, RSI, MACD diff 범위)
+                indicator_summary = (f"SMA({self.df_long['sma'].min():.2f}-{self.df_long['sma'].max():.2f}), "
+                                     f"RSI({self.df_long['rsi'].min():.2f}-{self.df_long['rsi'].max():.2f}), "
+                                     f"MACD_diff({self.df_long['macd_diff'].min():.2f}-{self.df_long['macd_diff'].max():.2f})")
+                log_util.log_event("인디케이터 적용 완료: " + indicator_summary, state_key="indicator_applied")
             except Exception as e:
                 self.logger.error("Error during indicator application: " + str(e), exc_info=True)
                 raise
@@ -410,7 +418,8 @@ class Backtester:
             try:
                 from backtesting.steps.hmm_manager import update_hmm
                 regime_series = update_hmm(self, dynamic_params)
-                self.logger.debug("HMM 업데이트 완료.")
+                hmm_summary = f"총 {len(regime_series)} 샘플, regime 분포: {regime_series.value_counts().to_dict()}"
+                log_util.log_event("HMM 업데이트 완료: " + hmm_summary, state_key="hmm_update")
             except Exception as e:
                 self.logger.error("Error updating HMM: " + str(e), exc_info=True)
                 regime_series = pd.Series(["sideways"] * len(self.df_long), index=self.df_long.index)
@@ -447,22 +456,17 @@ class Backtester:
                 process_extra_orders(self, dynamic_params)
                 process_holdout_orders(self, dynamic_params, df_holdout)
                 finalize_orders(self)
-                self.logger.debug("주문 처리 완료.")
             except Exception as e:
                 self.logger.error("Error during order processing: " + str(e), exc_info=True)
                 raise
 
             available_balance = self.account.get_available_balance()
-            self.logger.debug(f"Account available balance after backtest: {available_balance:.2f}")
-
             total_pnl = sum(trade.get("pnl", 0) if not isinstance(trade.get("pnl", 0), list) 
                             else sum(trade.get("pnl", 0)) for trade in self.trades)
             roi = total_pnl / self.account.initial_balance * 100
-            # 최종 성과 요약을 info 레벨로 출력
-            self.logger.debug(
-                f"백테스트 결과: 거래 건수={len(self.trades)}, 계좌 잔액={available_balance:.2f}, "
-                f"총 PnL={total_pnl:.2f}, ROI={roi:.2f}%"
-            )
+            performance_summary = (f"백테스트 결과: 거래 건수={len(self.trades)}, 계좌 잔액={available_balance:.2f}, "
+                                   f"총 PnL={total_pnl:.2f}, ROI={roi:.2f}%")
+            log_util.log_event(performance_summary, state_key="final_performance")
             return self.trades, self.trade_logs
 
         except Exception as e:
