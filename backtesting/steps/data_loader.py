@@ -77,12 +77,7 @@ def load_data(backtester, short_table_format, long_table_format, short_tf, long_
             logger.error("데이터 로드 실패: short 또는 long 데이터가 비어있습니다.", exc_info=True)
             raise ValueError("No data loaded")
         
-        # 핵심 이벤트 요약: 데이터 로드 완료 시, 데이터 범위와 행 수를 동적 상태 변화 로깅으로 INFO 레벨에 기록
-        info_msg = (f"데이터 로드 완료: short 데이터 {len(backtester.df_short)}행 "
-                    f"(시작: {backtester.df_short.index.min()}, 종료: {backtester.df_short.index.max()}); "
-                    f"long 데이터 {len(backtester.df_long)}행 "
-                    f"(시작: {backtester.df_long.index.min()}, 종료: {backtester.df_long.index.max()})")
-        log_util.log_event(info_msg, state_key="data_load")
+        log_util.log_event("Data loaded successfully", state_key="data_load")
     except Exception as e:
         logger.error(f"데이터 로드 중 에러 발생: {e}", exc_info=True)
         raise
@@ -104,7 +99,7 @@ def load_data(backtester, short_table_format, long_table_format, short_tf, long_
                     std_multiplier=2.0,
                     fillna=True
                 )
-                log_util.log_event(f"Extra 데이터 로드 완료: {len(backtester.df_extra)}행", state_key="extra_load")
+                log_util.log_event("Extra data loaded", state_key="extra_load")
         except Exception as e:
             logger.error(f"Extra 데이터 로드 에러: {e}", exc_info=True)
     if use_weekly:
@@ -113,6 +108,6 @@ def load_data(backtester, short_table_format, long_table_format, short_tf, long_
             if backtester.df_weekly.empty:
                 logger.warning("주간 데이터 집계 결과가 비어있습니다.")
             else:
-                log_util.log_event(f"주간 데이터 집계 완료: {len(backtester.df_weekly)}행", state_key="weekly_load")
+                log_util.log_event("Weekly data aggregated", state_key="weekly_load")
         except Exception as e:
             logger.error(f"주간 데이터 집계 에러: {e}", exc_info=True)

@@ -1,77 +1,87 @@
 **프로젝트 구조 및 요약**
-project/
-├── .env   # 환경변수 파일 (DB 접속 정보, 로깅 설정 등)
-├── requirements.txt   # 프로젝트 의존성 패키지 목록
-├── run_drop_db_tables.py   # DB 테이블 삭제 실행 스크립트
-├── run_parameter_analysis.py   # 파라미터 민감도 분석 실행 스크립트 (Optuna 사용)
-├── run_strategy_performance.py   # 최적화 파라미터 기반 백테스트 및 성과 리포트 실행 스크립트
-├── run_update_ohlcv_data.py   # OHLCV 데이터 수집 및 DB 업데이트 스크립트
-├── backtesting/
-│   ├── steps/
-│   │   ├── data_loader.py   # 데이터 로드, 캐시 관리, 전처리 및 데이터 유효성 검사
-│   │   ├── hmm_manager.py   # HMM 기반 시장 레짐 모델 학습 및 업데이트
-│   │   ├── indicator_applier.py   # 기술적 인디케이터 (SMA, RSI, MACD) 적용
-│   │   └── order_manager.py   # 주문 신호 생성, 주간 신호 오버라이드 및 주문 처리 로직
-│   ├── backtester.py   # 백테스트 엔진 통합 (데이터 로드, 인디케이터 적용, HMM, 주문 처리 등)
-│   └── performance.py   # 백테스트 성과 계산 (월별, 전체) 및 리포트 생성
+ProjectRoot/
+├── .env                               # 환경 변수: DB 접속 정보, 로깅 설정 등.
+├── requirements.txt                   # 프로젝트에 필요한 Python 패키지 목록.
+├── run_drop_db_tables.py              # DB 내 모든 테이블을 삭제하는 실행 스크립트.
+├── run_parameter_analysis.py          # 핵심 파라미터 민감도 분석 및 최종 리포트 생성 스크립트.
+├── run_strategy_performance.py        # 전략 성과 백테스트 실행 및 최종 리포트 생성 스크립트.
+├── run_update_ohlcv_data.py           # 거래소에서 OHLCV 데이터를 업데이트하여 DB에 저장하는 스크립트.
+│
+├── backtesting/                       
+│   ├── backtester.py                # 백테스트 전체 흐름을 관리하는 Backtester 클래스.
+│   ├── performance.py               # 백테스트 결과를 기반으로 성과 지표를 계산하는 함수들.
+│   └── steps/
+│       ├── data_loader.py           # DB에서 OHLCV 데이터를 불러오고 전처리하는 모듈 (캐시, 인덱스 검증 등 포함).
+│       ├── hmm_manager.py           # HMM 모델 기반 시장 레짐 업데이트 및 로깅 처리.
+│       ├── indicator_applier.py     # SMA, RSI, MACD 등의 기술 인디케이터 적용 모듈.
+│       └── order_manager.py         # 주문 신호 생성 및 실행(진입/청산, 리밸런싱 등)을 관리하는 모듈.
+│
 ├── config/
-│   └── config_manager.py   # Pydantic 기반 기본 설정 및 동적 파라미터 업데이트, 최적화 결과 병합
+│   └── config_manager.py            # pydantic 기반 기본 및 동적 트레이딩 파라미터 관리, 업데이트, 병합.
+│
 ├── core/
-│   ├── account.py   # 계좌 관리 (잔고, 포지션 등록/제거, 거래 후 잔고 업데이트)
-│   └── position.py   # 개별 포지션 및 실행 내역 관리, 부분 청산 및 극값 업데이트
+│   ├── account.py                   # 거래 계좌 관리: 잔액, 포지션 추가/제거, 거래 후 업데이트.
+│   └── position.py                  # 개별 포지션 및 실행 기록을 관리하는 Position 클래스.
+│
 ├── data/
-│   ├── db/
-│   │   ├── db_config.py   # DB 접속 정보 설정 (.env 기반)
-│   │   └── db_manager.py   # DB 테이블 생성, 데이터 삽입/조회 및 conflict 처리
-│   └── ohlcv/
-│   ├── ohlcv_aggregator.py   # 일간 OHLCV 데이터를 주간 데이터로 집계 및 주간 인디케이터 계산
-│   ├── ohlcv_fetcher.py   # ccxt 기반 OHLCV 데이터 수집 (과거 및 최신 데이터)
-│   └── ohlcv_pipeline.py   # 멀티스레딩을 통한 데이터 수집 및 DB 저장 파이프라인 (인메모리 캐싱 적용)
+│   ├── db/
+│   │   ├── db_config.py             # DB 접속 설정을 환경 변수에서 로드.
+│   │   └── db_manager.py            # DB 테이블 생성, 데이터 삽입(ON CONFLICT 처리), 조회 등.
+│   └── ohlcv/
+│       ├── ohlcv_aggregator.py      # OHLCV 데이터를 주간 단위로 집계하고 인디케이터 계산.
+│       ├── ohlcv_fetcher.py         # ccxt를 사용해 거래소에서 OHLCV 데이터를 가져오는 모듈 (캐싱 포함).
+│       └── ohlcv_pipeline.py        # 멀티스레딩으로 여러 심볼/타임프레임의 데이터를 수집 후 DB에 저장.
+│
 ├── logs/
-│   ├── aggregating_handler.py   # 로그 집계 및 요약 출력 핸들러 (주간 신호 로그 별도 집계)
-│   ├── final_report.py   # 백테스트 최종 성과 및 파라미터 민감도 리포트 생성
-│   ├── logger_config.py   # 전체 로깅 설정 (파일 회전, 콘솔, 큐 핸들러 등) 및 환경별 로그 레벨 설정
-│   └── logging_util.py   # 이벤트 로깅, 로그 파일 관리 및 주간 신호 로깅 유틸리티
+│   ├── aggregating_handler.py       # 로그 발생 건수를 모듈/함수별로 집계하는 커스텀 핸들러.
+│   ├── final_report.py              # 백테스트 최종 성과 및 파라미터 민감도 리포트 생성 모듈.
+│   ├── logger_config.py             # 파일, 콘솔, 큐 기반 로깅 설정 및 핸들러(라인 롤링 포함) 구성.
+│   ├── logging_util.py              # 상태 변화 기반 로그 기록 및 로그 파일 관리 유틸리티.
+│   └── state_change_manager.py      # 이전 상태와의 비교를 통해 변화가 있는 경우에만 로그 이벤트를 허용.
+│
 ├── markets/
-│   ├── regime_filter.py   # 가격 데이터 기반 단순 규칙 시장 레짐 결정 및 필터링, 주간 극값 신호 생성
-│   └── regime_model.py   # HMM 기반 시장 레짐 모델 (학습, 예측, 재학습 및 상태 매핑)
+│   ├── regime_filter.py             # 가격 데이터 기반 단순 시장 레짐 및 극값(주간 고/저) 신호 판단.
+│   └── regime_model.py              # HMM을 사용하여 시장 레짐을 예측하고 상태를 매핑하는 모듈.
+│
 ├── strategies/
-│   ├── base_strategy.py   # 전략 기본 인터페이스 (신호 생성 메서드 정의)
-│   ├── optimizer.py   # Optuna 기반 동적 파라미터 최적화 및 성능 평가
-│   ├── param_analysis.py   # 파라미터 민감도 분석 및 백테스트 실행, 결과 집계
-│   └── trading_strategies.py   # 개별 전략 (Select, TrendFollowing, Breakout, CounterTrend, HighFrequency, 주간 전략) 및 Ensemble 전략 구현
+│   ├── base_strategy.py             # 모든 트레이딩 전략의 기본 클래스.
+│   ├── optimizer.py                 # optuna를 사용하여 동적 파라미터를 최적화하는 모듈.
+│   ├── param_analysis.py            # 파라미터 민감도 분석을 수행하고 결과를 집계하는 모듈.
+│   └── trading_strategies.py        # 여러 트레이딩 전략(진입/청산, 추세, 돌파, 역추세 등) 및 앙상블 로직.
+│
 ├── trading/
-│   ├── asset_manager.py   # 계좌 자산 리밸런싱 관리 (현물/스테이블코인 간 전환 및 비율 조정)
-│   ├── calculators.py   # ATR, 동적 손절/이익, 후행 스톱, 부분 청산 목표 계산 함수
-│   ├── ensemble.py   # 여러 전략 신호를 동적 가중치로 종합하여 최종 거래 신호 생성 (앙상블)
-│   ├── indicators.py   # 기술적 인디케이터 계산 (SMA, MACD, RSI, Bollinger Bands)
-│   ├── risk_manager.py   # 리스크 관리, 포지션 사이징, 스케일 인, 분할 할당 및 위험 파라미터 조정
-│   └── trade_executor.py   # 거래 실행 관련 계산 함수 호출 및 로깅 처리, 주문 실행 지원
-└── tests/   # 단위 및 통합 테스트
-├── conftest.py   # 테스트 전 로그 파일 삭제 및 로거 초기화
-├── test_aggregating_handler.py   # AggregatingHandler 로그 집계 및 요약 테스트
-├── test_asset_manager.py   # AssetManager 리밸런싱 기능 테스트
-├── test_backtester_integration.py   # Backtester 통합 테스트 (더미 데이터 사용)
-├── test_base_strategy.py   # BaseStrategy 및 더미 전략 테스트
-├── test_calculators.py   # ATR, 동적 손절/이익, 후행 스톱, 부분 청산 목표 계산 함수 테스트
-├── test_config_manager.py   # ConfigManager 기본 및 업데이트 기능 테스트
-├── test_core_account.py   # Account 클래스 기능 테스트
-├── test_core_position.py   # Position 클래스 기능 테스트
-├── test_data_validation.py   # 데이터 로드 및 날짜 범위 유효성 테스트
-├── test_ensemble.py   # Ensemble 신호 생성 및 동적 가중치 테스트
-├── test_exception_logging.py   # 계산 함수 예외 및 로깅 출력 테스트
-├── test_indicators.py   # SMA, MACD, RSI, Bollinger Bands 인디케이터 계산 테스트
-├── test_ohlcv_aggregator.py   # OHLCV 데이터 집계 및 주간 인디케이터 계산 테스트
-├── test_ohlcv_variability.py   # OHLCV 데이터 변동성 (낮음/높음) 테스트
-├── test_optimizer.py   # Optuna 기반 파라미터 최적화 테스트
-├── test_param_analysis.py   # 파라미터 민감도 분석 및 백테스트 실행 테스트
-├── test_performance_report.py   # 최종 성과 리포트 출력 테스트
-├── test_regime_filter.py   # 시장 레짐 결정 및 필터링 테스트
-├── test_regime_model.py   # HMM 기반 시장 레짐 모델 학습 및 예측 테스트
-├── test_risk_manager.py   # RiskManager 포지션 사이징, 파라미터 조정 테스트
-├── test_strategies.py   # 개별 및 Ensemble 전략 신호 생성 테스트
-├── test_trade_executor.py   # TradeExecutor 관련 계산 및 거래 실행 테스트
-└── test_weekly_strategies.py   # 주간 전략 (Breakout, Momentum) 테스트
+│   ├── asset_manager.py             # 계좌 내 자산(현물, 스테이블 코인) 리밸런싱을 관리.
+│   ├── calculators.py               # ATR, 동적 스톱로스/테이크프로핏, 부분 청산 목표 등 계산 함수들.
+│   ├── trade_executor.py            # 계산된 리스크와 목표를 바탕으로 실제 주문 실행 처리.
+│   ├── ensemble.py                  # 여러 전략의 신호를 종합해 최종 거래 신호를 도출하는 앙상블 모듈.
+│   ├── indicators.py                # SMA, MACD, RSI, Bollinger Bands 등 기술 인디케이터 계산 함수들.
+│   └── risk_manager.py              # 포지션 사이징, 리스크 파라미터 계산, 스케일인/아웃 전략 관리.
+│
+└── tests/                          
+    ├── conftest.py                  # pytest 설정 및 로그 파일 관리를 위한 fixture.
+    ├── test_aggregating_handler.py  # AggregatingHandler의 동작 및 집계 기능 테스트.
+    ├── test_asset_manager.py        # AssetManager의 리밸런싱 기능 테스트.
+    ├── test_backtester_integration.py  # 백테스터 통합 테스트 (더미 데이터 기반).
+    ├── test_base_strategy.py        # BaseStrategy 및 DummyStrategy 테스트.
+    ├── test_calculators.py          # ATR, 동적 스톱/테이크, 부분 청산 목표 계산 함수 테스트.
+    ├── test_config_manager.py       # ConfigManager의 기본값, 업데이트, 병합 기능 테스트.
+    ├── test_core_account.py         # Account 클래스의 기능(잔액 업데이트, 포지션 관리) 테스트.
+    ├── test_core_position.py        # Position 클래스의 실행 추가, 부분 청산 등 테스트.
+    ├── test_data_validation.py      # 데이터 로더의 DataFrame 검증 및 오류 처리 테스트.
+    ├── test_ensemble.py             # 앙상블 신호 도출 및 최종 신호 계산 테스트.
+    ├── test_exception_logging.py    # 계산 함수에서 예외 발생 시 로그 기록 테스트.
+    ├── test_indicators.py           # 기술 인디케이터 계산 함수(SMA, MACD, RSI, Bollinger Bands) 테스트.
+    ├── test_ohlcv_aggregator.py      # 주간 OHLCV 데이터 집계 및 인디케이터 계산 테스트.
+    ├── test_ohlcv_variability.py     # 데이터 전처리 시 변동성 경고 메시지 발생 여부 테스트.
+    ├── test_optimizer.py            # 동적 파라미터 최적화(optimizer) 테스트.
+    ├── test_param_analysis.py       # 파라미터 민감도 분석 모듈 테스트.
+    ├── test_performance_report.py   # 최종 성과 리포트 생성 결과 테스트.
+    ├── test_regime_filter.py        # 시장 레짐 판단 및 필터링 함수 테스트.
+    ├── test_regime_model.py         # HMM 기반 시장 레짐 모델의 학습/예측 테스트.
+    ├── test_risk_manager.py         # RiskManager의 포지션 사이징 및 리스크 계산 테스트.
+    ├── test_strategies.py           # 다양한 트레이딩 전략 구현 테스트.
+    ├── test_trade_executor.py       # TradeExecutor의 주문 실행 및 계산 함수 테스트.
+    └── test_weekly_strategies.py    # 주간 전략(돌파, 모멘텀) 신호 도출 로직 테스트.
 
 **성능이 개선될때까지 아래 사항 반복**
 1. 민간도 분석을 통한 핵심 파라미터 추출

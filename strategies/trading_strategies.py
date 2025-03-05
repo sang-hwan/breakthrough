@@ -40,7 +40,8 @@ class SelectStrategy(BaseStrategy):
         ]
         final_signal = "enter_long" if "enter_long" in signals else "hold"
         if self.previous_signal != final_signal:
-            self.logger.info(f"SelectStrategy signal changed to {final_signal} at {current_time}")
+            # 핵심 요약 정보만 기록 – 타임스탬프 제거
+            self.logger.info(f"SelectStrategy 신호: {final_signal}")
             self.previous_signal = final_signal
         return final_signal
 

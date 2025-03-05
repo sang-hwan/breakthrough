@@ -8,7 +8,10 @@ from core.position import Position
 from trading.asset_manager import AssetManager
 from trading.ensemble import Ensemble
 from config.config_manager import ConfigManager
-from logs.logging_util import LoggingUtil  # 동적 상태 변화 로깅 유틸리티
+from logs.logging_util import LoggingUtil
+
+# 동적 로그 유틸리티 인스턴스 생성
+log_util = LoggingUtil(__name__)
 
 class Backtester:
     def __init__(self, symbol="BTC/USDT", account_size=10000.0, fee_rate=0.001, 
@@ -35,7 +38,7 @@ class Backtester:
         self.last_rebalance_time = None
         self.last_weekly_close_date = None
         self.clock = lambda: pd.Timestamp.now()
-        self.state = {}  # 추가: 상태 변화 추적용
+        self.state = {}  # 상태 변화 추적용
 
     def get_current_time(self):
         return self.clock()
@@ -73,7 +76,7 @@ class Backtester:
                 training_data = self.df_long if len(self.df_long) <= max_samples else self.df_long.tail(max_samples)
                 self.hmm_model.train(training_data, feature_columns=hmm_features)
                 self.last_hmm_training_datetime = current_dt
-                self.logger.debug(f"HMM 학습 완료: {current_dt}")
+                log_util.log_event("HMM updated", state_key="hmm_update")
             else:
                 training_data = self.df_long if len(self.df_long) <= max_samples else self.df_long.tail(max_samples)
                 current_means = training_data[hmm_features].mean()
@@ -82,9 +85,9 @@ class Backtester:
                 if (current_dt - self.last_hmm_training_datetime) >= retrain_interval or diff >= feature_change_threshold:
                     self.hmm_model.train(training_data, feature_columns=hmm_features)
                     self.last_hmm_training_datetime = current_dt
-                    self.logger.debug(f"HMM 재학습 완료: {current_dt} (피처 변화 diff: {diff:.6f})")
+                    self.logger.debug(f"HMM 재학습 완료 (피처 변화 diff: {diff:.6f})")
                 else:
-                    self.logger.debug(f"HMM 재학습 스킵: 시간 경과 및 피처 변화 미미 (diff: {diff:.6f}).")
+                    self.logger.debug(f"HMM 재학습 스킵 (피처 변화 diff: {diff:.6f})")
 
             predicted_regimes = self.hmm_model.predict_regime_labels(self.df_long, feature_columns=hmm_features)
             sma_period = dynamic_params.get('sma_period', 200)
@@ -193,8 +196,11 @@ class Backtester:
             stop_loss_price = row.get("stop_loss_price")
             if stop_loss_price is None:
                 stop_loss_price = close_price * 0.95
-                self.logger.error(f"Missing stop_loss_price for bullish entry at {current_time}. Using default stop_loss_price={stop_loss_price:.2f}.", exc_info=True)
+                self.logger.error(
+                    f"Missing stop_loss_price for bullish entry. 기본값 사용: {stop_loss_price:.2f}.", exc_info=True
+                )
 
+            # 기존 포지션에서 추가 진입을 시도하는 경우
             for pos in self.positions:
                 if pos.side == "LONG":
                     additional_size = self.risk_manager.compute_position_size(
@@ -221,6 +227,7 @@ class Backtester:
                         )
                         self.last_signal_time = current_time
                         return
+            # 신규 포지션 생성
             total_size = self.risk_manager.compute_position_size(
                 available_balance=self.account.get_available_balance(),
                 risk_percentage=risk_params.get("risk_per_trade"),
@@ -381,10 +388,8 @@ class Backtester:
             for pos in self.positions:
                 for exec_record in pos.executions:
                     if not exec_record.get("closed", False):
-                        entry_price = exec_record.get("entry_price", 0)
-                        current_price = row.get("close", entry_price)
-                        if entry_price > 0 and abs(current_price - entry_price) / entry_price > 0.05:
-                            self.logger.debug(f"Significant price move for position {pos.position_id} at {current_time}.")
+                        # 동적 타임스탬프 제거: 핵심 내용만 기록
+                        self.logger.debug(f"Significant price move for position {pos.position_id}.")
         except Exception as e:
             self.logger.error("Error monitoring orders: " + str(e), exc_info=True)
             raise
@@ -406,11 +411,7 @@ class Backtester:
 
             try:
                 self.apply_indicators()
-                # INFO 로그: 인디케이터 적용 결과 요약 (예: SMA, RSI, MACD diff 범위)
-                indicator_summary = (f"SMA({self.df_long['sma'].min():.2f}-{self.df_long['sma'].max():.2f}), "
-                                     f"RSI({self.df_long['rsi'].min():.2f}-{self.df_long['rsi'].max():.2f}), "
-                                     f"MACD_diff({self.df_long['macd_diff'].min():.2f}-{self.df_long['macd_diff'].max():.2f})")
-                log_util.log_event("인디케이터 적용 완료: " + indicator_summary, state_key="indicator_applied")
+                log_util.log_event("Indicators applied", state_key="indicator_applied")
             except Exception as e:
                 self.logger.error("Error during indicator application: " + str(e), exc_info=True)
                 raise
@@ -418,14 +419,14 @@ class Backtester:
             try:
                 from backtesting.steps.hmm_manager import update_hmm
                 regime_series = update_hmm(self, dynamic_params)
-                hmm_summary = f"총 {len(regime_series)} 샘플, regime 분포: {regime_series.value_counts().to_dict()}"
-                log_util.log_event("HMM 업데이트 완료: " + hmm_summary, state_key="hmm_update")
+                log_util.log_event("HMM updated", state_key="hmm_update")
             except Exception as e:
                 self.logger.error("Error updating HMM: " + str(e), exc_info=True)
                 regime_series = pd.Series(["sideways"] * len(self.df_long), index=self.df_long.index)
 
             try:
                 self.update_short_dataframe(regime_series, dynamic_params)
+                log_util.log_event("Data loaded successfully", state_key="data_load")
             except Exception as e:
                 self.logger.error("Error updating short dataframe: " + str(e), exc_info=True)
                 raise
@@ -464,9 +465,7 @@ class Backtester:
             total_pnl = sum(trade.get("pnl", 0) if not isinstance(trade.get("pnl", 0), list) 
                             else sum(trade.get("pnl", 0)) for trade in self.trades)
             roi = total_pnl / self.account.initial_balance * 100
-            performance_summary = (f"백테스트 결과: 거래 건수={len(self.trades)}, 계좌 잔액={available_balance:.2f}, "
-                                   f"총 PnL={total_pnl:.2f}, ROI={roi:.2f}%")
-            log_util.log_event(performance_summary, state_key="final_performance")
+            log_util.log_event("Backtest complete", state_key="final_performance")
             return self.trades, self.trade_logs
 
         except Exception as e:

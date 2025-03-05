@@ -86,5 +86,4 @@ class AssetManager:
         new_state = self._get_account_state()
         if new_state != self.last_account_state:
             self.last_account_state = new_state
-            # 상태 변화가 감지되면 INFO 로그로 기록
-            self.log_util.log_event(f"Rebalance complete. New account state: {self.account}", state_key="asset_state")
+            self.log_util.log_event("Rebalance complete", state_key="asset_state")

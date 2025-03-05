@@ -18,10 +18,10 @@ def get_signal_with_weekly_override(backtester, row, current_time, dynamic_param
             if "weekly_low" in weekly_bar and "weekly_high" in weekly_bar:
                 tolerance = 0.002
                 if abs(row["close"] - weekly_bar["weekly_low"]) / weekly_bar["weekly_low"] <= tolerance:
-                    log_util.log_event(f"Weekly override: Price {row['close']} near weekly low {weekly_bar['weekly_low']}. Signal: enter_long.", state_key="order_signal")
+                    log_util.log_event("Weekly override: enter_long", state_key="order_signal")
                     return "enter_long"
                 elif abs(row["close"] - weekly_bar["weekly_high"]) / weekly_bar["weekly_high"] <= tolerance:
-                    log_util.log_event(f"Weekly override: Price {row['close']} near weekly high {weekly_bar['weekly_high']}. Signal: exit_all.", state_key="order_signal")
+                    log_util.log_event("Weekly override: exit_all", state_key="order_signal")
                     return "exit_all"
             else:
                 backtester.logger.warning("Weekly override skipped: weekly_bar missing 'weekly_low' or 'weekly_high' keys.")
@@ -53,21 +53,21 @@ def process_training_orders(backtester, dynamic_params, signal_cooldown, rebalan
                     try:
                         backtester.handle_weekly_end(current_time, row)
                     except Exception as e:
-                        logger.error(f"Weekly end handling error at {current_time}: {e}", exc_info=True)
+                        logger.error(f"Weekly end handling error {e}", exc_info=True)
                     backtester.last_weekly_close_date = current_time.date()
                     continue
             except Exception as e:
-                logger.error(f"Error during weekly end check at {current_time}: {e}", exc_info=True)
+                logger.error(f"Error during weekly end check {e}", exc_info=True)
             
             try:
                 if backtester.walk_forward_days is not None and (current_time - backtester.window_start) >= backtester.walk_forward_td:
                     try:
                         backtester.handle_walk_forward_window(current_time, row)
                     except Exception as e:
-                        logger.error(f"Walk-forward window handling error at {current_time}: {e}", exc_info=True)
+                        logger.error(f"Walk-forward window handling error {e}", exc_info=True)
                     backtester.window_start = current_time
             except Exception as e:
-                logger.error(f"Error during walk-forward window check at {current_time}: {e}", exc_info=True)
+                logger.error(f"Error during walk-forward window check {e}", exc_info=True)
             
             if backtester.last_signal_time is None or (current_time - backtester.last_signal_time) >= signal_cooldown:
                 action = get_signal_with_weekly_override(backtester, row, current_time, dynamic_params)
@@ -88,40 +88,40 @@ def process_training_orders(backtester, dynamic_params, signal_cooldown, rebalan
                     dynamic_params.get('liquidity_info', 'high')
                 )
             except Exception as e:
-                logger.error(f"Risk parameter computation error at {current_time}: {e}", exc_info=True)
+                logger.error(f"Risk parameter computation error {e}", exc_info=True)
                 risk_params = base_risk_params
             try:
                 if action == "enter_long":
                     backtester.process_bullish_entry(current_time, row, risk_params, dynamic_params)
-                    log_util.log_event(f"{current_time}: 'enter_long' 주문 실행. 잔액: {backtester.account.get_available_balance():.2f}", state_key="order_execution")
+                    log_util.log_event("Order executed: enter_long", state_key="order_execution")
                 elif action == "exit_all":
                     backtester.process_bearish_exit(current_time, row)
-                    log_util.log_event(f"{current_time}: 'exit_all' 주문 실행. 잔액: {backtester.account.get_available_balance():.2f}", state_key="order_execution")
+                    log_util.log_event("Order executed: exit_all", state_key="order_execution")
                 elif row.get('market_regime', 'unknown') == "sideways":
                     backtester.process_sideways_trade(current_time, row, risk_params, dynamic_params)
-                    log_util.log_event(f"{current_time}: 'sideways' 거래 실행. 잔액: {backtester.account.get_available_balance():.2f}", state_key="order_execution")
+                    log_util.log_event("Order executed: sideways", state_key="order_execution")
             except Exception as e:
-                logger.error(f"Error processing order at {current_time} with action '{action}': {e}", exc_info=True)
+                logger.error(f"Error processing order with action '{action}': {e}", exc_info=True)
             backtester.last_signal_time = current_time
 
             try:
                 backtester.update_positions(current_time, row)
             except Exception as e:
-                logger.error(f"Error updating positions at {current_time}: {e}", exc_info=True)
+                logger.error(f"Error updating positions {e}", exc_info=True)
 
             try:
                 if backtester.last_rebalance_time is None or (current_time - backtester.last_rebalance_time) >= rebalance_interval:
                     try:
                         backtester.asset_manager.rebalance(row.get('market_regime', 'unknown'))
                     except Exception as e:
-                        logger.error(f"Error during rebalance at {current_time}: {e}", exc_info=True)
+                        logger.error(f"Error during rebalance {e}", exc_info=True)
                     backtester.last_rebalance_time = current_time
-                log_util.log_event(f"{current_time}: 리밸런스 실행 후 잔액: {backtester.account.get_available_balance():.2f}", state_key="rebalance")
+                log_util.log_event("Rebalance executed", state_key="rebalance")
             except Exception as e:
-                logger.error(f"Error in rebalance check at {current_time}: {e}", exc_info=True)
+                logger.error(f"Error in rebalance check {e}", exc_info=True)
 
         except Exception as e:
-            logger.error(f"Unexpected error during processing training orders at {current_time}: {e}", exc_info=True)
+            logger.error(f"Unexpected error during processing training orders {e}", exc_info=True)
             continue
 
 def process_extra_orders(backtester, dynamic_params):
@@ -133,7 +133,7 @@ def process_extra_orders(backtester, dynamic_params):
                 try:
                     regime = backtester.df_long.loc[backtester.df_long.index <= current_time].iloc[-1].get('market_regime', 'sideways')
                 except Exception as e:
-                    logger.error(f"Retrieving regime failed at {current_time}: {e}", exc_info=True)
+                    logger.error(f"Retrieving regime failed {e}", exc_info=True)
                     regime = "sideways"
                 base_risk_params = {
                     "risk_per_trade": dynamic_params.get("risk_per_trade", 0.01),
@@ -149,23 +149,23 @@ def process_extra_orders(backtester, dynamic_params):
                         dynamic_params.get('liquidity_info', 'high')
                     )
                 except Exception as e:
-                    logger.error(f"Risk params error (extra data) at {current_time}: {e}", exc_info=True)
+                    logger.error(f"Risk params error (extra data) {e}", exc_info=True)
                     risk_params = base_risk_params
                 try:
                     if hf_signal == "enter_long":
                         backtester.process_bullish_entry(current_time, row, risk_params, dynamic_params)
-                        log_util.log_event(f"{current_time}: Extra 데이터에서 'enter_long' 주문 실행. 잔액: {backtester.account.get_available_balance():.2f}", state_key="order_execution")
+                        log_util.log_event("Extra: Order executed: enter_long", state_key="order_execution")
                     elif hf_signal == "exit_all":
                         backtester.process_bearish_exit(current_time, row)
-                        log_util.log_event(f"{current_time}: Extra 데이터에서 'exit_all' 주문 실행. 잔액: {backtester.account.get_available_balance():.2f}", state_key="order_execution")
+                        log_util.log_event("Extra: Order executed: exit_all", state_key="order_execution")
                 except Exception as e:
-                    logger.error(f"Error processing extra order at {current_time} with hf_signal '{hf_signal}': {e}", exc_info=True)
+                    logger.error(f"Error processing extra order with hf_signal '{hf_signal}': {e}", exc_info=True)
                 try:
                     backtester.monitor_orders(current_time, row)
                 except Exception as e:
-                    logger.error(f"Error monitoring orders at {current_time}: {e}", exc_info=True)
+                    logger.error(f"Error monitoring orders {e}", exc_info=True)
             except Exception as e:
-                logger.error(f"Unexpected error in process_extra_orders at {current_time}: {e}", exc_info=True)
+                logger.error(f"Unexpected error in process_extra_orders {e}", exc_info=True)
                 continue
 
 def process_holdout_orders(backtester, dynamic_params, df_holdout):
@@ -187,26 +187,26 @@ def process_holdout_orders(backtester, dynamic_params, df_holdout):
                         dynamic_params.get('liquidity_info', 'high')
                     )
                 except Exception as e:
-                    logger.error(f"Risk params error (holdout) at {current_time}: {e}", exc_info=True)
+                    logger.error(f"Risk params error (holdout) {e}", exc_info=True)
                     risk_params = base_risk_params
                 try:
                     if action == "enter_long":
                         backtester.process_bullish_entry(current_time, row, risk_params, dynamic_params)
-                        log_util.log_event(f"{current_time}: Holdout 데이터에서 'enter_long' 주문 실행. 잔액: {backtester.account.get_available_balance():.2f}", state_key="order_execution")
+                        log_util.log_event("Holdout: Order executed: enter_long", state_key="order_execution")
                     elif action == "exit_all":
                         backtester.process_bearish_exit(current_time, row)
-                        log_util.log_event(f"{current_time}: Holdout 데이터에서 'exit_all' 주문 실행. 잔액: {backtester.account.get_available_balance():.2f}", state_key="order_execution")
+                        log_util.log_event("Holdout: Order executed: exit_all", state_key="order_execution")
                     elif row.get('market_regime', 'unknown') == "sideways":
                         backtester.process_sideways_trade(current_time, row, risk_params, dynamic_params)
-                        log_util.log_event(f"{current_time}: Holdout 데이터에서 'sideways' 거래 실행. 잔액: {backtester.account.get_available_balance():.2f}", state_key="order_execution")
+                        log_util.log_event("Holdout: Order executed: sideways", state_key="order_execution")
                 except Exception as e:
-                    logger.error(f"Error processing holdout order at {current_time} with action '{action}': {e}", exc_info=True)
+                    logger.error(f"Error processing holdout order with action '{action}': {e}", exc_info=True)
                 try:
                     backtester.update_positions(current_time, row)
                 except Exception as e:
-                    logger.error(f"Error updating positions in holdout at {current_time}: {e}", exc_info=True)
+                    logger.error(f"Error updating positions in holdout {e}", exc_info=True)
             except Exception as e:
-                logger.error(f"Unexpected error in process_holdout_orders at {current_time}: {e}", exc_info=True)
+                logger.error(f"Unexpected error in process_holdout_orders {e}", exc_info=True)
                 continue
 
 def finalize_orders(backtester):
