@@ -5,9 +5,8 @@ import threading
 
 class AggregatingHandler(logging.Handler):
     """
-    AggregatingHandler aggregates log occurrence counts by (logger name, filename, function name).
-    또한, 주간 신호와 같은 이벤트를 별도로 집계할 수 있습니다.
-    플러시 시 최종 집계 결과만 기록하고, 기록 후 집계를 초기화합니다.
+    AggregatingHandler는 (logger 이름, 파일명, 함수명)별로 이벤트 발생 횟수를 집계합니다.
+    플러시 시 집계된 결과를 최종 로그로 출력하고, 집계를 초기화합니다.
     """
 
     def __init__(self, level=logging.DEBUG):
@@ -28,7 +27,6 @@ class AggregatingHandler(logging.Handler):
 
     def flush_aggregation_summary(self):
         with self.lock:
-            # 최종 집계 결과 출력 후 집계 딕셔너리를 초기화하여 중복 출력을 방지합니다.
             if self.total_aggregation:
                 summary_lines = [
                     f"{filename}:{funcname} (logger: {logger_name}) - 총 {count}회 발생"

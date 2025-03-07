@@ -3,17 +3,15 @@ import logging
 import os
 import queue
 from logging.handlers import RotatingFileHandler, QueueHandler, QueueListener
-from dotenv import load_dotenv
 from logs.aggregating_handler import AggregatingHandler
 
-load_dotenv()
+FILE_LOG_LEVEL = logging.INFO         # 파일 로그는 INFO 이상
+detail_level = logging.DEBUG           # 콘솔 로그는 DEBUG 이상
 
-ENVIRONMENT = os.getenv("ENVIRONMENT", "development").lower()
-_LOG_LEVEL_FROM_ENV = os.getenv("LOG_LEVEL", None)
-FILE_LOG_LEVEL = logging.INFO  # 파일 로그는 INFO 이상으로 강제 설정
-LOG_DETAIL_LEVEL = os.getenv("LOG_DETAIL_LEVEL", "INFO")  # 백테스트에서는 INFO를 기본으로 사용
-detail_level = getattr(logging, LOG_DETAIL_LEVEL.upper(), logging.INFO)
-BASE_LOG_FILE = os.path.join("logs", "project.log")
+LOG_FILES_DIR = os.path.join("logs", "log_files")
+if not os.path.exists(LOG_FILES_DIR):
+    os.makedirs(LOG_FILES_DIR)
+BASE_LOG_FILE = os.path.join(LOG_FILES_DIR, "project.log")
 
 class OneLineFormatter(logging.Formatter):
     def format(self, record):
@@ -68,7 +66,7 @@ def initialize_root_logger():
     for handler in root_logger.handlers[:]:
         root_logger.removeHandler(handler)
 
-    # 파일 핸들러
+    # 파일 핸들러 (로그 파일은 log_files 디렉토리에 생성됨)
     file_handler = LineRotatingFileHandler(
         base_filename=BASE_LOG_FILE,
         max_lines=500,
@@ -94,16 +92,15 @@ def initialize_root_logger():
     queue_listener = QueueListener(log_queue, console_handler)
     queue_listener.start()
 
-    # AggregatingHandler 추가 (INFO 이상만 기록)
-    if AggregatingHandler is not None:
-        try:
-            aggregator_handler = AggregatingHandler(level=detail_level)
-            aggregator_handler.addFilter(lambda record: not getattr(record, '_is_summary', False))
-            aggregator_formatter = OneLineFormatter('[%(asctime)s] %(levelname)s:%(name)s:%(filename)s:%(funcName)s: %(message)s')
-            aggregator_handler.setFormatter(aggregator_formatter)
-            root_logger.addHandler(aggregator_handler)
-        except Exception as e:
-            logging.getLogger().error("Failed to add module-specific AggregatingHandler: " + str(e), exc_info=True)
+    # AggregatingHandler 추가
+    try:
+        aggregator_handler = AggregatingHandler(level=detail_level)
+        aggregator_handler.addFilter(lambda record: not getattr(record, '_is_summary', False))
+        aggregator_formatter = OneLineFormatter('[%(asctime)s] %(levelname)s:%(name)s:%(filename)s:%(funcName)s: %(message)s')
+        aggregator_handler.setFormatter(aggregator_formatter)
+        root_logger.addHandler(aggregator_handler)
+    except Exception as e:
+        logging.getLogger().error("Failed to add AggregatingHandler: " + str(e), exc_info=True)
 
     # 외부 라이브러리 로그 레벨 조정
     logging.getLogger("ccxt").setLevel(logging.WARNING)
@@ -120,7 +117,7 @@ def setup_logger(module_name: str) -> logging.Logger:
         agg_handler.setFormatter(formatter)
         logger.addHandler(agg_handler)
     except Exception as e:
-        logger.error("Module-specific AggregatingHandler addition failed: " + str(e), exc_info=True)
+        logger.error("Failed to add module-specific AggregatingHandler: " + str(e), exc_info=True)
     return logger
 
 def shutdown_logging():

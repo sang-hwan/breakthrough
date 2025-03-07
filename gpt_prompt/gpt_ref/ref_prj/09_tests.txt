@@ -1,0 +1,985 @@
+[tests/asset_manager/test_asset_manager.py]
+# tests/asset_manager/test_asset_manager.py
+from core.account import Account
+from trading.asset_manager import AssetManager
+
+def test_rebalance_bullish():
+    account = Account(initial_balance=10000)
+    # 가상 계좌에 임의의 현물, 스테이블코인 할당
+    account.spot_balance = 4000
+    account.stablecoin_balance = 6000
+    am = AssetManager(account, min_rebalance_threshold=0.01, min_rebalance_interval_minutes=0)
+    # bullish 시장에서는 목표 현물이 총 자산의 90%를 목표로 함
+    am.rebalance("bullish")
+    # 현물 잔고가 상승했을 것으로 예상
+    assert account.spot_balance > 4000
+
+def test_rebalance_bearish():
+    account = Account(initial_balance=10000)
+    account.spot_balance = 8000
+    account.stablecoin_balance = 2000
+    am = AssetManager(account, min_rebalance_threshold=0.01, min_rebalance_interval_minutes=0)
+    am.rebalance("bearish")
+    # bearish 시장에서는 현물 잔고가 하락했을 것으로 예상
+    assert account.spot_balance < 8000
+
+[tests/backtesting/test_backtest_default_trade.py]
+# tests/backtesting/test_backtest_default_trade.py
+import pytest
+from backtesting.backtester import Backtester
+from config.config_manager import ConfigManager
+import pandas as pd
+
+@pytest.fixture
+def sample_ohlcv_data():
+    # 간단한 테스트용 OHLCV 데이터 생성 (예: 60일치 데이터)
+    dates = pd.date_range(start="2022-01-01", periods=60, freq="D")
+    df = pd.DataFrame({
+        "open": pd.np.linspace(100, 160, 60),
+        "high": pd.np.linspace(105, 165, 60),
+        "low": pd.np.linspace(95, 155, 60),
+        "close": pd.np.linspace(100, 160, 60),
+        "volume": [1000] * 60
+    }, index=dates)
+    return df
+
+def test_default_config_backtest(sample_ohlcv_data, monkeypatch):
+    # 백테스터 인스턴스 생성 (간단히 기본 파라미터 사용)
+    asset = "BTC/USDT"
+    symbol_key = asset.replace("/", "").lower()
+    bt = Backtester(symbol=asset, account_size=10000)
+    
+    # 데이터 로드 부분: 실제 DB 대신 sample 데이터 사용
+    bt.df_long = sample_ohlcv_data.copy()
+    bt.df_short = sample_ohlcv_data.copy()
+    bt.df_train = sample_ohlcv_data.copy()
+    
+    # HMM, 지표 적용, short DF 업데이트 등의 외부 의존성 제거를 위해 dummy 함수 삽입
+    bt.apply_indicators = lambda: None
+    bt.update_hmm_regime = lambda dynamic_params: pd.Series(["bullish"] * len(bt.df_long), index=bt.df_long.index)
+    bt.update_short_dataframe = lambda regime_series, dynamic_params: None
+    bt.ensemble_manager.get_final_signal = lambda regime, liquidity, data, current_time, data_weekly=None: "enter_long"
+    
+    # ConfigManager 기본 파라미터 사용
+    cm = ConfigManager()
+    default_params = cm.get_defaults()
+    
+    # 백테스트 실행 (주문이 발생하면 trades 리스트에 값이 채워져야 함)
+    trades, trade_logs = bt.run_backtest_pipeline(dynamic_params=default_params)
+    
+    # 최소 1건 이상의 거래가 발생했는지 검증
+    assert isinstance(trades, list)
+    # 거래 건수가 0이면 문제로 간주 (테스트 환경에 따라 다를 수 있으므로 임계값은 조정 가능)
+    assert len(trades) > 0, "기본 파라미터로 실행 시 거래가 체결되어야 합니다."
+
+[tests/backtesting/test_backtester_integration.py]
+# tests/backtesting/test_backtester_integration.py
+import pandas as pd
+import numpy as np
+import pytest
+from backtesting.backtester import Backtester
+
+@pytest.fixture
+def dummy_data():
+    # 30일치 더미 long 데이터 생성
+    dates = pd.date_range(start="2023-01-01", periods=30, freq="D")
+    df_long = pd.DataFrame({
+        "open": np.linspace(100, 130, 30),
+        "high": np.linspace(105, 135, 30),
+        "low": np.linspace(95, 125, 30),
+        "close": np.linspace(100, 130, 30),
+    }, index=dates)
+    # short 데이터: long 데이터를 시간해상도로 리샘플링하여 생성
+    df_short = df_long.resample('h').ffill()
+    return df_long, df_short
+
+def test_backtester_integration(dummy_data):
+    df_long, df_short = dummy_data
+    backtester = Backtester(symbol="BTC/USDT", account_size=10000)
+    # 더미 데이터를 직접 할당
+    backtester.df_long = df_long.copy()
+    backtester.df_short = df_short.copy()
+    backtester.df_train = df_short.copy()
+    backtester.last_signal_time = None
+    backtester.last_rebalance_time = None
+    backtester.positions = []
+    
+    # 외부 의존성을 제거하기 위해 필요한 메서드 오버라이드
+    backtester.update_hmm_regime = lambda dynamic_params: pd.Series(["bullish"] * len(backtester.df_long), index=backtester.df_long.index)
+    backtester.apply_indicators = lambda: None
+    backtester.update_short_dataframe = lambda regime_series, dynamic_params: None
+    backtester.risk_manager.compute_risk_parameters_by_regime = lambda base_params, regime, liquidity="high": base_params
+    backtester.ensemble_manager.get_final_signal = lambda regime, liquidity, data, current_time, data_weekly=None: "hold"
+    # 더미 AssetManager (rebalance 메서드 no-op)
+    backtester.asset_manager = type("DummyAssetManager", (), {"rebalance": lambda self, regime: None})()
+    # 주간 데이터 생성 (long 데이터의 주간 마지막값 사용)
+    backtester.df_weekly = df_long.resample('W').last()
+    
+    # 백테스트 실행 (오류 없이 리스트 반환되어야 함)
+    trades, trade_logs = backtester.run_backtest(dynamic_params={"signal_cooldown_minutes": 5, "rebalance_interval_minutes": 60})
+    assert isinstance(trades, list)
+    assert isinstance(trade_logs, list)
+
+[tests/backtesting/test_data_validation.py]
+# tests/backtesting/test_data_validation.py
+import pandas as pd
+import pytest
+from backtesting.steps.data_loader import load_data
+
+# 더미 백테스터 클래스 정의
+class DummyBacktester:
+    def __init__(self, symbol="BTC/USDT"):
+        self.symbol = symbol
+        self.df_short = None
+        self.df_long = None
+
+# fetch_ohlcv_records를 더미 함수로 대체 (유효한 날짜 범위에서는 non-empty DataFrame, 그렇지 않으면 empty DataFrame 반환)
+def dummy_fetch_ohlcv_records(table_name, start_date, end_date):
+    if start_date and end_date and start_date < end_date:
+        dates = pd.date_range(start=start_date, end=end_date, freq='D')
+        df = pd.DataFrame({
+            "open": [100] * len(dates),
+            "high": [110] * len(dates),
+            "low": [90] * len(dates),
+            "close": [105] * len(dates),
+            "volume": [1000] * len(dates)
+        }, index=dates)
+        return df
+    else:
+        return pd.DataFrame()
+
+# 모든 테스트에서 fetch_ohlcv_records를 패치
+@pytest.fixture(autouse=True)
+def patch_fetch_ohlcv(monkeypatch):
+    monkeypatch.setattr("backtesting.steps.data_loader.fetch_ohlcv_records", dummy_fetch_ohlcv_records)
+
+def test_load_data_valid():
+    backtester = DummyBacktester(symbol="BTC/USDT")
+    short_table_format = "ohlcv_{symbol}_{timeframe}"
+    long_table_format = "ohlcv_{symbol}_{timeframe}"
+    short_tf = "1d"
+    long_tf = "1d"
+    start_date = "2023-01-01"
+    end_date = "2023-01-10"
+    # load_data 호출 시 정상적인 데이터를 반환해야 함.
+    load_data(backtester, short_table_format, long_table_format, short_tf, long_tf, start_date, end_date)
+    assert backtester.df_short is not None and not backtester.df_short.empty
+    assert backtester.df_long is not None and not backtester.df_long.empty
+
+def test_load_data_invalid():
+    backtester = DummyBacktester(symbol="BTC/USDT")
+    short_table_format = "ohlcv_{symbol}_{timeframe}"
+    long_table_format = "ohlcv_{symbol}_{timeframe}"
+    short_tf = "1d"
+    long_tf = "1d"
+    start_date = "2023-01-10"
+    end_date = "2023-01-01"  # 잘못된 날짜 범위: 시작일 > 종료일
+    with pytest.raises(ValueError):
+        load_data(backtester, short_table_format, long_table_format, short_tf, long_tf, start_date, end_date)
+
+[tests/backtesting/test_ohlcv_aggregator.py]
+# tests/backtesting/test_ohlcv_aggregator.py
+import pandas as pd
+import numpy as np
+from data.ohlcv.ohlcv_aggregator import aggregate_to_weekly
+
+def test_aggregate_to_weekly_includes_weekly_low_high():
+    # 21일치 데이터(약 3주 분량)를 생성하여 주간 집계 시 두 개 이상의 주간 데이터가 생성되도록 함
+    dates = pd.date_range(start='2020-01-01', periods=21, freq='D')
+    data = pd.DataFrame({
+        'open': np.linspace(100, 120, len(dates)),
+        'high': np.linspace(105, 125, len(dates)),
+        'low': np.linspace(95, 115, len(dates)),
+        'close': np.linspace(102, 122, len(dates)),
+        'volume': np.random.randint(100, 200, len(dates))
+    }, index=dates)
+    weekly = aggregate_to_weekly(data, compute_indicators=True, sma_window=5)
+    # weekly_low, weekly_high가 존재하는지 확인
+    assert 'weekly_low' in weekly.columns
+    assert 'weekly_high' in weekly.columns
+    # 집계 결과가 두 주 이상 생성되었는지 확인
+    assert len(weekly) >= 2
+
+[tests/backtesting/test_ohlcv_variability.py]
+# tests/backtesting/test_ohlcv_variability.py
+import pandas as pd
+import numpy as np
+import pytest
+from backtesting.steps.data_loader import _validate_and_prepare_df
+from logs.logger_config import setup_logger
+
+logger = setup_logger(__name__)
+
+@pytest.fixture
+def constant_ohlcv():
+    """
+    거의 일정한 OHLCV 데이터를 생성 (낮은 변동성)
+    """
+    dates = pd.date_range(start='2020-01-01', periods=10, freq='D')
+    data = {
+        'open': np.full(10, 100.0),
+        'high': np.full(10, 100.01),  # 극히 미세한 변동
+        'low': np.full(10, 99.99),
+        'close': np.full(10, 100.0),
+        'volume': np.full(10, 1000)
+    }
+    df = pd.DataFrame(data, index=dates)
+    return df
+
+@pytest.fixture
+def volatile_ohlcv():
+    """
+    충분한 변동성을 가지는 OHLCV 데이터를 생성.
+    재현성을 위해 난수 시드를 고정합니다.
+    """
+    np.random.seed(42)
+    dates = pd.date_range(start='2020-01-01', periods=10, freq='D')
+    open_prices = np.linspace(100, 110, 10)
+    high_prices = open_prices + np.random.uniform(1, 2, 10)
+    low_prices = open_prices - np.random.uniform(1, 2, 10)
+    close_prices = open_prices + np.random.uniform(-1, 1, 10)
+    volume = np.random.randint(1000, 2000, 10)
+    df = pd.DataFrame({
+        'open': open_prices,
+        'high': high_prices,
+        'low': low_prices,
+        'close': close_prices,
+        'volume': volume
+    }, index=dates)
+    return df
+
+def test_low_volatility_warning(caplog, constant_ohlcv):
+    caplog.set_level("WARNING")
+    # 실제 테이블 이름 규칙을 반영 (예: "ohlcv_btcusdt_1d")
+    table_name = "ohlcv_btcusdt_1d"
+    _validate_and_prepare_df(constant_ohlcv, table_name)
+    # "low volatility" 경고 메시지가 로그에 기록되었는지 확인합니다.
+    warning_found = any("low volatility" in record.message for record in caplog.records)
+    assert warning_found, "낮은 변동성 데이터에 대해 경고가 발생해야 합니다."
+
+def test_high_volatility_no_warning(caplog, volatile_ohlcv):
+    caplog.set_level("WARNING")
+    table_name = "ohlcv_btcusdt_1d"
+    _validate_and_prepare_df(volatile_ohlcv, table_name)
+    # 충분한 변동성 데이터에서는 경고가 발생하지 않아야 합니다.
+    warning_found = any("low volatility" in record.message for record in caplog.records)
+    assert not warning_found, "충분한 변동성 데이터에서는 경고가 발생하면 안 됩니다."
+
+[tests/config/test_config_manager.py]
+# tests/config/test_config_manager.py
+from config.config_manager import ConfigManager
+
+def test_get_defaults():
+    cm = ConfigManager()
+    defaults = cm.get_defaults()
+    # 기본 파라미터에 몇 가지 주요 키가 있는지 확인
+    for key in ["sma_period", "atr_period", "risk_per_trade"]:
+        assert key in defaults
+
+def test_update_with_market_data():
+    cm = ConfigManager()
+    base_defaults = cm.get_defaults()
+    market_data = {
+        "volatility": 0.08,
+        "trend": "bullish",
+        "trend_strength": 0.1,
+        "volume": 800,
+        "weekly_volatility": 0.09
+    }
+    updated = cm.update_with_market_data(market_data)
+    # atr_multiplier와 risk_per_trade가 변경되었는지 확인
+    assert updated["atr_multiplier"] != base_defaults["atr_multiplier"]
+    assert updated["risk_per_trade"] != base_defaults["risk_per_trade"]
+
+def test_merge_optimized():
+    cm = ConfigManager()
+    defaults = cm.get_defaults()
+    optimized = {"profit_ratio": defaults["profit_ratio"] * 1.1, "new_param": 123}
+    merged = cm.merge_optimized(optimized)
+    # 민감도 대상은 평균값, 그 외는 최적화 값 적용됨
+    assert merged["profit_ratio"] == (defaults["profit_ratio"] + defaults["profit_ratio"] * 1.1) / 2
+    assert merged["new_param"] == 123
+
+[tests/core/test_core_account.py]
+# tests/core/test_core_account.py
+from core.account import Account
+from core.position import Position
+
+def test_account_balance_after_trade():
+    account = Account(initial_balance=10000, fee_rate=0.001)
+    initial_balance = account.spot_balance
+    trade = {"pnl": 500}
+    account.update_after_trade(trade)
+    assert account.spot_balance == initial_balance + 500
+
+def test_position_add_and_remove():
+    account = Account(initial_balance=10000)
+    pos = Position(side="LONG", initial_price=100, maximum_size=1.0, total_splits=1, allocation_plan=[1.0])
+    account.add_position(pos)
+    assert pos in account.positions
+    account.remove_position(pos)
+    assert pos not in account.positions
+
+def test_conversion_functions():
+    account = Account(initial_balance=10000)
+    # convert a portion to stablecoin and then back to spot
+    converted = account.convert_to_stablecoin(1000)
+    assert account.stablecoin_balance == converted
+    new_spot = account.convert_to_spot(converted)
+    # 약간의 수수료 손실이 있을 수 있음
+    assert new_spot < converted
+
+[tests/core/test_core_position.py]
+# tests/core/test_core_position.py
+import pytest
+from core.position import Position
+
+def test_add_execution_and_totals():
+    pos = Position(side="LONG", initial_price=100, maximum_size=1.0, total_splits=1, allocation_plan=[1.0])
+    pos.add_execution(entry_price=100, size=1.0, entry_time="2023-01-01")
+    assert pos.get_total_size() == 1.0
+    avg_price = pos.get_average_entry_price()
+    assert avg_price == 100
+
+def test_partial_close_execution():
+    pos = Position(side="LONG", initial_price=100, maximum_size=1.0, total_splits=1, allocation_plan=[1.0])
+    pos.add_execution(entry_price=100, size=1.0, entry_time="2023-01-01")
+    closed_qty = pos.partial_close_execution(0, 0.5)
+    assert closed_qty == 0.5
+    # 남은 수량이 0.5여야 함.
+    remaining = pos.get_total_size()
+    assert pytest.approx(remaining, rel=1e-3) == 0.5
+
+[tests/ensemble/test_ensemble.py]
+# tests/ensemble/test_ensemble.py
+import pytest
+import pandas as pd
+from trading.ensemble import Ensemble
+
+@pytest.fixture
+def dummy_data():
+    # 최소한의 컬럼을 가진 간단한 데이터프레임 생성
+    dates = pd.date_range("2023-01-01", periods=10, freq="h")
+    df = pd.DataFrame({
+        "open": [100]*10,
+        "close": [101]*10,
+        "high": [102]*10,
+        "low": [99]*10,
+        "sma": [100.5]*10,
+        "rsi": [30]*10,
+        "bb_lband": [99]*10
+    }, index=dates)
+    return df
+
+@pytest.fixture
+def dummy_weekly_data():
+    dates = pd.date_range("2023-01-01", periods=2, freq="W-MON")
+    df = pd.DataFrame({
+        "close": [101, 103],
+        "high": [102, 104],
+        "low": [99, 100],
+        "weekly_momentum": [0.6, 0.6]
+    }, index=dates)
+    return df
+
+def test_get_final_signal(dummy_data, dummy_weekly_data):
+    ens = Ensemble()
+    current_time = dummy_data.index[-1]
+    final_signal = ens.get_final_signal(market_regime="bullish", liquidity_info="high", data=dummy_data, current_time=current_time, data_weekly=dummy_weekly_data)
+    assert final_signal in ["enter_long", "exit_all", "hold"]
+
+[tests/logging/test_aggregating_handler.py]
+# tests/logging/test_aggregating_handler.py
+import logging
+import io
+from logs.logging_util import LoggingUtil
+from logs.aggregating_handler import AggregatingHandler  # AggregatingHandler를 명시적으로 추가
+
+def test_logging_summary_output():
+    # 메모리 내 로그 스트림 설정
+    log_stream = io.StringIO()
+    
+    test_logger = logging.getLogger("test_logging_summary")
+    test_logger.setLevel(logging.DEBUG)
+    
+    # 기존 핸들러 제거 후 새 스트림 핸들러 추가
+    for h in test_logger.handlers[:]:
+        test_logger.removeHandler(h)
+    
+    stream_handler = logging.StreamHandler(log_stream)
+    formatter = logging.Formatter('%(levelname)s:%(message)s')
+    stream_handler.setFormatter(formatter)
+    
+    # test_logger와 root logger 모두에 스트림 핸들러 추가
+    test_logger.addHandler(stream_handler)
+    root_logger = logging.getLogger()
+    root_logger.addHandler(stream_handler)
+    
+    # AggregatingHandler 추가 (테스트 시에 집계 로그를 생성하기 위함)
+    agg_handler = AggregatingHandler(level=logging.DEBUG)
+    test_logger.addHandler(agg_handler)
+    
+    # LoggingUtil 인스턴스 생성 후 테스트용 logger 주입
+    logging_util = LoggingUtil("test_logging_summary")
+    logging_util.logger = test_logger  # 테스트용 logger 주입
+    
+    # 임계치 전까지 이벤트 기록 (예: 2000회 미만)
+    for i in range(1999):
+        logging_util.log_event(f"Test event {i}")
+    # 2000번째 이벤트 – 이 시점에서 집계 로그가 찍혀야 함
+    logging_util.log_event("Test event 1999")
+    
+    # AggregatingHandler의 flush를 호출하여 집계 로그를 강제로 출력
+    agg_handler.flush_aggregation_summary()
+    
+    stream_handler.flush()
+    output = log_stream.getvalue()
+    
+    # 테스트 후 root logger에서 스트림 핸들러 제거 (선택 사항)
+    root_logger.removeHandler(stream_handler)
+    
+    # 집계 메시지(예: "전체 누적 로그 집계:" 또는 "집계:" 문자열)가 출력에 포함되었는지 확인
+    assert "집계:" in output
+
+[tests/logging/test_exception_logging.py]
+# tests/logging/test_exception_logging.py
+import logging
+import pytest
+from trading.calculators import calculate_dynamic_stop_and_take, adjust_trailing_stop
+
+def test_exception_logging_dynamic_stop_and_take(caplog):
+    caplog.set_level(logging.ERROR)
+    # entry_price가 0인 경우 ValueError가 발생하도록 되어 있음.
+    with pytest.raises(ValueError):
+        calculate_dynamic_stop_and_take(0, 5, {"atr_multiplier": 2.0, "profit_ratio": 0.05})
+    assert "Invalid entry_price" in caplog.text
+
+def test_exception_logging_adjust_trailing_stop(caplog):
+    caplog.set_level(logging.ERROR)
+    # current_price 또는 highest_price가 0 이하인 경우 에러 발생
+    with pytest.raises(ValueError):
+        adjust_trailing_stop(0, -100, -100, 0.05)
+    assert "Invalid current_price" in caplog.text or "highest_price" in caplog.text
+
+[tests/market/test_regime_filter.py]
+# tests/market/test_regime_filter.py
+from markets.regime_filter import determine_market_regime, filter_regime
+
+def test_determine_market_regime_bullish():
+    price_data = {"current_price": 105, "previous_price": 100}
+    regime = determine_market_regime(price_data)
+    assert regime == "bullish"
+
+def test_determine_market_regime_bearish():
+    price_data = {"current_price": 95, "previous_price": 100}
+    regime = determine_market_regime(price_data)
+    assert regime == "bearish"
+
+def test_filter_regime():
+    price_data = {"current_price": 105, "previous_price": 100}
+    assert filter_regime(price_data, target_regime="bullish")
+    assert not filter_regime(price_data, target_regime="bearish")
+
+[tests/market/test_regime_model.py]
+# tests/market/test_regime_model.py
+import pandas as pd
+import numpy as np
+from markets.regime_model import MarketRegimeHMM
+
+def test_hmm_training_with_sufficient_samples():
+    # 최소 50개 이상의 샘플을 갖는 데이터프레임 생성 (여기서는 60개)
+    dates = pd.date_range(start='2020-01-01', periods=60, freq='D')
+    df = pd.DataFrame({
+        'feature1': np.random.randn(60),
+        'feature2': np.random.randn(60)
+    }, index=dates)
+    hmm_model = MarketRegimeHMM(n_components=3)
+    hmm_model.train(df, feature_columns=['feature1', 'feature2'])
+    # 충분한 샘플이 있어 학습이 완료되어야 함
+    assert hmm_model.trained is True
+    assert hmm_model.last_train_time is not None
+
+def test_hmm_training_insufficient_samples():
+    # 샘플 수가 50개 미만인 데이터프레임 생성 (여기서는 30개)
+    dates = pd.date_range(start='2020-01-01', periods=30, freq='D')
+    df = pd.DataFrame({
+        'feature1': np.random.randn(30),
+        'feature2': np.random.randn(30)
+    }, index=dates)
+    hmm_model = MarketRegimeHMM(n_components=3)
+    hmm_model.train(df, feature_columns=['feature1', 'feature2'])
+    # 샘플 수 부족으로 학습이 진행되지 않아야 함
+    assert hmm_model.trained is False
+
+[tests/optimizer/test_optimizer.py]
+# tests/optimizer/test_optimizer.py
+from strategies.optimizer import DynamicParameterOptimizer
+
+def test_optimizer_returns_trial():
+    optimizer = DynamicParameterOptimizer(n_trials=2)
+    best_trial = optimizer.optimize()
+    assert best_trial is not None
+    assert isinstance(best_trial.params, dict)
+
+[tests/optimizer/test_param_analysis.py]
+# tests/optimizer/test_param_analysis.py
+import numpy as np
+from strategies.param_analysis import run_sensitivity_analysis
+
+def test_sensitivity_analysis():
+    param_settings = {
+        "profit_ratio": np.linspace(0.07, 0.09, 3),
+        "atr_multiplier": np.linspace(2.0, 2.2, 3)
+    }
+    results = run_sensitivity_analysis(
+        param_settings,
+        assets=["BTC/USDT"],
+        short_tf="4h",
+        long_tf="1d",
+        start_date="2023-01-01",
+        end_date="2023-01-10",
+        periods=[("2023-01-01", "2023-01-10")]
+    )
+    assert isinstance(results, dict)
+
+[tests/optimizer/test_performance_report.py]
+# tests/optimizer/test_performance_report.py
+import io
+import logging
+from logs.final_report import generate_final_report
+
+def test_final_report_output():
+    sample_performance = {
+        "overall": {
+            "roi": 1.5,
+            "cumulative_return": -0.015,
+            "total_pnl": -150.0,
+            "trade_count": 10,
+            "annualized_return": 0.0,
+            "annualized_volatility": 0.0,
+            "sharpe_ratio": 0.0,
+            "sortino_ratio": 0.0,
+            "calmar_ratio": 0.0,
+            "max_drawdown": 0.0,
+            "win_rate": 0.0,
+            "avg_win": 0.0,
+            "avg_loss": 0.0,
+            "profit_factor": 0.0,
+            "trades_per_year": 0.0,
+            "max_consecutive_wins": 0,
+            "max_consecutive_losses": 0
+        },
+        "monthly": {
+            "2023-01": {"roi": 1.8, "trade_count": 5},
+            "2023-02": {"roi": 2.2, "trade_count": 7},
+            "2023-03": {"roi": 1.0, "trade_count": 4},
+        },
+        "weekly": {
+            "weekly_roi": 0.0,
+            "weekly_max_drawdown": 0.0
+        }
+    }
+    
+    log_stream = io.StringIO()
+    logger = logging.getLogger("logs.final_report")
+    stream_handler = logging.StreamHandler(log_stream)
+    stream_handler.setLevel(logging.DEBUG)
+    formatter = logging.Formatter('%(message)s')
+    stream_handler.setFormatter(formatter)
+    logger.addHandler(stream_handler)
+    
+    generate_final_report(sample_performance)
+    
+    logger.removeHandler(stream_handler)
+    output = log_stream.getvalue()
+    # 핵심 지표들이 출력되는지 확인
+    assert "ROI" in output
+    assert "Trade Count" in output or "거래 횟수" in output
+    for month in sample_performance["monthly"]:
+        assert month in output
+
+[tests/strategies/test_base_strategy.py]
+# tests/strategies/test_base_strategy.py
+from strategies.base_strategy import BaseStrategy
+
+class DummyStrategy(BaseStrategy):
+    def get_signal(self, data, current_time, **kwargs):
+        return "dummy_signal"
+
+def test_dummy_strategy():
+    strat = DummyStrategy()
+    # data와 current_time은 dummy 값 사용
+    signal = strat.get_signal({}, "2023-01-01")
+    assert signal == "dummy_signal"
+
+[tests/strategies/test_indicators.py]
+# tests/strategies/test_indicators.py
+import pytest
+import pandas as pd
+import numpy as np
+from trading.indicators import compute_sma, compute_macd, compute_rsi, compute_bollinger_bands
+
+@pytest.fixture
+def sample_data():
+    dates = pd.date_range("2023-01-01", periods=30, freq="D")
+    df = pd.DataFrame({
+        "close": np.linspace(100, 130, 30),
+        "high": np.linspace(101, 131, 30),
+        "low": np.linspace(99, 129, 30),
+        "open": np.linspace(100, 130, 30),
+        "volume": np.random.randint(1000, 5000, 30)
+    }, index=dates)
+    return df
+
+def test_compute_sma(sample_data):
+    df = compute_sma(sample_data.copy(), period=5, output_col="sma_test")
+    assert "sma_test" in df.columns
+
+def test_compute_macd(sample_data):
+    df = compute_macd(sample_data.copy(), slow_period=26, fast_period=12, signal_period=9, prefix="macd_")
+    for col in ["macd_macd", "macd_signal", "macd_diff"]:
+        assert col in df.columns
+
+def test_compute_rsi(sample_data):
+    df = compute_rsi(sample_data.copy(), period=14, output_col="rsi_test")
+    assert "rsi_test" in df.columns
+
+def test_compute_bollinger_bands(sample_data):
+    df = compute_bollinger_bands(sample_data.copy(), period=20, std_multiplier=2.0, prefix="bb_")
+    for col in ["bb_mavg", "bb_hband", "bb_lband", "bb_pband", "bb_wband", "bb_hband_ind", "bb_lband_ind"]:
+        assert col in df.columns
+
+[tests/strategies/test_strategies.py]
+# tests/strategies/test_strategies.py
+import pandas as pd
+import pytest
+from strategies.trading_strategies import (
+    SelectStrategy, TrendFollowingStrategy, BreakoutStrategy,
+    CounterTrendStrategy, HighFrequencyStrategy,
+    WeeklyBreakoutStrategy, WeeklyMomentumStrategy,
+    TradingStrategies
+)
+
+@pytest.fixture
+def sample_data():
+    # 간단한 테스트용 일별 데이터프레임
+    dates = pd.date_range(start="2023-01-01", periods=5, freq="D")
+    data = pd.DataFrame({
+        "open": [100, 102, 103, 104, 105],
+        "high": [105, 107, 108, 109, 110],
+        "low": [95, 97, 98, 99, 100],
+        "close": [102, 104, 103, 107, 108],
+        "sma": [100, 101, 102, 103, 104],
+        "rsi": [30, 35, 40, 25, 45],
+        "bb_lband": [98, 99, 100, 101, 102],
+    }, index=dates)
+    return data
+
+@pytest.fixture
+def sample_weekly_data():
+    # 간단한 주간 데이터프레임 (주간 저점/고점, 모멘텀 포함)
+    dates = pd.date_range(start="2023-01-01", periods=3, freq="W-MON")
+    data = pd.DataFrame({
+        "open": [100, 110, 120],
+        "high": [105, 115, 125],
+        "low": [95, 105, 115],
+        "close": [102, 112, 122],
+        "weekly_momentum": [0.5, 0.6, 0.4],
+    }, index=dates)
+    return data
+
+def test_select_strategy(sample_data):
+    strat = SelectStrategy()
+    current_time = sample_data.index[-1]
+    signal = strat.get_signal(sample_data, current_time)
+    assert signal in ["enter_long", "hold"]
+
+def test_trend_following_strategy(sample_data):
+    strat = TrendFollowingStrategy()
+    current_time = sample_data.index[-1]
+    signal = strat.get_signal(sample_data, current_time)
+    assert signal in ["enter_long", "hold"]
+
+def test_breakout_strategy(sample_data):
+    strat = BreakoutStrategy(window=3)
+    current_time = sample_data.index[-1]
+    signal = strat.get_signal(sample_data, current_time)
+    assert signal in ["enter_long", "hold"]
+
+def test_counter_trend_strategy(sample_data):
+    strat = CounterTrendStrategy()
+    current_time = sample_data.index[-1]
+    # RSI 낮은 경우 -> 진입 신호
+    sample_data.loc[current_time, 'rsi'] = 25
+    signal = strat.get_signal(sample_data, current_time)
+    assert signal == "enter_long"
+    # RSI 높은 경우 -> 청산 신호
+    sample_data.loc[current_time, 'rsi'] = 75
+    signal = strat.get_signal(sample_data, current_time)
+    assert signal == "exit_all"
+
+def test_high_frequency_strategy():
+    # 2분 단위의 간단한 데이터 생성
+    dates = pd.date_range(start="2023-01-01", periods=2, freq="min")
+    data = pd.DataFrame({"close": [100, 100.5]}, index=dates)
+    strat = HighFrequencyStrategy()
+    signal = strat.get_signal(data, data.index[-1])
+    assert signal in ["enter_long", "exit_all", "hold"]
+
+def test_weekly_breakout_strategy(sample_weekly_data):
+    strat = WeeklyBreakoutStrategy()
+    current_time = sample_weekly_data.index[-1]
+    # 주간 돌파 조건 테스트: 전 주의 고점 대비 1% 이상 상승 시 enter_long, 하락 시 exit_all, 아니면 hold
+    signal = strat.get_signal(sample_weekly_data, current_time, breakout_threshold=0.01)
+    assert signal in ["enter_long", "exit_all", "hold"]
+
+def test_weekly_momentum_strategy(sample_weekly_data):
+    strat = WeeklyMomentumStrategy()
+    current_time = sample_weekly_data.index[-1]
+    # 주간 모멘텀 조건 테스트: 모멘텀이 임계값 이상이면 enter_long, 이하이면 exit_all 또는 hold
+    signal = strat.get_signal(sample_weekly_data, current_time, momentum_threshold=0.5)
+    assert signal in ["enter_long", "exit_all", "hold"]
+
+def test_trading_strategies_ensemble(sample_data, sample_weekly_data):
+    ensemble = TradingStrategies()
+    current_time = sample_data.index[-1]
+    signal = ensemble.get_final_signal("bullish", "high", sample_data, current_time, data_weekly=sample_weekly_data)
+    assert signal in ["enter_long", "exit_all", "hold"]
+
+[tests/strategies/test_weekly_strategies.py]
+# tests/strategies/test_weekly_strategies.py
+import pandas as pd
+import numpy as np
+from strategies.trading_strategies import WeeklyBreakoutStrategy, WeeklyMomentumStrategy
+
+def create_weekly_data():
+    # 주간 데이터 생성을 위해, 주간 집계에 필요한 필드들을 포함하여 4주치 데이터 생성
+    dates = pd.date_range(start='2020-01-06', periods=4, freq='W-MON')
+    data = pd.DataFrame({
+        'open': np.linspace(100, 110, len(dates)),
+        'weekly_high': np.linspace(105, 115, len(dates)),
+        'weekly_low': np.linspace(95, 105, len(dates)),
+        'close': np.linspace(102, 112, len(dates)),
+        'volume': np.random.randint(1000, 2000, len(dates)),
+        'weekly_sma': np.linspace(100, 110, len(dates)),
+        'weekly_momentum': np.linspace(0.2, 1.0, len(dates)),
+        'weekly_volatility': np.linspace(0.01, 0.03, len(dates))
+    }, index=dates)
+    return data
+
+def test_weekly_breakout_signal():
+    data_weekly = create_weekly_data()
+    strategy = WeeklyBreakoutStrategy()
+    current_time = data_weekly.index[-1]
+    signal = strategy.get_signal(data_weekly, current_time, breakout_threshold=0.01)
+    assert signal in ['enter_long', 'exit_all', 'hold']
+
+def test_weekly_momentum_signal():
+    data_weekly = create_weekly_data()
+    strategy = WeeklyMomentumStrategy()
+    current_time = data_weekly.index[-1]
+    signal = strategy.get_signal(data_weekly, current_time, momentum_threshold=0.5)
+    assert signal in ['enter_long', 'exit_all', 'hold']
+
+[tests/trading/test_calculators.py]
+# tests/trading/test_calculators.py
+import pandas as pd
+import numpy as np
+import pytest
+from trading.calculators import (
+    calculate_atr,
+    calculate_dynamic_stop_and_take,
+    calculate_partial_exit_targets,
+    adjust_trailing_stop
+)
+
+def test_calculate_atr():
+    data = pd.DataFrame({
+        "high": np.linspace(110, 120, 15),
+        "low": np.linspace(100, 110, 15),
+        "close": np.linspace(105, 115, 15)
+    })
+    data = calculate_atr(data, period=14)
+    assert "atr" in data.columns
+
+def test_dynamic_stop_and_take():
+    entry_price = 100
+    atr = 5
+    risk_params = {"atr_multiplier": 2.0, "profit_ratio": 0.05, "volatility_multiplier": 1.0}
+    stop_loss, take_profit = calculate_dynamic_stop_and_take(entry_price, atr, risk_params)
+    assert stop_loss < entry_price
+    assert take_profit > entry_price
+
+def test_partial_exit_targets():
+    targets = calculate_partial_exit_targets(100, partial_exit_ratio=0.5, partial_profit_ratio=0.03, final_profit_ratio=0.06)
+    assert isinstance(targets, list)
+    assert len(targets) == 2
+
+def test_dynamic_stop_and_take_invalid_entry_price():
+    with pytest.raises(ValueError):
+        calculate_dynamic_stop_and_take(0, 5, {"atr_multiplier": 2.0, "profit_ratio": 0.05})
+
+def test_dynamic_stop_and_take_invalid_atr():
+    stop_loss, take_profit = calculate_dynamic_stop_and_take(100, 0, {"atr_multiplier": 2.0, "profit_ratio": 0.05})
+    assert stop_loss == 98.00, f"Expected stop_loss 98.00, got {stop_loss}"
+    assert take_profit == 105.00, f"Expected take_profit 105.00, got {take_profit}"
+
+def test_adjust_trailing_stop_extreme():
+    current_stop = 80
+    current_price = 120
+    highest_price = 130
+    trailing_percentage = 0.05
+    extreme_volatility = 10.0
+    new_stop = adjust_trailing_stop(current_stop, current_price, highest_price, trailing_percentage, volatility=extreme_volatility)
+    assert new_stop < current_price
+
+def test_calculate_partial_exit_targets_invalid():
+    with pytest.raises(ValueError):
+        calculate_partial_exit_targets(0, partial_exit_ratio=0.5, partial_profit_ratio=0.03, final_profit_ratio=0.06)
+
+def test_calculate_dynamic_stop_and_take_extreme_profit_ratio():
+    entry_price = 100
+    atr = 5
+    stop_loss, take_profit = calculate_dynamic_stop_and_take(entry_price, atr, {"atr_multiplier": 2.0, "profit_ratio": 1.5})
+    assert take_profit == pytest.approx(200, rel=1e-3)
+    assert stop_loss == pytest.approx(90, rel=1e-3)
+
+[tests/trading/test_risk_manager.py]
+# tests/trading/test_risk_manager.py
+import pytest
+from trading.risk_manager import RiskManager
+
+def test_compute_position_size():
+    rm = RiskManager()
+    size = rm.compute_position_size(
+        available_balance=10000,
+        risk_percentage=0.01,
+        entry_price=100,
+        stop_loss=90,
+        fee_rate=0.001
+    )
+    assert size >= 0
+
+def test_allocate_position_splits():
+    rm = RiskManager()
+    allocation = rm.allocate_position_splits(total_size=1.0, splits_count=3, allocation_mode="equal")
+    assert len(allocation) == 3
+    assert abs(sum(allocation) - 1.0) < 1e-6
+
+def test_compute_position_size_invalid_entry():
+    rm = RiskManager()
+    size = rm.compute_position_size(
+        available_balance=10000,
+        risk_percentage=0.01,
+        entry_price=0,
+        stop_loss=90,
+        fee_rate=0.001
+    )
+    assert size == 0.0
+
+def test_compute_position_size_invalid_stop_loss():
+    rm = RiskManager()
+    size = rm.compute_position_size(
+        available_balance=10000,
+        risk_percentage=0.01,
+        entry_price=100,
+        stop_loss=0,
+        fee_rate=0.001
+    )
+    assert size == 0.0
+
+def test_compute_position_size_extreme_volatility():
+    rm = RiskManager()
+    size = rm.compute_position_size(
+        available_balance=10000,
+        risk_percentage=0.02,
+        entry_price=100,
+        stop_loss=90,
+        fee_rate=0.001,
+        volatility=100
+    )
+    assert size < 0.01
+
+def test_compute_risk_parameters_invalid_regime():
+    rm = RiskManager()
+    with pytest.raises(ValueError):
+        rm.compute_risk_parameters_by_regime(
+            base_params={"risk_per_trade": 0.01, "atr_multiplier": 2.0, "profit_ratio": 0.05},
+            regime="invalid"
+        )
+
+def test_compute_risk_parameters_missing_liquidity():
+    rm = RiskManager()
+    with pytest.raises(ValueError):
+        rm.compute_risk_parameters_by_regime(
+            base_params={"risk_per_trade": 0.01, "atr_multiplier": 2.0, "profit_ratio": 0.05},
+            regime="sideways"
+        )
+
+[tests/trading/test_trade_executor.py]
+# tests/trading/test_trade_executor.py
+import pandas as pd
+import pytest
+from trading.trade_executor import TradeExecutor
+
+def test_compute_atr_via_trade_executor():
+    df = pd.DataFrame({
+        "high": [110, 115, 120],
+        "low": [100, 105, 110],
+        "close": [105, 110, 115]
+    })
+    df_atr = TradeExecutor.compute_atr(df, period=2)
+    assert "atr" in df_atr.columns
+
+def test_calculate_partial_exit_targets():
+    targets = TradeExecutor.calculate_partial_exit_targets(100, partial_exit_ratio=0.5, partial_profit_ratio=0.03, final_profit_ratio=0.06)
+    assert isinstance(targets, list)
+    assert len(targets) == 2
+
+def test_trade_executor_dynamic_stop_invalid_entry():
+    with pytest.raises(ValueError):
+        TradeExecutor.calculate_dynamic_stop_and_take(0, 5, {"atr_multiplier": 2.0, "profit_ratio": 0.05})
+
+def test_trade_executor_dynamic_stop_invalid_atr():
+    stop_loss, take_profit = TradeExecutor.calculate_dynamic_stop_and_take(100, 0, {"atr_multiplier": 2.0, "profit_ratio": 0.05})
+    assert stop_loss == 98.00, f"Expected stop_loss 98.00, got {stop_loss}"
+    assert take_profit == 105.00, f"Expected take_profit 105.00, got {take_profit}"
+
+def test_trade_executor_adjust_trailing_stop_extreme():
+    current_stop = 80
+    current_price = 120
+    highest_price = 130
+    trailing_percentage = 0.05
+    new_stop = TradeExecutor.adjust_trailing_stop(current_stop, current_price, highest_price, trailing_percentage)
+    assert new_stop < current_price
+
+def test_trade_executor_partial_exit_targets_invalid():
+    with pytest.raises(ValueError):
+        TradeExecutor.calculate_partial_exit_targets(0, partial_exit_ratio=0.5, partial_profit_ratio=0.03, final_profit_ratio=0.06)
+
+[tests/conftest.py]
+# tests/conftest.py
+import os
+import glob
+import logging
+import pytest
+from logs.logger_config import initialize_root_logger, shutdown_logging
+
+@pytest.fixture(autouse=True, scope="session")
+def manage_logs():
+    log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "logs")
+    log_pattern = os.path.join(log_dir, "*.log")
+    log_files = glob.glob(log_pattern)
+    for log_file in log_files:
+        try:
+            os.remove(log_file)
+            print(f"Deleted log file: {log_file}")
+        except Exception as e:
+            print(f"Failed to delete {log_file}: {e}")
+    
+    logging.shutdown()
+    initialize_root_logger()
+    
+    yield
+    
+    shutdown_logging()

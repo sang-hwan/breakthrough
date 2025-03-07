@@ -4,10 +4,6 @@ from logs.logger_config import setup_logger
 logger = setup_logger(__name__)
 
 def generate_final_report(performance_data, symbol=None):
-    """
-    종목별 백테스트 최종 성과 리포트를 생성합니다.
-    (symbol이 전달되면 헤더에 포함)
-    """
     overall = performance_data.get("overall", {})
     report_lines = []
     header = f"=== FINAL BACKTEST PERFORMANCE REPORT for {symbol} ===" if symbol else "=== FINAL BACKTEST PERFORMANCE REPORT ==="
@@ -51,10 +47,6 @@ def generate_final_report(performance_data, symbol=None):
     logger.info(report_str)
 
 def generate_parameter_sensitivity_report(param_name, results):
-    """
-    최종 파라미터 민감도 리포트를 생성합니다.
-    (다중 파라미터 분석 시, 각 조합에 대한 평균/표준편차/최소/최대 지표를 출력)
-    """
     report_lines = []
     report_lines.append("=== FINAL PARAMETER SENSITIVITY REPORT ===")
     
@@ -85,10 +77,6 @@ def generate_parameter_sensitivity_report(param_name, results):
     logger.info(report_str)
 
 def generate_weekly_signal_report(weekly_signal_counts):
-    """
-    주간 신호 발생 건수를 요약하는 리포트를 생성합니다.
-    weekly_signal_counts는 (logger_name, filename, funcName)를 key로 하는 딕셔너리입니다.
-    """
     report_lines = []
     report_lines.append("=== WEEKLY SIGNAL REPORT ===")
     for (logger_name, filename, funcname), count in weekly_signal_counts.items():
