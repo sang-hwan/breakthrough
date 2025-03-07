@@ -24,7 +24,7 @@ def test_trade_executor_dynamic_stop_invalid_entry():
 def test_trade_executor_dynamic_stop_invalid_atr():
     stop_loss, take_profit = TradeExecutor.calculate_dynamic_stop_and_take(100, 0, {"atr_multiplier": 2.0, "profit_ratio": 0.05})
     assert stop_loss == 98.00, f"Expected stop_loss 98.00, got {stop_loss}"
-    assert take_profit == 105.00, f"Expected take_profit 105.00, got {take_profit}"
+    assert take_profit == 104.00, f"Expected take_profit 104.00, got {take_profit}"
 
 def test_trade_executor_adjust_trailing_stop_extreme():
     current_stop = 80

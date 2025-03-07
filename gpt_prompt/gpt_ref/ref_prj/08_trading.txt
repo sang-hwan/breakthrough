@@ -515,13 +515,24 @@ class RiskManager:
         high_profit_ratio_multiplier: float = 1.0,
         low_profit_ratio_multiplier: float = 0.9
     ) -> dict:
-        # regime이 문자열이 아니라면 숫자형 매핑을 시도합니다.
+        # regime이 문자열이 아니라면 숫자형 매핑 시도
         if not isinstance(regime, str):
             try:
-                regime = {0.0: "bullish", 1.0: "bearish", 2.0: "sideways"}.get(float(regime), "unknown")
+                regime = {0.0: "bullish", 1.0: "bearish", 2.0: "sideways"}.get(float(regime))
             except Exception:
                 regime = "unknown"
         regime = regime.lower()
+        # 수정: 유효하지 않은 레짐인 경우 예외 발생
+        if regime not in ["bullish", "bearish", "sideways"]:
+            self.logger.error(f"Invalid market regime: {regime}")
+            raise ValueError(f"Invalid market regime: {regime}")
+        
+        # sideways인 경우 liquidity 정보 확인
+        if regime == "sideways":
+            if liquidity is None:
+                self.logger.error("Liquidity info required for sideways regime")
+                raise ValueError("Liquidity info required for sideways regime")
+        
         risk_params = {}
         try:
             if regime == "bullish":
@@ -533,11 +544,7 @@ class RiskManager:
                 risk_params['atr_multiplier'] = base_params['atr_multiplier'] * bearish_atr_multiplier_factor
                 risk_params['profit_ratio'] = base_params['profit_ratio'] * bearish_profit_ratio_multiplier
             elif regime == "sideways":
-                if liquidity is None:
-                    self.logger.error("Liquidity info required for sideways regime; using default risk parameters.", exc_info=True)
-                    return base_params
-                liquidity = liquidity.lower()
-                if liquidity == "high":
+                if liquidity.lower() == "high":
                     risk_params['risk_per_trade'] = base_params['risk_per_trade'] * high_liquidity_risk_multiplier
                     risk_params['atr_multiplier'] = base_params['atr_multiplier'] * high_atr_multiplier_factor
                     risk_params['profit_ratio'] = base_params['profit_ratio'] * high_profit_ratio_multiplier

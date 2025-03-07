@@ -2,6 +2,7 @@
 import pytest
 from backtesting.backtester import Backtester
 from config.config_manager import ConfigManager
+import numpy as np
 import pandas as pd
 
 @pytest.fixture
@@ -9,10 +10,10 @@ def sample_ohlcv_data():
     # 간단한 테스트용 OHLCV 데이터 생성 (예: 60일치 데이터)
     dates = pd.date_range(start="2022-01-01", periods=60, freq="D")
     df = pd.DataFrame({
-        "open": pd.np.linspace(100, 160, 60),
-        "high": pd.np.linspace(105, 165, 60),
-        "low": pd.np.linspace(95, 155, 60),
-        "close": pd.np.linspace(100, 160, 60),
+        "open": np.linspace(100, 160, 60),   # pd.np.linspace → np.linspace
+        "high": np.linspace(105, 165, 60),
+        "low": np.linspace(95, 155, 60),
+        "close": np.linspace(100, 160, 60),
         "volume": [1000] * 60
     }, index=dates)
     return df
