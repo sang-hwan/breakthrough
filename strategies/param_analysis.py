@@ -45,12 +45,15 @@ def run_sensitivity_analysis(param_settings,
                     for name, val in combo_key:
                         dynamic_params[name] = val
                     trades, _ = bt.run_backtest_pipeline(dynamic_params=dynamic_params)
+                    logger.info(f"{asset} {s_date}~{e_date}: {len(trades)} trades executed.")
                     if trades:
+                        roi = sum(trade.get("pnl", 0) for trade in trades) / 10000 * 100
+                        logger.info(f"{asset} {s_date}~{e_date}: ROI={roi:.2f}%")
                         from backtesting.performance import compute_performance
                         perf = compute_performance(trades)
                         run_metrics.append(perf)
                     else:
-                        logger.warning(f"No trades executed for {asset} during period {s_date} to {e_date} with combination {combo_key}.")
+                        logger.warning(f"{asset} {s_date}~{e_date}: No trades executed.")
                 except Exception as e:
                     logger.error(f"Error during sensitivity analysis for {asset} with combination {combo_key}: {e}", exc_info=True)
                     continue

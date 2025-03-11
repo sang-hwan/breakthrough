@@ -89,7 +89,7 @@ class DynamicParameterOptimizer:
                         roi_holdout = sum(trade["pnl"] for trade in trades_holdout) / 10000 * 100
 
                         overfit_penalty = abs(roi_train - roi_test)
-                        holdout_penalty = 0 if roi_holdout >= 2.0 else (2.0 - roi_holdout) * 10
+                        holdout_penalty = 0 if roi_holdout >= 2.0 else (2.0 - roi_holdout) * 20
                         score = -roi_test + overfit_penalty + holdout_penalty
                         total_score += score
                         num_evaluations += 1
