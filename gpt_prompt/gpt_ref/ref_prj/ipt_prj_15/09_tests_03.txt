@@ -1,0 +1,396 @@
+[tests/logging/test_aggregating_handler.py]
+# tests/logging/test_aggregating_handler.py
+# 이 파일은 AggregatingHandler와 LoggingUtil을 사용하여 로그 집계 기능이 올바르게 동작하는지 테스트합니다.
+# AggregatingHandler는 로그 이벤트들을 집계하여 일정 임계치에 도달했을 때 요약 로그를 출력합니다.
+
+import logging
+import io
+from logs.logging_util import LoggingUtil
+from logs.aggregating_handler import AggregatingHandler  # AggregatingHandler 클래스를 명시적으로 가져옴
+
+def test_logging_summary_output():
+    """
+    로그 집계 요약 출력 기능 테스트
+
+    목적:
+      - 다수의 로그 이벤트를 기록한 후 임계치(여기서는 2000번째 이벤트)에 도달하면
+        AggregatingHandler가 집계 로그를 출력하는지 확인합니다.
+
+    Parameters:
+      없음
+
+    Returns:
+      없음 (assert를 통해 집계 메시지 출력 여부 검증)
+    """
+    # 메모리 내 로그 스트림 생성: 로그 결과를 문자열로 저장
+    log_stream = io.StringIO()
+    
+    # 테스트 전용 로거 생성 (이름: test_logging_summary)
+    test_logger = logging.getLogger("test_logging_summary")
+    test_logger.setLevel(logging.DEBUG)
+    
+    # 기존 핸들러를 모두 제거하여 깨끗한 상태로 만듦
+    for h in test_logger.handlers[:]:
+        test_logger.removeHandler(h)
+    
+    # StringIO 스트림을 출력 대상으로 하는 핸들러 생성 및 포맷 지정
+    stream_handler = logging.StreamHandler(log_stream)
+    formatter = logging.Formatter('%(levelname)s:%(message)s')
+    stream_handler.setFormatter(formatter)
+    
+    # test_logger와 root logger에 스트림 핸들러 추가 (모든 로그가 동일 스트림으로 출력되도록 함)
+    test_logger.addHandler(stream_handler)
+    root_logger = logging.getLogger()
+    root_logger.addHandler(stream_handler)
+    
+    # AggregatingHandler 인스턴스 생성: DEBUG 레벨 이상의 로그를 집계하도록 설정
+    agg_handler = AggregatingHandler(level=logging.DEBUG)
+    test_logger.addHandler(agg_handler)
+    
+    # LoggingUtil 인스턴스 생성 및 테스트용 로거 주입
+    logging_util = LoggingUtil("test_logging_summary")
+    logging_util.logger = test_logger  # 테스트용 로거 주입으로 로그 기록 제어
+    
+    # 임계치(2000 이벤트) 미만까지 이벤트 로그 기록
+    for i in range(1999):
+        logging_util.log_event(f"Test event {i}")
+    # 2000번째 이벤트 기록 – 이 시점에서 AggregatingHandler가 집계 로그를 생성해야 함
+    logging_util.log_event("Test event 1999")
+    
+    # 집계된 로그를 강제로 출력하도록 flush 호출
+    agg_handler.flush_aggregation_summary()
+    
+    stream_handler.flush()
+    output = log_stream.getvalue()
+    
+    # 테스트 후, root logger에서 스트림 핸들러 제거 (테스트 후 정리)
+    root_logger.removeHandler(stream_handler)
+    
+    # 출력된 로그에 집계 메시지(예: "집계:" 문자열)가 포함되어 있는지 검증
+    assert "집계:" in output
+
+[tests/logging/test_exception_logging.py]
+# tests/logging/test_exception_logging.py
+# 이 파일은 calculate_dynamic_stop_and_take 및 adjust_trailing_stop 함수에서
+# 잘못된 입력에 대해 예외가 발생하고 로그에 에러 메시지가 기록되는지 테스트합니다.
+
+import logging
+import pytest
+from trading.calculators import calculate_dynamic_stop_and_take, adjust_trailing_stop
+
+def test_exception_logging_dynamic_stop_and_take(caplog):
+    """
+    calculate_dynamic_stop_and_take 함수의 예외 로깅 테스트
+
+    목적:
+      - entry_price가 0인 경우 함수가 ValueError를 발생시키고,
+        "Invalid entry_price"라는 에러 메시지가 로그에 남는지 확인.
+
+    Parameters:
+      caplog: pytest의 캡처된 로그 객체 (로그 내용 확인에 사용)
+
+    Returns:
+      없음 (assert 구문으로 예외 및 로그 메시지 검증)
+    """
+    # ERROR 레벨 이상의 로그를 캡처하도록 설정
+    caplog.set_level(logging.ERROR)
+    # entry_price가 0인 경우 ValueError가 발생함을 테스트
+    with pytest.raises(ValueError):
+        calculate_dynamic_stop_and_take(0, 5, {"atr_multiplier": 2.0, "profit_ratio": 0.05})
+    # 로그에 'Invalid entry_price' 메시지가 포함되어 있는지 확인
+    assert "Invalid entry_price" in caplog.text
+
+def test_exception_logging_adjust_trailing_stop(caplog):
+    """
+    adjust_trailing_stop 함수의 예외 로깅 테스트
+
+    목적:
+      - current_price 또는 highest_price가 0 이하인 경우 함수가 ValueError를 발생시키고,
+        관련 에러 메시지가 로그에 기록되는지 확인.
+
+    Parameters:
+      caplog: pytest의 캡처된 로그 객체
+
+    Returns:
+      없음 (assert 구문으로 예외 발생 및 로그 메시지 검증)
+    """
+    caplog.set_level(logging.ERROR)
+    # 잘못된 가격 입력으로 인해 ValueError 발생 확인
+    with pytest.raises(ValueError):
+        adjust_trailing_stop(0, -100, -100, 0.05)
+    # 로그 메시지에 "Invalid current_price" 또는 "highest_price" 관련 문구가 있는지 확인
+    assert "Invalid current_price" in caplog.text or "highest_price" in caplog.text
+
+[tests/market/test_regime_filter.py]
+# tests/market/test_regime_filter.py
+# 이 파일은 시장의 가격 데이터를 기반으로 시장 상황(레짐)을 판단하는 함수들
+# determine_market_regime과 filter_regime의 올바른 동작을 검증하기 위한 테스트를 포함합니다.
+
+from markets.regime_filter import determine_market_regime, filter_regime
+
+def test_determine_market_regime_bullish():
+    """
+    상승장(bullish) 상황 판단 함수 테스트
+
+    목적:
+      - 현재 가격이 이전 가격보다 높을 경우 시장을 'bullish'로 판단하는지 확인.
+    
+    Parameters:
+      없음
+
+    Returns:
+      없음 (assert 구문으로 결과 검증)
+    """
+    # 테스트 데이터: 현재 가격이 105, 이전 가격이 100
+    price_data = {"current_price": 105, "previous_price": 100}
+    regime = determine_market_regime(price_data)
+    # 상승장이 예상되므로 'bullish'이어야 함
+    assert regime == "bullish"
+
+def test_determine_market_regime_bearish():
+    """
+    하락장(bearish) 상황 판단 함수 테스트
+
+    목적:
+      - 현재 가격이 이전 가격보다 낮을 경우 시장을 'bearish'로 판단하는지 확인.
+    
+    Parameters:
+      없음
+
+    Returns:
+      없음 (assert 구문으로 결과 검증)
+    """
+    # 테스트 데이터: 현재 가격이 95, 이전 가격이 100
+    price_data = {"current_price": 95, "previous_price": 100}
+    regime = determine_market_regime(price_data)
+    # 하락장이 예상되므로 'bearish'이어야 함
+    assert regime == "bearish"
+
+def test_filter_regime():
+    """
+    filter_regime 함수 테스트
+
+    목적:
+      - 주어진 가격 데이터를 대상으로 특정 시장 레짐(target_regime)과의 일치 여부를 판별.
+    
+    Parameters:
+      없음
+
+    Returns:
+      없음 (assert 구문으로 결과 검증)
+    """
+    price_data = {"current_price": 105, "previous_price": 100}
+    # bullish 조건에 대해 True 반환해야 함
+    assert filter_regime(price_data, target_regime="bullish")
+    # bearish 조건에 대해 False 반환해야 함
+    assert not filter_regime(price_data, target_regime="bearish")
+
+[tests/market/test_regime_model.py]
+# tests/market/test_regime_model.py
+# 이 파일은 MarketRegimeHMM 모델의 학습 기능을 테스트합니다.
+# HMM (Hidden Markov Model)을 사용하여 시장 레짐을 학습하는 기능이 샘플 수에 따라 올바르게 동작하는지 검증합니다.
+
+import pandas as pd
+import numpy as np
+from markets.regime_model import MarketRegimeHMM
+
+def test_hmm_training_with_sufficient_samples():
+    """
+    충분한 샘플(50개 이상)을 가진 데이터로 HMM 학습 테스트
+
+    목적:
+      - 충분한 데이터(여기서는 60일치 데이터)를 사용했을 때, HMM 모델이 정상적으로 학습되고
+        학습 완료 상태(trained)가 True가 되는지 확인.
+    
+    Parameters:
+      없음
+
+    Returns:
+      없음 (assert 구문으로 학습 완료 여부 검증)
+    """
+    # 2020-01-01부터 시작하여 60일치 날짜 생성
+    dates = pd.date_range(start='2020-01-01', periods=60, freq='D')
+    # 2개의 랜덤 피처(feature1, feature2)를 포함하는 데이터프레임 생성
+    df = pd.DataFrame({
+        'feature1': np.random.randn(60),
+        'feature2': np.random.randn(60)
+    }, index=dates)
+    # HMM 모델 인스턴스 생성 (3개의 상태 구성)
+    hmm_model = MarketRegimeHMM(n_components=3)
+    # feature1, feature2 컬럼을 사용하여 모델 학습
+    hmm_model.train(df, feature_columns=['feature1', 'feature2'])
+    # 충분한 샘플로 인해 학습이 성공적으로 완료되어야 함
+    assert hmm_model.trained is True
+    assert hmm_model.last_train_time is not None
+
+def test_hmm_training_insufficient_samples():
+    """
+    샘플 수가 부족할 때 HMM 학습 테스트
+
+    목적:
+      - 50개 미만(여기서는 30일치)의 샘플을 사용하면, HMM 모델이 학습을 진행하지 않고
+        학습 완료 상태(trained)가 False가 되는지 확인.
+    
+    Parameters:
+      없음
+
+    Returns:
+      없음 (assert 구문으로 학습 미진행 여부 검증)
+    """
+    # 2020-01-01부터 시작하여 30일치 날짜 생성
+    dates = pd.date_range(start='2020-01-01', periods=30, freq='D')
+    df = pd.DataFrame({
+        'feature1': np.random.randn(30),
+        'feature2': np.random.randn(30)
+    }, index=dates)
+    # HMM 모델 인스턴스 생성 (3개의 상태 구성)
+    hmm_model = MarketRegimeHMM(n_components=3)
+    # 학습 시도: 데이터 샘플이 부족하여 학습이 진행되지 않아야 함
+    hmm_model.train(df, feature_columns=['feature1', 'feature2'])
+    assert hmm_model.trained is False
+
+[tests/optimizer/test_optimizer.py]
+# tests/optimizer/test_optimizer.py
+# 이 파일은 DynamicParameterOptimizer를 사용하여 최적의 파라미터 탐색 기능을 테스트합니다.
+# 최적화 과정에서 반환되는 trial 객체가 올바른 형식(dict 형태의 params 포함)인지 검증합니다.
+
+from strategies.optimizer import DynamicParameterOptimizer
+
+def test_optimizer_returns_trial():
+    """
+    DynamicParameterOptimizer의 최적화 결과(trial) 반환 테스트
+
+    목적:
+      - 주어진 n_trials(여기서는 2회)로 최적화 실행 시, 반환되는 최적 trial 객체가
+        None이 아니며, trial 객체 내부에 params가 dict 형태로 존재하는지 확인.
+    
+    Parameters:
+      없음
+
+    Returns:
+      없음 (assert 구문으로 반환 객체의 유효성 검증)
+    """
+    # 최적화 인스턴스 생성: 2번의 trial 실행
+    optimizer = DynamicParameterOptimizer(n_trials=2)
+    best_trial = optimizer.optimize()
+    # 반환된 trial 객체가 None이 아니고, params 속성이 dict임을 검증
+    assert best_trial is not None
+    assert isinstance(best_trial.params, dict)
+
+[tests/optimizer/test_param_analysis.py]
+# tests/optimizer/test_param_analysis.py
+# 이 파일은 run_sensitivity_analysis 함수를 테스트합니다.
+# 파라미터 범위를 설정하여 민감도 분석을 실행하고, 결과가 dict 타입으로 반환되는지 확인합니다.
+
+import numpy as np
+from strategies.param_analysis import run_sensitivity_analysis
+
+def test_sensitivity_analysis():
+    """
+    민감도 분석 함수(run_sensitivity_analysis) 테스트
+
+    목적:
+      - profit_ratio와 atr_multiplier에 대해 범위 값을 설정한 후,
+        민감도 분석을 실행하여 결과가 dict 형식으로 반환되는지 검증.
+    
+    Parameters:
+      없음
+
+    Returns:
+      없음 (assert 구문으로 반환된 결과 타입 검증)
+    """
+    # profit_ratio와 atr_multiplier 파라미터에 대해 3개씩 선형 공간의 값 생성
+    param_settings = {
+        "profit_ratio": np.linspace(0.07, 0.09, 3),
+        "atr_multiplier": np.linspace(2.0, 2.2, 3)
+    }
+    # run_sensitivity_analysis 함수 호출: 지정한 자산, 타임프레임, 날짜 범위, 기간 정보 사용
+    results = run_sensitivity_analysis(
+        param_settings,
+        assets=["BTC/USDT"],
+        short_tf="4h",
+        long_tf="1d",
+        start_date="2023-01-01",
+        end_date="2023-01-10",
+        periods=[("2023-01-01", "2023-01-10")]
+    )
+    # 반환 결과가 dict 타입인지 검증
+    assert isinstance(results, dict)
+
+[tests/optimizer/test_performance_report.py]
+# tests/optimizer/test_performance_report.py
+# 이 파일은 generate_final_report 함수를 사용하여
+# 최종 성과 보고서에 주요 성과 지표(ROI, 거래 횟수 등)가 올바르게 출력되는지 테스트합니다.
+
+import io
+import logging
+from logs.final_report import generate_final_report
+
+def test_final_report_output():
+    """
+    최종 성과 보고서 출력 테스트
+
+    목적:
+      - 샘플 성과 데이터를 기반으로 generate_final_report 함수를 실행한 후,
+        로그 스트림에 ROI, Trade Count(또는 거래 횟수) 및 월별 지표들이 포함되어 있는지 확인.
+    
+    Parameters:
+      없음
+
+    Returns:
+      없음 (assert 구문을 통해 출력된 로그 내용 검증)
+    """
+    # 샘플 성과 데이터: 전체 성과(overall), 월별(monthly), 주별(weekly) 지표 포함
+    sample_performance = {
+        "overall": {
+            "roi": 1.5,
+            "cumulative_return": -0.015,
+            "total_pnl": -150.0,
+            "trade_count": 10,
+            "annualized_return": 0.0,
+            "annualized_volatility": 0.0,
+            "sharpe_ratio": 0.0,
+            "sortino_ratio": 0.0,
+            "calmar_ratio": 0.0,
+            "max_drawdown": 0.0,
+            "win_rate": 0.0,
+            "avg_win": 0.0,
+            "avg_loss": 0.0,
+            "profit_factor": 0.0,
+            "trades_per_year": 0.0,
+            "max_consecutive_wins": 0,
+            "max_consecutive_losses": 0
+        },
+        "monthly": {
+            "2023-01": {"roi": 1.8, "trade_count": 5},
+            "2023-02": {"roi": 2.2, "trade_count": 7},
+            "2023-03": {"roi": 1.0, "trade_count": 4},
+        },
+        "weekly": {
+            "weekly_roi": 0.0,
+            "weekly_max_drawdown": 0.0
+        }
+    }
+    
+    # 메모리 내 스트림을 로그 출력 대상으로 설정
+    log_stream = io.StringIO()
+    logger = logging.getLogger("logs.final_report")
+    stream_handler = logging.StreamHandler(log_stream)
+    stream_handler.setLevel(logging.DEBUG)
+    formatter = logging.Formatter('%(message)s')
+    stream_handler.setFormatter(formatter)
+    logger.addHandler(stream_handler)
+    
+    # 성과 보고서 생성 함수 호출
+    generate_final_report(sample_performance)
+    
+    # 테스트 후 핸들러 제거하여 정리
+    logger.removeHandler(stream_handler)
+    stream_handler.flush()
+    output = log_stream.getvalue()
+    
+    # 출력 로그에 핵심 지표(ROI, Trade Count 또는 거래 횟수, 월별 날짜)가 포함되었는지 검증
+    assert "ROI" in output
+    assert "Trade Count" in output or "거래 횟수" in output
+    for month in sample_performance["monthly"]:
+        assert month in output

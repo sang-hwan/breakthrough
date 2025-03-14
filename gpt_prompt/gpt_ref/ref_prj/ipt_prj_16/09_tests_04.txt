@@ -1,0 +1,330 @@
+[tests/strategies/test_base_strategy.py]
+# tests/strategies/test_base_strategy.py
+# 이 파일은 BaseStrategy를 상속받아 DummyStrategy를 구현한 후,
+# get_signal 메서드가 올바르게 동작하는지 테스트합니다.
+# BaseStrategy는 모든 트레이딩 전략이 구현해야 하는 기본 인터페이스를 제공합니다.
+
+from strategies.base_strategy import BaseStrategy
+
+class DummyStrategy(BaseStrategy):
+    """
+    DummyStrategy 클래스
+
+    목적:
+      - BaseStrategy를 상속받아 get_signal 메서드를 단순히 "dummy_signal"을 반환하도록 구현.
+      - 테스트를 위해 기본 전략 인터페이스가 올바르게 상속 및 동작하는지 확인.
+    
+    Methods:
+      get_signal(data, current_time, **kwargs): 항상 "dummy_signal" 반환.
+    """
+    def get_signal(self, data, current_time, **kwargs):
+        # data: 시장 데이터 (예시로 빈 dict 사용)
+        # current_time: 현재 시간 (예시로 문자열 사용)
+        # kwargs: 추가 인자 (필요에 따라 사용)
+        return "dummy_signal"
+
+def test_dummy_strategy():
+    """
+    DummyStrategy의 get_signal 메서드 테스트
+
+    목적:
+      - DummyStrategy 인스턴스 생성 후, get_signal 메서드가 "dummy_signal"을 반환하는지 확인.
+    
+    Parameters:
+      없음
+
+    Returns:
+      없음 (assert 구문을 통해 반환된 신호 검증)
+    """
+    strat = DummyStrategy()
+    # 테스트용으로 빈 데이터와 단순 문자열 형태의 current_time 전달
+    signal = strat.get_signal({}, "2023-01-01")
+    assert signal == "dummy_signal"
+
+[tests/strategies/test_indicators.py]
+# tests/strategies/test_indicators.py
+# 이 모듈은 기술적 지표(예: SMA, MACD, RSI, Bollinger Bands)의 계산 함수들이 올바르게 동작하는지 검증하는 테스트 케이스들을 포함합니다.
+
+import pytest  # pytest 프레임워크를 사용하여 테스트 케이스를 작성합니다.
+import pandas as pd  # 데이터프레임 생성 및 조작을 위해 사용합니다.
+import numpy as np  # 수치 연산에 활용합니다.
+from trading.indicators import compute_sma, compute_macd, compute_rsi, compute_bollinger_bands  # 테스트할 지표 계산 함수들
+
+@pytest.fixture
+def sample_data():
+    """
+    샘플 거래 데이터를 생성하는 fixture입니다.
+    
+    30일 동안의 날짜 인덱스를 가지며, 'close', 'high', 'low', 'open', 'volume' 컬럼을 포함하는 DataFrame을 생성합니다.
+    이 데이터는 다양한 지표 함수의 입력으로 사용됩니다.
+    
+    Returns:
+        pd.DataFrame: 샘플 거래 데이터.
+    """
+    dates = pd.date_range("2023-01-01", periods=30, freq="D")  # 2023년 1월 1일부터 30일간의 날짜 생성
+    df = pd.DataFrame({
+        "close": np.linspace(100, 130, 30),  # 100에서 130까지 선형적으로 증가하는 종가
+        "high": np.linspace(101, 131, 30),   # 101에서 131까지 선형적으로 증가하는 고가
+        "low": np.linspace(99, 129, 30),     # 99에서 129까지 선형적으로 증가하는 저가
+        "open": np.linspace(100, 130, 30),   # 100에서 130까지 선형적으로 증가하는 시가
+        "volume": np.random.randint(1000, 5000, 30)  # 1000 ~ 5000 사이의 임의의 거래량
+    }, index=dates)
+    return df
+
+def test_compute_sma(sample_data):
+    """
+    단순 이동 평균(SMA) 계산 함수를 테스트합니다.
+    
+    sample_data의 복사본에 대해 period=5로 SMA를 계산하고, 지정한 출력 컬럼("sma_test")이 추가되었는지 검증합니다.
+    """
+    df = compute_sma(sample_data.copy(), period=5, output_col="sma_test")  # SMA 계산 실행
+    assert "sma_test" in df.columns  # SMA 컬럼이 추가되었는지 확인
+
+def test_compute_macd(sample_data):
+    """
+    MACD (이동평균 수렴발산 지표) 계산 함수를 테스트합니다.
+    
+    지정된 기간 값으로 MACD, 시그널, 그리고 차이값 컬럼들이 생성되는지 확인합니다.
+    """
+    df = compute_macd(sample_data.copy(), slow_period=26, fast_period=12, signal_period=9, prefix="macd_")
+    # MACD 관련 컬럼들이 모두 존재하는지 반복문으로 검증
+    for col in ["macd_macd", "macd_signal", "macd_diff"]:
+        assert col in df.columns
+
+def test_compute_rsi(sample_data):
+    """
+    RSI (상대강도지수) 계산 함수를 테스트합니다.
+    
+    period=14로 RSI를 계산한 후, 지정한 출력 컬럼("rsi_test")이 DataFrame에 추가되었는지 검증합니다.
+    """
+    df = compute_rsi(sample_data.copy(), period=14, output_col="rsi_test")
+    assert "rsi_test" in df.columns
+
+def test_compute_bollinger_bands(sample_data):
+    """
+    Bollinger Bands 계산 함수를 테스트합니다.
+    
+    period=20, 표준편차 배수 2.0을 적용하여 Bollinger Bands 관련 컬럼들이 생성되는지 확인합니다.
+    """
+    df = compute_bollinger_bands(sample_data.copy(), period=20, std_multiplier=2.0, prefix="bb_")
+    # Bollinger Bands 관련 컬럼들이 모두 존재하는지 검증
+    for col in ["bb_mavg", "bb_hband", "bb_lband", "bb_pband", "bb_wband", "bb_hband_ind", "bb_lband_ind"]:
+        assert col in df.columns
+
+[tests/strategies/test_strategies.py]
+# tests/strategies/test_strategies.py
+# 이 모듈은 다양한 트레이딩 전략 클래스(예: 추세추종, 돌파, 역추세 등)의 신호 생성 기능을 검증하는 테스트 케이스들을 포함합니다.
+
+import pandas as pd  # 데이터 조작을 위한 패키지
+import pytest  # 테스트 케이스 작성을 위한 패키지
+from strategies.trading_strategies import (
+    SelectStrategy, TrendFollowingStrategy, BreakoutStrategy,
+    CounterTrendStrategy, HighFrequencyStrategy,
+    WeeklyBreakoutStrategy, WeeklyMomentumStrategy,
+    TradingStrategies
+)  # 테스트할 트레이딩 전략 클래스들
+
+@pytest.fixture
+def sample_data():
+    """
+    간단한 일별 거래 데이터를 생성하는 fixture입니다.
+    
+    5일간의 데이터로 구성되며, 기본적인 OHLC 데이터와 몇 가지 기술 지표(SMA, RSI, Bollinger Lower Band)를 포함합니다.
+    
+    Returns:
+        pd.DataFrame: 일별 거래 데이터.
+    """
+    dates = pd.date_range(start="2023-01-01", periods=5, freq="D")  # 5일간의 날짜 생성
+    data = pd.DataFrame({
+        "open": [100, 102, 103, 104, 105],
+        "high": [105, 107, 108, 109, 110],
+        "low": [95, 97, 98, 99, 100],
+        "close": [102, 104, 103, 107, 108],
+        "sma": [100, 101, 102, 103, 104],
+        "rsi": [30, 35, 40, 25, 45],
+        "bb_lband": [98, 99, 100, 101, 102],
+    }, index=dates)
+    return data
+
+@pytest.fixture
+def sample_weekly_data():
+    """
+    간단한 주간 거래 데이터를 생성하는 fixture입니다.
+    
+    주간 데이터는 OHLC와 주간 모멘텀 값을 포함하며, 3주 동안의 데이터를 생성합니다.
+    
+    Returns:
+        pd.DataFrame: 주간 거래 데이터.
+    """
+    dates = pd.date_range(start="2023-01-01", periods=3, freq="W-MON")  # 주간(월요일 기준) 날짜 생성
+    data = pd.DataFrame({
+        "open": [100, 110, 120],
+        "high": [105, 115, 125],
+        "low": [95, 105, 115],
+        "close": [102, 112, 122],
+        "weekly_momentum": [0.5, 0.6, 0.4],
+    }, index=dates)
+    return data
+
+def test_select_strategy(sample_data):
+    """
+    SelectStrategy의 신호 생성 기능을 테스트합니다.
+    
+    sample_data의 마지막 시간대 데이터를 사용하여 전략이 'enter_long' 또는 'hold' 신호를 반환하는지 검증합니다.
+    """
+    strat = SelectStrategy()  # SelectStrategy 객체 생성
+    current_time = sample_data.index[-1]  # 마지막 날짜를 현재 시각으로 사용
+    signal = strat.get_signal(sample_data, current_time)  # 전략에 따른 신호 생성
+    assert signal in ["enter_long", "hold"]
+
+def test_trend_following_strategy(sample_data):
+    """
+    TrendFollowingStrategy (추세추종 전략)의 신호 생성 기능을 테스트합니다.
+    
+    마지막 데이터 시점을 기준으로 전략이 올바른 신호('enter_long' 또는 'hold')를 반환하는지 확인합니다.
+    """
+    strat = TrendFollowingStrategy()  # 추세추종 전략 객체 생성
+    current_time = sample_data.index[-1]
+    signal = strat.get_signal(sample_data, current_time)
+    assert signal in ["enter_long", "hold"]
+
+def test_breakout_strategy(sample_data):
+    """
+    BreakoutStrategy (돌파 전략)의 신호 생성 기능을 테스트합니다.
+    
+    window=3의 조건으로 테스트 데이터에서 신호를 생성하고, 반환된 신호가 유효한지 확인합니다.
+    """
+    strat = BreakoutStrategy(window=3)  # 돌파 전략 객체 생성 (돌파 기간: 3일)
+    current_time = sample_data.index[-1]
+    signal = strat.get_signal(sample_data, current_time)
+    assert signal in ["enter_long", "hold"]
+
+def test_counter_trend_strategy(sample_data):
+    """
+    CounterTrendStrategy (역추세 전략)의 신호 생성 기능을 테스트합니다.
+    
+    RSI 값에 따라 매수와 청산 신호가 올바르게 생성되는지 검증합니다.
+      - RSI가 낮은 경우 (예: 25): 'enter_long'
+      - RSI가 높은 경우 (예: 75): 'exit_all'
+    """
+    strat = CounterTrendStrategy()  # 역추세 전략 객체 생성
+    current_time = sample_data.index[-1]
+    
+    # RSI가 낮은 경우 테스트 (과매도 상태)
+    sample_data.loc[current_time, 'rsi'] = 25
+    signal = strat.get_signal(sample_data, current_time)
+    assert signal == "enter_long"
+    
+    # RSI가 높은 경우 테스트 (과매수 상태)
+    sample_data.loc[current_time, 'rsi'] = 75
+    signal = strat.get_signal(sample_data, current_time)
+    assert signal == "exit_all"
+
+def test_high_frequency_strategy():
+    """
+    HighFrequencyStrategy (초단타 전략)의 신호 생성 기능을 테스트합니다.
+    
+    2분 단위의 간단한 데이터셋을 생성하여 전략이 'enter_long', 'exit_all', 또는 'hold' 신호를 반환하는지 확인합니다.
+    """
+    dates = pd.date_range(start="2023-01-01", periods=2, freq="min")  # 2분 간격 데이터 생성
+    data = pd.DataFrame({"close": [100, 100.5]}, index=dates)
+    strat = HighFrequencyStrategy()  # 초단타 전략 객체 생성
+    signal = strat.get_signal(data, data.index[-1])
+    assert signal in ["enter_long", "exit_all", "hold"]
+
+def test_weekly_breakout_strategy(sample_weekly_data):
+    """
+    WeeklyBreakoutStrategy (주간 돌파 전략)의 신호 생성 기능을 테스트합니다.
+    
+    주간 데이터에서 이전 주 대비 1% 이상의 가격 상승 또는 하락 조건에 따라 신호를 생성하는지 확인합니다.
+    
+    Parameters:
+        breakout_threshold (float): 돌파 임계값 (여기서는 1%).
+    """
+    strat = WeeklyBreakoutStrategy()  # 주간 돌파 전략 객체 생성
+    current_time = sample_weekly_data.index[-1]
+    signal = strat.get_signal(sample_weekly_data, current_time, breakout_threshold=0.01)
+    assert signal in ["enter_long", "exit_all", "hold"]
+
+def test_weekly_momentum_strategy(sample_weekly_data):
+    """
+    WeeklyMomentumStrategy (주간 모멘텀 전략)의 신호 생성 기능을 테스트합니다.
+    
+    주간 모멘텀 값이 지정 임계값 이상인 경우 'enter_long', 그 외의 경우 'exit_all' 또는 'hold' 신호를 반환하는지 확인합니다.
+    
+    Parameters:
+        momentum_threshold (float): 모멘텀 임계값 (예: 0.5).
+    """
+    strat = WeeklyMomentumStrategy()  # 주간 모멘텀 전략 객체 생성
+    current_time = sample_weekly_data.index[-1]
+    signal = strat.get_signal(sample_weekly_data, current_time, momentum_threshold=0.5)
+    assert signal in ["enter_long", "exit_all", "hold"]
+
+def test_trading_strategies_ensemble(sample_data, sample_weekly_data):
+    """
+    TradingStrategies (전략 앙상블)의 최종 신호 생성 기능을 테스트합니다.
+    
+    일별 데이터와 주간 데이터를 함께 사용하여 최종 신호를 생성하며, 반환된 신호가 유효한지 확인합니다.
+    
+    Parameters:
+        market_regime (str): 예시로 "bullish" (상승장) 사용.
+        frequency (str): 예시로 "high" (고빈도) 사용.
+    """
+    ensemble = TradingStrategies()  # 전략 앙상블 객체 생성
+    current_time = sample_data.index[-1]
+    signal = ensemble.get_final_signal("bullish", "high", sample_data, current_time, data_weekly=sample_weekly_data)
+    assert signal in ["enter_long", "exit_all", "hold"]
+
+[tests/strategies/test_weekly_strategies.py]
+# tests/strategies/test_weekly_strategies.py
+# 이 모듈은 주간 집계 데이터를 기반으로 하는 주간 전략(돌파, 모멘텀)들의 신호 생성 기능을 테스트합니다.
+
+import pandas as pd  # 데이터 조작용 패키지
+import numpy as np  # 수치 계산용 패키지
+from strategies.trading_strategies import WeeklyBreakoutStrategy, WeeklyMomentumStrategy  # 주간 전략 클래스들
+
+def create_weekly_data():
+    """
+    4주간의 주간 데이터를 생성하는 함수입니다.
+    
+    각 주에 대해 open, high, low, close, volume, 주간 SMA, 모멘텀, 변동성을 포함한 데이터를 생성합니다.
+    
+    Returns:
+        pd.DataFrame: 주간 데이터, 인덱스는 각 주의 시작일 (월요일).
+    """
+    dates = pd.date_range(start='2020-01-06', periods=4, freq='W-MON')  # 4주간의 월요일 날짜 생성
+    data = pd.DataFrame({
+        'open': np.linspace(100, 110, len(dates)),  # 주간 시가
+        'weekly_high': np.linspace(105, 115, len(dates)),  # 주간 최고가
+        'weekly_low': np.linspace(95, 105, len(dates)),  # 주간 최저가
+        'close': np.linspace(102, 112, len(dates)),  # 주간 종가
+        'volume': np.random.randint(1000, 2000, len(dates)),  # 임의의 거래량
+        'weekly_sma': np.linspace(100, 110, len(dates)),  # 주간 단순 이동 평균
+        'weekly_momentum': np.linspace(0.2, 1.0, len(dates)),  # 주간 모멘텀
+        'weekly_volatility': np.linspace(0.01, 0.03, len(dates))  # 주간 변동성
+    }, index=dates)
+    return data
+
+def test_weekly_breakout_signal():
+    """
+    WeeklyBreakoutStrategy의 신호 생성 기능을 테스트합니다.
+    
+    생성된 주간 데이터에 대해 돌파 임계값(예: 1%) 조건을 적용하여 반환된 신호가 유효한지 확인합니다.
+    """
+    data_weekly = create_weekly_data()  # 주간 데이터 생성
+    strategy = WeeklyBreakoutStrategy()  # 주간 돌파 전략 객체 생성
+    current_time = data_weekly.index[-1]  # 마지막 주 데이터를 현재 시각으로 사용
+    signal = strategy.get_signal(data_weekly, current_time, breakout_threshold=0.01)
+    assert signal in ['enter_long', 'exit_all', 'hold']
+
+def test_weekly_momentum_signal():
+    """
+    WeeklyMomentumStrategy의 신호 생성 기능을 테스트합니다.
+    
+    생성된 주간 데이터에 대해 모멘텀 임계값(예: 0.5)을 적용하여 반환된 신호가 올바른지 검증합니다.
+    """
+    data_weekly = create_weekly_data()  # 주간 데이터 생성
+    strategy = WeeklyMomentumStrategy()  # 주간 모멘텀 전략 객체 생성
+    current_time = data_weekly.index[-1]
+    signal = strategy.get_signal(data_weekly, current_time, momentum_threshold=0.5)
+    assert signal in ['enter_long', 'exit_all', 'hold']
