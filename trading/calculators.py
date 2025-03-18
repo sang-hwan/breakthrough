@@ -4,7 +4,7 @@
 # ta: 기술적 분석(Technical Analysis) 라이브러리, ATR(평균 실제 범위) 계산 등 사용
 import pandas as pd
 import ta
-from logs.logger_config import setup_logger
+from logging.logger_config import setup_logger
 
 # 모듈 전반에 걸쳐 디버그 및 에러 로깅을 위한 로거 객체 생성
 logger = setup_logger(__name__)

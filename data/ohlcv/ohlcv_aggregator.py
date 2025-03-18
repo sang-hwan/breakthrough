@@ -2,7 +2,7 @@
 
 import pandas as pd
 from ta.trend import SMAIndicator  # 기술적 지표 중 단순 이동평균(SMA)을 계산하기 위한 라이브러리
-from logs.logger_config import setup_logger  # 로깅 설정을 위한 모듈
+from logging.logger_config import setup_logger  # 로깅 설정을 위한 모듈
 
 # 전역 변수: 로깅 설정 객체
 # 현재 파일의 이름을 기반으로 로깅을 설정하여 디버그 및 에러 로그 기록에 활용됩니다.

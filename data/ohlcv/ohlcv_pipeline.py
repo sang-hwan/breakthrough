@@ -5,7 +5,7 @@ import threading  # 멀티스레딩 및 동기화를 위한 모듈
 from typing import List, Optional  # 타입 힌트를 위한 모듈
 import concurrent.futures  # 스레드 풀을 사용한 병렬 처리 모듈
 
-from logs.logger_config import setup_logger  # 로깅 설정 모듈
+from logging.logger_config import setup_logger  # 로깅 설정 모듈
 from data.ohlcv.ohlcv_fetcher import (
     fetch_historical_ohlcv_data,
     fetch_latest_ohlcv_data

@@ -4,8 +4,8 @@
 
 import logging
 import io
-from logs.logging_util import LoggingUtil
-from logs.aggregating_handler import AggregatingHandler  # AggregatingHandler 클래스를 명시적으로 가져옴
+from logging.logging_util import LoggingUtil
+from logging.aggregating_handler import AggregatingHandler  # AggregatingHandler 클래스를 명시적으로 가져옴
 
 def test_logging_summary_output():
     """

@@ -6,7 +6,7 @@ from psycopg2.extras import execute_values   # psycopg2 헬퍼 함수: 다중 �
 import pandas as pd                            # 데이터프레임(DataFrame) 처리를 위한 pandas
 from typing import Any, Iterable, Dict          # 타입 힌트를 제공하기 위한 모듈
 from data.db.db_config import DATABASE         # 데이터베이스 접속 설정 정보를 불러옵니다.
-from logs.logger_config import setup_logger     # 로깅 설정을 불러와 로그 기록에 사용합니다.
+from logging.logger_config import setup_logger     # 로깅 설정을 불러와 로그 기록에 사용합니다.
 
 # 로깅 객체(logger)를 전역 변수로 생성합니다.
 # 모듈명을 기준으로 로거를 설정하여 이후 에러 및 실행 정보를 기록할 때 사용됩니다.

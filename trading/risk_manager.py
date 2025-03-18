@@ -1,6 +1,6 @@
 # trading/risk_manager.py
 
-from logs.logger_config import setup_logger
+from logging.logger_config import setup_logger
 
 # 전역 변수 및 객체 정의
 # logger: 이 모듈에서 발생하는 디버그 및 에러 메시지를 기록하는 로깅 객체입니다.

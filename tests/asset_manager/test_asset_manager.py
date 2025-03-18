@@ -1,9 +1,9 @@
 # tests/asset_manager/test_asset_manager.py
 
 # core.account 모듈에서 Account 클래스를 가져옵니다.
-from core.account import Account
+from asset_position.account import Account
 # trading.asset_manager 모듈에서 AssetManager 클래스를 가져옵니다.
-from trading.asset_manager import AssetManager
+from asset_position.asset_manager import AssetManager
 
 def test_rebalance_bullish():
     """

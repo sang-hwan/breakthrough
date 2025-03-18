@@ -4,7 +4,7 @@
 
 import pytest
 import pandas as pd
-from trading.ensemble import Ensemble
+from signal_calculation.ensemble import Ensemble
 
 # 전역 객체 및 데이터셋 준비: 최소한의 컬럼을 가진 테스트용 데이터프레임 생성
 @pytest.fixture

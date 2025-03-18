@@ -4,7 +4,7 @@
 
 import io
 import logging
-from logs.final_report import generate_final_report
+from reports.final_report import generate_final_report
 
 def test_final_report_output():
     """

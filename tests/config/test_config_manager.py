@@ -1,7 +1,7 @@
 # tests/config/test_config_manager.py
 
 # ConfigManager 클래스를 임포트합니다.
-from config.config_manager import ConfigManager
+from parameter_management.config_manager import ConfigManager
 
 def test_get_defaults():
     """

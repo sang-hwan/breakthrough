@@ -6,7 +6,7 @@ import os  # 파일 및 경로 관련 작업을 위한 모듈
 import glob  # 파일 패턴 검색용 모듈
 import logging  # 로깅 기능 제공
 import pytest  # 테스트 프레임워크용
-from logs.logger_config import initialize_root_logger, shutdown_logging  # 로거 초기화 및 종료 함수
+from logging.logger_config import initialize_root_logger, shutdown_logging  # 로거 초기화 및 종료 함수
 
 @pytest.fixture(autouse=True, scope="session")
 def manage_logs():

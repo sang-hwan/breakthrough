@@ -2,7 +2,7 @@
 
 import pytest
 # Position 클래스를 임포트합니다.
-from core.position import Position
+from asset_position.position import Position
 
 def test_add_execution_and_totals():
     """

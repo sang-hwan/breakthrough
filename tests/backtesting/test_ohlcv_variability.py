@@ -6,7 +6,7 @@ import pytest
 # OHLCV 데이터의 유효성을 검증하는 내부 함수 임포트
 from backtesting.steps.data_loader import _validate_and_prepare_df
 # 로거 설정 함수 임포트 (로그 메시지 확인에 사용)
-from logs.logger_config import setup_logger
+from logging.logger_config import setup_logger
 
 # 현재 모듈의 로거 객체를 생성합니다.
 logger = setup_logger(__name__)

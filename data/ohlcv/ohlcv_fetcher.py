@@ -4,7 +4,7 @@ import ccxt  # 암호화폐 거래소 API 연동을 위한 라이브러리
 import pandas as pd
 from datetime import datetime
 import time  # 시간 지연을 위한 모듈
-from logs.logger_config import setup_logger  # 로깅 설정 모듈
+from logging.logger_config import setup_logger  # 로깅 설정 모듈
 from functools import lru_cache  # 함수 결과 캐싱을 위한 모듈
 
 # 전역 변수: 로깅 설정 객체

@@ -1,79 +1,49 @@
-project-root/
-├── backtesting/                          # 백테스트 관련 모듈
-│   ├── backtester.py                     # 백테스트 엔진 – 전체 사이클 제어, 주문 처리, 포지션 및 계좌 업데이트
-│   ├── performance.py                    # 거래 성과(ROI, 드로우다운 등) 계산 모듈
-│   └── steps/                            # 백테스트 단계별 기능 모듈
-│       ├── data_loader.py                # 데이터 로드 및 전처리, 캐싱 적용
-│       ├── hmm_manager.py                # HMM 모델 업데이트 및 시장 레짐 예측
-│       ├── indicator_applier.py          # 기술적 인디케이터(SMA, RSI, MACD) 적용
-│       └── order_manager.py              # 주문 신호 생성, 실행 및 포지션 관리
-├── config/                               # 설정 관련 모듈
-│   └── config_manager.py                 # 기본 및 동적 트레이딩 파라미터 관리 (Pydantic 사용)
-├── core/                                 # 핵심 거래 객체 관리
-│   ├── account.py                        # 계좌 관리, 잔액 및 거래 후 업데이트
-│   └── position.py                       # 포지션 객체 – 거래 실행 내역, 부분 청산 등 관리
-├── data/                                 # 데이터 관련 모듈
-│   ├── db/                               # 데이터베이스 관련 파일
-│   │   ├── db_config.py                  # PostgreSQL 접속 정보 설정
-│   │   └── db_manager.py                 # DB 테이블 생성, 데이터 삽입/조회 및 테이블 관리
-│   └── ohlcv/                            # OHLCV 데이터 관련 파일
-│       ├── ohlcv_aggregator.py           # 일별 데이터를 주간 데이터로 집계하고 인디케이터 산출
-│       ├── ohlcv_fetcher.py              # ccxt를 이용한 역사적/최신 OHLCV 데이터 수집
-│       └── ohlcv_pipeline.py             # 병렬 처리 및 캐싱을 통한 OHLCV 데이터 수집·저장 파이프라인
-├── logs/                                 # 로깅 관련 파일
-│   ├── aggregating_handler.py            # 이벤트 집계 후 요약 로그 출력 커스텀 핸들러
-│   ├── final_report.py                   # 백테스트 성과 최종 보고서 생성
-│   ├── logger_config.py                  # 전체 로깅 설정 (핸들러, 포맷터, 큐 핸들러 등)
-│   ├── logging_util.py                   # 동적 로그 기록 및 상태 변화 관리 유틸리티
-│   └── state_change_manager.py           # 상태 변화 추적하여 중복 로그 필터링
-├── markets/                              # 시장 레짐 및 모델 관련 파일
-│   ├── regime_filter.py                  # 단순 가격 변화 기반 시장 레짐 결정 (bullish, bearish, sideways)
-│   └── regime_model.py                   # Gaussian HMM을 이용한 동적 시장 레짐 예측 및 재학습
-├── strategies/                           # 다양한 트레이딩 전략 및 최적화 관련 파일
-│   ├── base_strategy.py                  # 모든 전략의 기본 클래스 (get_signal 메서드 정의)
-│   ├── optimizer.py                      # Optuna를 이용한 파라미터 최적화 모듈
-│   ├── param_analysis.py                 # 전략 파라미터 민감도 분석 실행 모듈
-│   └── trading_strategies.py             # 개별 전략(Select, Trend, Breakout 등)과 앙상블 신호 구현
-├── trading/                              # 리스크 관리, 자산 관리 및 거래 실행 관련 파일
-│   ├── asset_manager.py                  # 계좌의 자산(spot, stablecoin) 리밸런싱 관리
-│   ├── calculators.py                    # ATR, 동적 스톱/테이크, 트레일링 스톱 등 계산 함수 모음
-│   ├── ensemble.py                       # 여러 전략 신호를 가중치 기반으로 결합하여 최종 신호 산출
-│   ├── indicators.py                     # 기술적 인디케이터(SMA, MACD, RSI, Bollinger Bands) 계산
-│   ├── risk_manager.py                   # 포지션 사이즈 산출 및 리스크 파라미터 조정 기능
-│   └── trade_executor.py                 # 계산된 파라미터를 바탕으로 실제 거래 실행 및 포지션 업데이트
-├── tests/                                # 각 모듈별 단위 및 통합 테스트
-│   ├── asset_manager/                    # asset_manager 관련 테스트
-│   │   └── test_asset_manager.py         # 자산 리밸런싱 기능 테스트
-│   ├── backtesting/                      # 백테스트 관련 테스트
-│   │   ├── test_backtest_default_trade.py# 기본 설정으로 백테스트 실행 및 거래 체결 확인
-│   │   ├── test_backtester_integration.py# 백테스터 전체 통합 테스트
-│   │   ├── test_data_validation.py       # 데이터 로드 및 전처리 유효성 테스트
-│   │   ├── test_ohlcv_aggregator.py        # 주간 집계 및 인디케이터 산출 테스트
-│   │   └── test_ohlcv_variability.py       # 낮은/높은 변동성 데이터에 대한 경고 로깅 테스트
-│   ├── config/                           # 설정 관련 테스트
-│   │   └── test_config_manager.py        # 기본 파라미터, 업데이트, 병합 기능 테스트
-│   ├── core/                             # 핵심 모듈(계좌, 포지션) 테스트
-│   │   ├── test_core_account.py          # 계좌 업데이트 및 변환 함수 테스트
-│   │   └── test_core_position.py         # 포지션 실행, 부분 청산 등 테스트
-│   ├── ensemble/                         # 앙상블 전략 테스트
-│   │   └── test_ensemble.py              # 최종 신호 결합 및 출력 테스트
-│   ├── logging/                          # 로깅 관련 테스트
-│   │   ├── test_aggregating_handler.py   # 이벤트 집계 및 요약 출력 테스트
-│   │   └── test_exception_logging.py     # 예외 발생 시 로깅 테스트 (계산 모듈 등)
-│   ├── market/                           # 시장 레짐 관련 테스트
-│   │   ├── test_regime_filter.py         # 단순 시장 레짐 결정 테스트
-│   │   └── test_regime_model.py          # HMM 모델 학습 및 예측 테스트
-│   ├── optimizer/                        # 파라미터 최적화 관련 테스트
-│   │   ├── test_optimizer.py             # 최적화 결과 및 trial 반환 테스트
-│   │   └── test_param_analysis.py        # 민감도 분석 실행 테스트
-│   ├── strategies/                       # 전략 관련 테스트
-│   │   ├── test_base_strategy.py         # 기본 전략 클래스 테스트 (Dummy 전략 사용)
-│   │   ├── test_indicators.py            # 인디케이터 계산 함수 테스트
-│   │   ├── test_strategies.py            # 개별 전략 및 앙상블 신호 테스트
-│   │   └── test_weekly_strategies.py     # 주간 전략(Breakout, Momentum) 테스트
-│   └── conftest.py                       # Pytest 전역 설정 (로그 관리 등)
-├── requirements.txt                      # 프로젝트에 필요한 Python 패키지 목록
-├── run_drop_db_tables.py                 # 실행 스크립트: DB의 모든 테이블 삭제
-├── run_parameter_analysis.py             # 실행 스크립트: 전략 파라미터 민감도 분석 및 최적화 리포트 생성
-├── run_strategy_performance.py           # 실행 스크립트: 백테스트 및 전략 성과 보고서 생성
-└── run_update_ohlcv_data.py              # 실행 스크립트: 최신 OHLCV 데이터를 수집하여 DB 업데이트
+project_root/
+├── asset_position/              # [자산 및 포지션 관리]
+│   ├── account.py               # 거래 계좌 관리
+│   ├── asset_manager.py         # 자산 리밸런싱 및 자산 전환 관리
+│   └── position.py              # 포지션 및 실행 기록 관리
+│
+├── data/                        # [데이터]
+│   ├── db/                      # DB 접속 및 데이터 저장/조회 관련: db_config, db_manager
+│   └── ohlcv/                   # 거래 데이터 수집 및 집계: ohlcv_fetcher, ohlcv_aggregator, ohlcv_pipeline
+│
+├── logging/                     # [로깅]
+│   ├── logger_config.py         # 로깅 인프라 설정 (파일/콘솔/큐 핸들러, 회전 핸들러 등)
+│   ├── logging_util.py          # 추가 로깅 유틸리티 및 동적 로그 트래킹
+│   ├── aggregating_handler.py   # 로그 이벤트 집계 핸들러
+│   └── state_change_manager.py  # 상태 변화 관리
+│
+├── market_analysis/             # [시장 분석]
+│   ├── regime_filter.py         # 가격 기반 시장 상태 판단 함수
+│   └── regime_model.py          # HMM 기반 시장 상태 예측 모델
+│
+├── parameter_management/        # [파라미터 관리/최적화/과적합 방지]
+│   ├── config_manager.py        # 기본 파라미터 정의 및 동적 업데이트/검증
+│   ├── optimizer.py             # 동적 파라미터 최적화
+│   └── param_analysis.py        # 민감도 분석 기능
+│
+├── reports/                     # [성과 보고]
+│   ├── final_report.py          # 최종 성과 보고서 생성 함수
+│   └── performance.py           # 거래 성과 계산 함수
+│
+├── scripts/                     # [실행 스크립트]
+│   ├── run_drop_db_tables.py
+│   ├── run_update_ohlcv_data.py
+│   ├── run_parameter_analysis.py
+│   └── run_strategy_performance.py
+│
+├── signal_calculation/          # [신호 계산]
+│   ├── strategies/              # 다양한 전략 클래스 및 앙상블: base_strategy, trading_strategies
+│   ├── ensemble.py              # 전략 신호 결합(앙상블) 로직
+│   └── indicators.py            # 기술적 인디케이터 계산 함수
+│
+├── tests/                       # 테스트 케이스 전체
+│
+└── trading/                     # [거래]
+    ├── backtesting/             # 백테스트 전체 파이프라인
+    │   ├── steps/               # data_loader.py, hmm_manager.py, indicator_applier.py, order_manager.py
+    │   └── backtester.py
+    ├── calculators.py       
+    ├── risk_manager.py          # 리스크 관리 및 포지션 사이즈 계산, trailing stop 등
+    └── trade_executor.py        # 실제 거래 실행 로직 (계산 함수 호출 포함)

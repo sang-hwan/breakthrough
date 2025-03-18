@@ -4,7 +4,7 @@ import pytest
 # 백테스트 로직이 구현된 Backtester 클래스를 임포트
 from backtesting.backtester import Backtester
 # 기본 파라미터 관리를 위한 ConfigManager 클래스 임포트
-from config.config_manager import ConfigManager
+from parameter_management.config_manager import ConfigManager
 import numpy as np
 import pandas as pd
 

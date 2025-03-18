@@ -4,7 +4,7 @@
 import pytest  # pytest 프레임워크를 사용하여 테스트 케이스를 작성합니다.
 import pandas as pd  # 데이터프레임 생성 및 조작을 위해 사용합니다.
 import numpy as np  # 수치 연산에 활용합니다.
-from trading.indicators import compute_sma, compute_macd, compute_rsi, compute_bollinger_bands  # 테스트할 지표 계산 함수들
+from signal_calculation.indicators import compute_sma, compute_macd, compute_rsi, compute_bollinger_bands  # 테스트할 지표 계산 함수들
 
 @pytest.fixture
 def sample_data():

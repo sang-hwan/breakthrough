@@ -1,6 +1,6 @@
 # trading/trade_executor.py
 
-from logs.logger_config import setup_logger
+from logging.logger_config import setup_logger
 import pandas as pd
 from trading.calculators import (
     calculate_atr,

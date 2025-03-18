@@ -2,7 +2,7 @@
 # 이 파일은 시장의 가격 데이터를 기반으로 시장 상황(레짐)을 판단하는 함수들
 # determine_market_regime과 filter_regime의 올바른 동작을 검증하기 위한 테스트를 포함합니다.
 
-from markets.regime_filter import determine_market_regime, filter_regime
+from market_analysis.regime_filter import determine_market_regime, filter_regime
 
 def test_determine_market_regime_bullish():
     """

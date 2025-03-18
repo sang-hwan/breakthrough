@@ -4,7 +4,7 @@
 
 import pandas as pd
 import numpy as np
-from markets.regime_model import MarketRegimeHMM
+from market_analysis.regime_model import MarketRegimeHMM
 
 def test_hmm_training_with_sufficient_samples():
     """

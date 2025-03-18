@@ -1,8 +1,8 @@
 # tests/core/test_core_account.py
 
 # Account 클래스와 Position 클래스를 임포트합니다.
-from core.account import Account
-from core.position import Position
+from asset_position.account import Account
+from asset_position.position import Position
 
 def test_account_balance_after_trade():
     """
