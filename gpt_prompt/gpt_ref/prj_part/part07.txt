@@ -1,0 +1,543 @@
+[#7/10]
+# scripts/run_drop_db_tables.py
+"""
+이 스크립트는 데이터베이스의 모든 테이블을 삭제하는 기능을 수행합니다.
+주로 테스트 환경에서 초기화를 위해 사용될 수 있으며, 
+PostgreSQL의 public 스키마 내 모든 테이블을 제거합니다.
+"""
+
+import sys  # 시스템 종료 및 예외 처리를 위해 사용
+from dotenv import load_dotenv  # 환경변수 로드를 위한 라이브러리
+from sqlalchemy import create_engine, text  # 데이터베이스 연결 및 SQL 실행을 위한 라이브러리
+from data.db.db_config import DATABASE  # 데이터베이스 접속 정보를 담은 설정 객체
+from logs.logger_config import initialize_root_logger, setup_logger  # 로깅 초기화 및 설정 함수
+
+# 환경변수 로드 및 로깅 초기화
+load_dotenv()  # .env 파일에 정의된 환경변수를 시스템에 로드합니다.
+initialize_root_logger()  # 루트 로거를 초기화합니다.
+logger = setup_logger(__name__)  # 모듈 별 로거를 생성합니다.
+
+def drop_all_tables(db_config):
+    """
+    데이터베이스 내의 모든 테이블을 삭제합니다.
+    
+    Parameters:
+        db_config (dict): 데이터베이스 접속 정보를 담은 딕셔너리 
+                          (예: {'user': ..., 'password': ..., 'host': ..., 'port': ..., 'dbname': ...})
+    
+    Returns:
+        None: 모든 테이블 삭제 작업 후 성공 메시지 혹은 에러 로그를 남깁니다.
+    """
+    try:
+        # 데이터베이스 연결 문자열을 구성하고 SQLAlchemy 엔진을 생성합니다.
+        engine = create_engine(
+            f"postgresql://{db_config['user']}:{db_config['password']}@"
+            f"{db_config['host']}:{db_config['port']}/{db_config['dbname']}",
+            pool_pre_ping=True  # 커넥션의 유효성을 주기적으로 확인합니다.
+        )
+        # 데이터베이스 트랜잭션을 시작합니다. (자동 커밋 모드)
+        with engine.begin() as conn:
+            # public 스키마 내의 모든 테이블 이름을 조회하는 SQL 문 실행
+            result = conn.execute(text("SELECT tablename FROM pg_tables WHERE schemaname = 'public'"))
+            tables = [row[0] for row in result]  # 결과에서 테이블 이름만 추출하여 리스트로 생성
+            if not tables:
+                logger.debug("No tables found in the database.")
+                return
+            # 조회된 각 테이블에 대해 DROP TABLE 명령어를 실행합니다.
+            for table in tables:
+                logger.debug(f"Dropping table {table}...")
+                conn.execute(text(f"DROP TABLE IF EXISTS {table} CASCADE"))
+            logger.debug("All tables dropped successfully.")
+    except Exception as e:
+        # 예외 발생 시 에러 로그를 기록하고 프로그램을 종료합니다.
+        logger.error(f"Error dropping tables: {e}", exc_info=True)
+        sys.exit(1)
+
+def run_drop_db_tables():
+    """
+    데이터베이스 접속 정보(DATABASE)를 사용하여 drop_all_tables 함수를 실행합니다.
+    
+    Parameters:
+        없음
+    
+    Returns:
+        None
+    """
+    drop_all_tables(DATABASE)
+
+# 스크립트가 직접 실행될 경우 run_drop_db_tables 함수를 호출합니다.
+if __name__ == "__main__":
+    run_drop_db_tables()
+
+---
+
+# scripts/run_parameter_analysis.py
+"""
+이 스크립트는 거래 전략의 파라미터 민감도 분석을 수행합니다.
+주요 기능은 명령줄 인자를 통해 분석 설정을 받고, 
+각 파라미터에 대해 기본값의 80%에서 120% 범위 내에서 값들을 생성하여
+민감도 분석을 실행하고, 결과 보고서를 생성하는 것입니다.
+"""
+
+import argparse  # 명령줄 인자 파싱을 위한 모듈
+import logging  # 로깅 처리를 위한 모듈
+import numpy as np  # 수치 계산 및 배열 처리 모듈
+from logs.logger_config import setup_logger, initialize_root_logger, shutdown_logging  # 로깅 설정 관련 함수
+from logs.logging_util import LoggingUtil  # 추가 로깅 유틸리티 함수
+from strategies.param_analysis import run_sensitivity_analysis  # 파라미터 민감도 분석 실행 함수
+from reports.final_report import generate_parameter_sensitivity_report  # 분석 결과 보고서 생성 함수
+from data.db.db_manager import get_unique_symbol_list, get_date_range  # 데이터베이스 관련 함수
+from data.db.db_config import DATABASE  # 데이터베이스 접속 정보
+
+def parse_args():
+    """
+    명령줄 인자를 파싱하여 분석에 필요한 옵션들을 반환합니다.
+    
+    Returns:
+        argparse.Namespace: 파라미터 이름, 단계, 자산, 시간 프레임 등 분석에 필요한 인자들을 포함한 객체
+    """
+    parser = argparse.ArgumentParser(
+        description="Run parameter sensitivity analysis for trading strategies."
+    )
+    parser.add_argument("--param_names", type=str, 
+                        default="profit_ratio,atr_multiplier,risk_per_trade,scale_in_threshold,weekly_breakout_threshold,weekly_momentum_threshold",
+                        help="Comma-separated list of parameter names to analyze.")
+    parser.add_argument("--param_steps", type=int, default=3, 
+                        help="Number of steps for each parameter (default: 3)")
+    parser.add_argument("--assets", type=str, default="",
+                        help="Optional: Comma-separated list of assets. If not provided, DB will be queried for unique symbols.")
+    parser.add_argument("--short_tf", type=str, default="4h", 
+                        help="Short time frame (default: 4h)")
+    parser.add_argument("--long_tf", type=str, default="1d", 
+                        help="Long time frame (default: 1d)")
+    parser.add_argument("--periods", type=str, default="", 
+                        help="Optional multiple periods in format start1:end1;start2:end2, etc.")
+    # 새 인자: 분석 기간 축소를 위한 인자 (예: "2022-01-01:2023-01-01")
+    parser.add_argument("--analysis_period", type=str, default="2022-01-01:2023-01-01",
+                        help="Analysis period in format start_date:end_date to reduce overall analysis period.")
+    return parser.parse_args()
+
+def parse_assets(asset_str):
+    """
+    콤마로 구분된 자산 문자열을 개별 자산 리스트로 변환합니다.
+    
+    Parameters:
+        asset_str (str): 콤마로 구분된 자산 문자열 (예: "BTC/USDT,ETH/USDT")
+    
+    Returns:
+        list: 개별 자산 문자열의 리스트
+    """
+    return [asset.strip() for asset in asset_str.split(",") if asset.strip()]
+
+def parse_periods(periods_str, default_start, default_end):
+    """
+    기간 문자열을 파싱하여 (시작 날짜, 종료 날짜) 쌍의 리스트를 생성합니다.
+    
+    Parameters:
+        periods_str (str): 세미콜론(;)으로 구분된 기간 쌍 (예: "start1:end1;start2:end2")
+        default_start (str): 기본 시작 날짜 (분석 기간 인자가 없을 경우 사용)
+        default_end (str): 기본 종료 날짜 (분석 기간 인자가 없을 경우 사용)
+    
+    Returns:
+        list: (시작 날짜, 종료 날짜) 튜플 리스트
+    """
+    if not periods_str:
+        return [(default_start, default_end)]
+    period_list = []
+    for pair in periods_str.split(";"):
+        if pair:
+            try:
+                s, e = pair.split(":")
+                period_list.append((s.strip(), e.strip()))
+            except Exception as e:
+                logging.getLogger(__name__).error(f"Error parsing period pair '{pair}': {e}", exc_info=True)
+    return period_list if period_list else [(default_start, default_end)]
+
+def get_default_date_range(symbol: str, timeframe: str = "1d") -> tuple:
+    """
+    특정 심볼과 시간 프레임에 대해 데이터베이스에서 데이터 날짜 범위를 조회합니다.
+    
+    Parameters:
+        symbol (str): 거래 심볼 (예: "BTC/USDT")
+        timeframe (str): 데이터의 시간 간격 (기본값: "1d")
+    
+    Returns:
+        tuple: (시작 날짜, 종료 날짜) 문자열. 데이터가 없으면 기본 날짜 범위("2022-01-01", "2023-01-01")를 반환합니다.
+    """
+    symbol_key = symbol.replace("/", "").lower()  # 테이블명 생성을 위한 심볼 변환
+    table_name = f"ohlcv_{symbol_key}_{timeframe}"
+    start_date, end_date = get_date_range(table_name, DATABASE)
+    # 데이터가 없는 경우 기본 날짜 범위로 설정합니다.
+    if start_date is None or end_date is None:
+        start_date, end_date = "2022-01-01 00:00:00", "2023-01-01 23:59:59"
+    return start_date, end_date
+
+def run_parameter_analysis():
+    """
+    거래 전략 파라미터의 민감도를 분석합니다.
+    
+    주요 단계:
+      1. 기존 로깅 파일 삭제 및 로거 초기화
+      2. 명령줄 인자 파싱 및 자산, 분석 기간 설정
+      3. 기본 파라미터값의 80% ~ 120% 범위 내에서 각 파라미터의 분석 값 생성
+      4. 민감도 분석 실행 및 결과 보고서 생성
+      5. 로깅 종료
+      
+    Parameters:
+        없음
+    
+    Returns:
+        None
+    """
+    # 기존 로깅 파일 초기화 및 로깅 설정 재설정
+    LoggingUtil.clear_log_files()
+    initialize_root_logger()
+
+    args = parse_args()  # 명령줄 인자 파싱
+    logger = setup_logger(__name__)
+    logger.info("Starting parameter sensitivity analysis.")
+
+    # 자산 목록 결정: 인자로 주어진 자산 사용, 없으면 DB에서 조회
+    if args.assets:
+        assets = parse_assets(args.assets)
+    else:
+        assets = get_unique_symbol_list() or ["BTC/USDT"]
+    logger.info(f"Assets for analysis: {assets}")
+
+    # 분석 기간 인자 파싱 (예: "2022-01-01:2023-01-01")
+    try:
+        analysis_start, analysis_end = args.analysis_period.split(":")
+        analysis_start = analysis_start.strip() + " 00:00:00"
+        analysis_end = analysis_end.strip() + " 23:59:59"
+    except Exception as e:
+        logger.error(f"Error parsing analysis_period: {e}", exc_info=True)
+        analysis_start, analysis_end = "2022-01-01 00:00:00", "2023-01-01 23:59:59"
+    logger.info(f"Using analysis period: {analysis_start} to {analysis_end}")
+
+    # 분석 기간을 기본 날짜 범위로 사용
+    default_start, default_end = analysis_start, analysis_end
+    logger.info(f"Default analysis date range: {default_start} to {default_end}")
+    periods = parse_periods(args.periods, default_start, default_end)
+
+    from parameter_management.config_manager import ConfigManager
+    cm = ConfigManager()
+    defaults = cm.get_defaults()  # 기본 파라미터 값을 조회합니다.
+    logger.info(f"Default parameters: {defaults}")
+    
+    # 분석할 파라미터 이름 리스트 생성
+    param_names = [p.strip() for p in args.param_names.split(",") if p.strip()]
+    param_settings = {}
+    for pname in param_names:
+        if pname not in defaults:
+            logger.warning(f"Parameter {pname} not found in default parameters. Skipping.")
+            continue
+        try:
+            default_val = float(defaults[pname])
+        except Exception:
+            logger.warning(f"Parameter {pname} is not numeric. Skipping.")
+            continue
+        start_val = default_val * 0.8  # 기본값의 80%
+        end_val = default_val * 1.2    # 기본값의 120%
+        # 지정된 단계 수(param_steps) 만큼 균등 간격의 값을 생성합니다.
+        param_settings[pname] = np.linspace(start_val, end_val, args.param_steps)
+        logger.info(f"Analyzing {pname} over range {start_val:.4f} to {end_val:.4f}")
+
+    # 파라미터 민감도 분석 실행
+    results_all = run_sensitivity_analysis(
+        param_settings, assets, args.short_tf, args.long_tf, default_start, default_end, periods
+    )
+    # 결과에 기반하여 보고서 제목 생성 후 최종 보고서 생성
+    report_title = "Multi-Parameter Analysis: " + ", ".join([str(k) for k in results_all.keys()])
+    generate_parameter_sensitivity_report(report_title, results_all)
+    shutdown_logging()  # 로깅 시스템 종료
+
+if __name__ == "__main__":
+    run_parameter_analysis()
+
+---
+
+# scripts/run_strategy_performance.py
+"""
+이 스크립트는 전체 거래 전략의 성능 평가를 위한 프로젝트 테스트를 수행합니다.
+주요 작업:
+  1. 워크포워드 방식의 파라미터 최적화 수행
+  2. 최적의 파라미터를 적용하여 각 자산에 대해 백테스팅 실행
+  3. 백테스트 결과를 기반으로 거래 성과 계산 및 최종 보고서 생성
+"""
+
+from logs.logger_config import setup_logger, initialize_root_logger, shutdown_logging  # 로깅 설정 함수들
+from logs.logging_util import LoggingUtil  # 기존 로깅 파일 관리 함수
+from strategies.optimizer import DynamicParameterOptimizer  # 동적 파라미터 최적화 클래스
+from backtesting.backtester import Backtester  # 백테스팅 수행 클래스
+from backtesting.performance import compute_performance  # 거래 성과 계산 함수
+from reports.final_report import generate_final_report  # 최종 보고서 생성 함수
+from parameter_management.config_manager import ConfigManager  # 설정 관리 클래스
+from data.db.db_manager import get_unique_symbol_list, get_date_range  # DB 관련 함수
+from data.db.db_config import DATABASE  # DB 접속 정보
+
+def get_default_date_range(symbol: str, timeframe: str = "1d") -> tuple:
+    """
+    주어진 심볼과 시간 프레임에 대해 데이터베이스에서 날짜 범위를 조회합니다.
+    
+    Parameters:
+        symbol (str): 거래 심볼 (예: "BTC/USDT")
+        timeframe (str): 데이터의 시간 간격 (기본값: "1d")
+    
+    Returns:
+        tuple: (시작 날짜, 종료 날짜) 문자열. 데이터가 없으면 기본 날짜 범위를 반환합니다.
+    """
+    symbol_key = symbol.replace("/", "").lower()  # 테이블명 생성을 위해 심볼 포맷 변환
+    table_name = f"ohlcv_{symbol_key}_{timeframe}"
+    start_date, end_date = get_date_range(table_name, DATABASE)
+    if start_date is None or end_date is None:
+        start_date, end_date = "2018-01-01 00:00:00", "2025-12-31 23:59:59"
+    return start_date, end_date
+
+def run_strategy_performance():
+    """
+    거래 전략의 성능을 평가하기 위한 전체 테스트를 수행합니다.
+    
+    주요 단계:
+      1. 기존 로깅 파일 정리 및 로깅 시스템 초기화
+      2. 워크포워드 파라미터 최적화를 통해 최적의 파라미터 탐색
+      3. 각 자산별 백테스팅 실행 및 데이터 로드
+      4. 백테스트 결과를 이용해 거래 성과 계산 후 최종 보고서 생성
+      5. 로깅 종료
+      
+    Parameters:
+        없음
+    
+    Returns:
+        None
+    """
+    # 기존 로깅 파일 삭제 및 로깅 시스템 초기화
+    LoggingUtil.clear_log_files()
+    initialize_root_logger()
+
+    logger = setup_logger(__name__)
+    logger.info("Starting full project test.")
+
+    # DB에서 분석 대상 자산 목록 조회, 없으면 기본 자산 리스트 사용
+    assets = get_unique_symbol_list() or ["BTC/USDT", "ETH/USDT", "XRP/USDT"]
+    logger.info(f"Assets for strategy performance: {assets}")
+
+    logger.info("Starting Walk-Forward parameter optimization.")
+    # 동적 파라미터 최적화를 위한 객체 생성 (최적화 반복 횟수: 10회)
+    optimizer = DynamicParameterOptimizer(n_trials=10, assets=assets)
+    best_trial = optimizer.optimize()  # 최적의 파라미터 탐색
+
+    config_manager = ConfigManager()
+    # 최적화된 파라미터와 기존 설정을 병합하여 최종 파라미터 결정
+    best_params = config_manager.merge_optimized(best_trial.params)
+    logger.info(f"Optimal parameters determined: {best_params}")
+
+    # 대표 자산의 1일(1d) 데이터 테이블을 통해 기본 날짜 범위를 조회
+    default_start, default_end = get_default_date_range(assets[0], "1d")
+    logger.info(f"Using date range from DB: {default_start} to {default_end}")
+    timeframes = {"short_tf": "4h", "long_tf": "1d"}
+
+    # 각 자산에 대해 백테스팅 실행
+    for symbol in assets:
+        symbol_key = symbol.replace("/", "").lower()  # 테이블명 생성을 위해 심볼 형식 변환
+        # 초기 계좌 크기를 10,000으로 설정하여 백테스터 인스턴스 생성
+        backtester = Backtester(symbol=symbol, account_size=10000)
+        try:
+            # 단기 및 장기 데이터 테이블 형식 지정 후 데이터 로드
+            backtester.load_data(
+                short_table_format=f"ohlcv_{symbol_key}_{{timeframe}}",
+                long_table_format=f"ohlcv_{symbol_key}_{{timeframe}}",
+                short_tf=timeframes["short_tf"],
+                long_tf=timeframes["long_tf"],
+                start_date=default_start,
+                end_date=default_end,
+                use_weekly=True  # 주간 데이터도 함께 로드
+            )
+        except Exception as e:
+            logger.error(f"Data load failed for {symbol}: {e}", exc_info=True)
+            continue
+
+        try:
+            # 최적 파라미터를 적용하여 백테스트 실행; 실행 결과로 거래 내역 반환
+            trades, _ = backtester.run_backtest(dynamic_params=best_params)
+            logger.info(f"Backtest complete for {symbol}: {len(trades)} trades executed.")
+        except Exception as e:
+            logger.error(f"Backtest error for {symbol}: {e}", exc_info=True)
+            continue
+
+        if trades:
+            # 거래 성과 계산 (예: 수익률, 승률 등) 후 최종 보고서 생성
+            performance_data = compute_performance(trades, weekly_data=backtester.df_weekly)
+            generate_final_report(performance_data, symbol=symbol)
+        else:
+            logger.info(f"No trades executed for {symbol}.")
+
+    logger.info("Project test complete.")
+    shutdown_logging()  # 로깅 시스템 종료
+
+if __name__ == "__main__":
+    run_strategy_performance()
+
+---
+
+# scripts/run_update_ohlcv_data.py
+"""
+이 스크립트는 거래 데이터(OHLCV: Open, High, Low, Close, Volume)를
+최신 상태로 업데이트하기 위한 작업을 수행합니다.
+
+주요 기능:
+  1. .env에 정의된 데이터베이스가 없으면 생성
+  2. 상위 거래량 심볼 및 해당 심볼의 최초 온보딩 날짜를 조회하여
+     공통 시작 날짜를 결정
+  3. 각 심볼과 각 시간 프레임에 대해 기존 데이터를 조회하고,
+     새로운 데이터를 API 등으로 가져와서 데이터베이스에 삽입
+"""
+
+import sys  # 시스템 종료를 위해 사용
+from datetime import datetime, timedelta, timezone  # 날짜 및 시간 처리를 위한 모듈
+import pandas as pd  # 데이터프레임 처리를 위한 라이브러리
+from dotenv import load_dotenv  # 환경변수 로드를 위한 라이브러리
+import psycopg2  # PostgreSQL 데이터베이스 연결 라이브러리
+from psycopg2 import sql  # SQL 쿼리 작성 시 안전하게 식별자 처리를 위한 모듈
+
+from data.db.db_config import DATABASE  # 데이터베이스 접속 정보를 담은 설정 객체
+from data.db.db_manager import fetch_ohlcv_records, insert_ohlcv_records  # 기존 데이터 조회 및 삽입 함수
+from data.ohlcv.ohlcv_fetcher import fetch_historical_ohlcv_data, get_top_volume_symbols, get_latest_onboard_date  # OHLCV 데이터 관련 함수들
+from logs.logger_config import initialize_root_logger, setup_logger  # 로깅 초기화 및 설정 함수
+
+# 환경변수 로드 및 로깅 초기화
+load_dotenv()
+initialize_root_logger()
+logger = setup_logger(__name__)
+
+def create_database_if_not_exists(db_config):
+    """
+    .env에 명시된 데이터베이스가 존재하지 않을 경우,
+    PostgreSQL의 기본 데이터베이스("postgres")에 접속하여 해당 데이터베이스를 생성합니다.
+    
+    Parameters:
+        db_config (dict): 데이터베이스 접속 정보를 담은 딕셔너리 
+                          (예: {'dbname': ..., 'user': ..., 'password': ..., 'host': ..., 'port': ...})
+    
+    Returns:
+        None: 데이터베이스 생성 여부에 따라 로그를 기록하며, 에러 발생 시 프로그램을 종료합니다.
+    """
+    dbname = db_config.get('dbname')
+    user = db_config.get('user')
+    password = db_config.get('password')
+    host = db_config.get('host')
+    port = db_config.get('port')
+    try:
+        # PostgreSQL 기본 데이터베이스인 "postgres"에 접속합니다.
+        conn = psycopg2.connect(dbname="postgres", user=user, password=password, host=host, port=port)
+        conn.autocommit = True  # 자동 커밋 모드를 활성화합니다.
+        cur = conn.cursor()
+        # 타겟 데이터베이스의 존재 여부를 확인합니다.
+        cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (dbname,))
+        exists = cur.fetchone()
+        if not exists:
+            logger.debug(f"Database '{dbname}' does not exist. Creating database.")
+            # 안전한 SQL 식별자 처리를 위해 psycopg2.sql 모듈 사용
+            cur.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(dbname)))
+        else:
+            logger.debug(f"Database '{dbname}' already exists.")
+        cur.close()
+        conn.close()
+    except Exception as e:
+        logger.error(f"Error checking/creating database: {e}", exc_info=True)
+        sys.exit(1)
+
+def run_update_ohlcv_data():
+    """
+    최신 OHLCV 데이터를 가져와서 데이터베이스에 업데이트하는 메인 함수입니다.
+    
+    주요 단계:
+      1. 데이터베이스가 존재하지 않으면 생성
+      2. 상위 거래량 심볼(예: Binance에서 USDT 마켓 상위 심볼)과 각 심볼의 첫 거래 날짜를 조회
+      3. 공통 시작 날짜(모든 심볼에 적용)를 결정
+      4. 각 심볼과 각 시간 프레임(1d, 4h, 1h, 15m)에 대해:
+            - 기존 데이터를 조회하고,
+            - 데이터가 있다면 마지막 타임스탬프 이후부터, 없으면 공통 시작 날짜부터
+            - 새로운 OHLCV 데이터를 API로 조회 후,
+            - 조회된 데이터가 있으면 데이터베이스에 삽입
+      5. 각 단계에서 에러 발생 시 로깅 처리 후 다음 처리로 진행 또는 종료
+      
+    Parameters:
+        없음
+    
+    Returns:
+        None
+    """
+    # 데이터베이스가 존재하지 않으면 생성합니다.
+    create_database_if_not_exists(DATABASE)
+    
+    # 상위 거래량 심볼 조회: (심볼, 첫 거래일) 튜플 리스트 반환
+    symbols_with_onboard = get_top_volume_symbols(exchange_id='binance', quote_currency='USDT', count=3)
+    if not symbols_with_onboard:
+        logger.error("No valid symbols found from Binance.")
+        sys.exit(1)
+    logger.debug(f"Top symbols (with onboard date): {symbols_with_onboard}")
+    
+    # 모든 심볼에 대해 공통 시작 날짜를 결정 (가장 늦은 온보딩 날짜 사용)
+    global_start_date = get_latest_onboard_date(symbols_with_onboard, exchange_id='binance')
+    logger.debug(f"Unified start date for all symbols: {global_start_date}")
+    
+    # 심볼 이름만 추출하여 리스트 생성
+    symbols = [item[0] for item in symbols_with_onboard]
+    # 데이터 업데이트할 다양한 시간 프레임 설정
+    timeframes = ["1d", "4h", "1h", "15m"]
+    
+    # 업데이트 종료 시점을 현재 UTC 시간으로 설정
+    end_date = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    
+    # 각 심볼과 각 시간 프레임에 대해 데이터 업데이트를 수행합니다.
+    for symbol in symbols:
+        symbol_key = symbol.replace("/", "").lower()  # 테이블명 생성을 위한 심볼 변환
+        logger.debug(f"Processing {symbol} (table prefix: ohlcv_{symbol_key}_)")
+        for tf in timeframes:
+            table_name = f"ohlcv_{symbol_key}_{tf}"
+            logger.debug(f"Processing {symbol} - {tf} (table: {table_name})")
+            
+            try:
+                # 데이터베이스에서 기존 OHLCV 데이터를 조회합니다.
+                df_existing = fetch_ohlcv_records(table_name=table_name)
+            except Exception as e:
+                logger.error(f"Error fetching existing data for table {table_name}: {e}", exc_info=True)
+                df_existing = pd.DataFrame()  # 에러 발생 시 빈 DataFrame 사용
+            
+            if not df_existing.empty:
+                # 기존 데이터가 있다면 마지막 타임스탬프 이후부터 새로운 데이터 조회
+                last_timestamp = df_existing.index.max()
+                new_start_dt = last_timestamp + timedelta(seconds=1)
+                new_start_date = new_start_dt.strftime("%Y-%m-%d %H:%M:%S")
+                logger.debug(f"Existing data found in {table_name}. Fetching new data from {new_start_date} to {end_date}.")
+            else:
+                # 데이터가 없으면 공통 시작 날짜부터 조회
+                new_start_date = global_start_date
+                logger.debug(f"No existing data in {table_name}. Fetching data from {new_start_date} to {end_date}.")
+            
+            try:
+                # 지정된 기간 동안 OHLCV 데이터를 조회합니다.
+                df_new = fetch_historical_ohlcv_data(
+                    symbol=symbol,
+                    timeframe=tf,
+                    start_date=new_start_date,
+                    exchange_id='binance'
+                )
+                if df_new.empty:
+                    logger.debug(f"No new data fetched for {symbol} - {tf}.")
+                    continue
+                else:
+                    logger.debug(f"Fetched {len(df_new)} new rows for {symbol} - {tf}.")
+            except Exception as e:
+                logger.error(f"Error fetching OHLCV data for {symbol} - {tf}: {e}", exc_info=True)
+                continue
+            
+            try:
+                # 조회된 새로운 데이터를 데이터베이스 테이블에 삽입합니다.
+                insert_ohlcv_records(df_new, table_name=table_name)
+                logger.debug(f"Inserted new data into table {table_name}.")
+            except Exception as e:
+                logger.error(f"Error inserting data into table {table_name}: {e}", exc_info=True)
+
+if __name__ == "__main__":
+    run_update_ohlcv_data()

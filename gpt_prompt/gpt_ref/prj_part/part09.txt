@@ -1,3 +1,4 @@
+[#9/10]
 # tests/conftest.py
 # 이 모듈은 테스트 실행 전후에 로깅 환경을 관리하는 설정들을 포함합니다.
 # 기존 로그 파일을 삭제하고 루트 로거를 초기화한 후, 테스트 종료 시 로깅을 종료합니다.
@@ -6,7 +7,7 @@ import os  # 파일 및 경로 관련 작업을 위한 모듈
 import glob  # 파일 패턴 검색용 모듈
 import logging  # 로깅 기능 제공
 import pytest  # 테스트 프레임워크용
-from logs.log_config import initialize_root_logger, shutdown_logging  # 로거 초기화 및 종료 함수
+from logs.logger_config import initialize_root_logger, shutdown_logging  # 로거 초기화 및 종료 함수
 
 @pytest.fixture(autouse=True, scope="session")
 def manage_logs():

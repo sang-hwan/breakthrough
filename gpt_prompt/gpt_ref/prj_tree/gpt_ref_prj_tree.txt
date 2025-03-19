@@ -1,49 +1,51 @@
-project_root/
-├── asset_position/              # [자산 및 포지션 관리]
-│   ├── account.py               # 거래 계좌 관리
-│   ├── asset_manager.py         # 자산 리밸런싱 및 자산 전환 관리
-│   └── position.py              # 포지션 및 실행 기록 관리
-│
-├── data/                        # [데이터]
-│   ├── db/                      # DB 접속 및 데이터 저장/조회 관련: db_config, db_manager
-│   └── ohlcv/                   # 거래 데이터 수집 및 집계: ohlcv_fetcher, ohlcv_aggregator, ohlcv_pipeline
-│
-├── logging/                     # [로깅]
-│   ├── logger_config.py         # 로깅 인프라 설정 (파일/콘솔/큐 핸들러, 회전 핸들러 등)
-│   ├── logging_util.py          # 추가 로깅 유틸리티 및 동적 로그 트래킹
-│   ├── aggregating_handler.py   # 로그 이벤트 집계 핸들러
-│   └── state_change_manager.py  # 상태 변화 관리
-│
-├── market_analysis/             # [시장 분석]
-│   ├── regime_filter.py         # 가격 기반 시장 상태 판단 함수
-│   └── regime_model.py          # HMM 기반 시장 상태 예측 모델
-│
-├── parameter_management/        # [파라미터 관리/최적화/과적합 방지]
-│   ├── config_manager.py        # 기본 파라미터 정의 및 동적 업데이트/검증
-│   ├── optimizer.py             # 동적 파라미터 최적화
-│   └── param_analysis.py        # 민감도 분석 기능
-│
-├── reports/                     # [성과 보고]
-│   ├── final_report.py          # 최종 성과 보고서 생성 함수
-│   └── performance.py           # 거래 성과 계산 함수
-│
-├── scripts/                     # [실행 스크립트]
-│   ├── run_drop_db_tables.py
-│   ├── run_update_ohlcv_data.py
-│   ├── run_parameter_analysis.py
-│   └── run_strategy_performance.py
-│
-├── signal_calculation/          # [신호 계산]
-│   ├── strategies/              # 다양한 전략 클래스 및 앙상블: base_strategy, trading_strategies
-│   ├── ensemble.py              # 전략 신호 결합(앙상블) 로직
-│   └── indicators.py            # 기술적 인디케이터 계산 함수
-│
-├── tests/                       # 테스트 케이스 전체
-│
-└── trading/                     # [거래]
-    ├── backtesting/             # 백테스트 전체 파이프라인
-    │   ├── steps/               # data_loader.py, hmm_manager.py, indicator_applier.py, order_manager.py
-    │   └── backtester.py
-    ├── calculators.py       
-    ├── risk_manager.py          # 리스크 관리 및 포지션 사이즈 계산, trailing stop 등
-    └── trade_executor.py        # 실제 거래 실행 로직 (계산 함수 호출 포함)
+my_trading_project/
+├── README.md                                        # 프로젝트 개요 및 실행 방법
+├── requirements.txt                                 # 필요 라이브러리 목록
+├── data/                                            # 데이터 관련 디렉토리
+│   ├── collector/                                   # (데이터 수집) 관련 스크립트
+│   │   └── collect_data.py                          # 시장 분석/신호 계산/거래 모듈에 필요한 데이터를 수집
+│   ├── storage/                                     # (데이터 저장) 관련 스크립트
+│   │   └── store_data.py                            # PostgreSQL에 데이터 저장 (raw SQL 사용)
+│   ├── updater/                                     # (데이터 최신화) 관련 스크립트
+│   │   └── update_data.py                           # 기존 DB 데이터 최신화
+│   ├── deleter/                                     # (데이터 삭제) 관련 스크립트
+│   │   └── delete_data.py                           # 기존 DB에서 특정 데이터 삭제
+│   └── fetcher/                                     # (데이터 조회) 관련 스크립트
+│       └── fetch_data.py                            # DB로부터 데이터 조회하여 반환
+├── market_analysis/                                 # 시장 분석 디렉토리
+│   └── analyze_market.py                            # 시장 분석 기법 (상승/하락/횡보 등) 및 추세 판단 로직
+├── signal_calc/                                     # 신호 계산 디렉토리
+│   └── calc_signal.py                               # 시장 분석 결과에 따른 맞춤 신호 계산 기법 구현
+├── trading/                                         # 거래 디렉토리
+│   ├── trade_decision.py                            # 신호에 따른 매수/매도 판단 로직
+│   ├── position_management.py                       # 포지션 관리(분할 매매, 자산관리 등)
+│   └── risk_management.py                           # 시장 상황별 리스크 관리 기법 (손절, 트레일링 스톱 등)
+├── parameters_sensitivity/                          # 파라미터 및 민감도 분석 모듈
+│   ├── market_analysis.py                           # 시장 분석 모듈용 파라미터 및 민감도 분석
+│   ├── signal_calc.py                               # 신호 계산 모듈용 파라미터 및 민감도 분석
+│   └── trading.py                                   # 거래 모듈용 파라미터 및 민감도 분석
+├── optimization/                                    # 최적화와 과적합 방지, 성과 지표 모듈
+│   ├── market_optimize.py                           # 시장 분석 모듈용 최적화, 과적합 방지 로직
+│   ├── market_metrics.py                            # 시장 분석 모듈용 성과 지표 계산
+│   ├── signal_optimize.py                           # 신호 계산 모듈용 최적화, 과적합 방지 로직
+│   ├── signal_metrics.py                            # 신호 계산 모듈용 성과 지표 계산
+│   ├── trade_optimize.py                            # 거래 모듈용 최적화, 과적합 방지 로직
+│   └── trade_metrics.py                             # 거래 모듈용 성과 지표 계산
+├── logs/                                           # 로그 관련 디렉토리
+│   ├── log_config.py                                # 로그 중앙 관리 설정 (DEBUG→콘솔, INFO→log_files)
+│   └── log_files/                                   # INFO 이상 로그 파일 저장 디렉토리
+│       └── .gitignore                               # 로그 파일 커밋 제외 (선택 사항)
+├── tests/                                          # 단위 테스트 디렉토리
+│   ├── test_market_analysis.py                      # 시장 분석 모듈 단위 테스트
+│   ├── test_signal_calc.py                          # 신호 계산 모듈 단위 테스트
+│   ├── test_trading.py                              # 거래 모듈 단위 테스트
+│   └── __init__.py                                  # 테스트 디렉토리 패키지화 (필요 시)
+└── scripts/                                         # 실행 스크립트 디렉토리
+    ├── run_data_store.py                            # 데이터 저장 스크립트
+    ├── run_data_update.py                           # 데이터 최신화 스크립트
+    ├── run_data_delete.py                           # 데이터 삭제 스크립트
+    ├── run_market_analysis.py                       # 시장 분석 핵심 파라미터 추출, 최적화 등 피드백
+    ├── run_signal_calc.py                           # 신호 계산 핵심 파라미터 추출, 최적화 등 피드백
+    ├── run_trading.py                               # 거래 핵심 파라미터 추출, 최적화 등 피드백
+    ├── run_backtest.py                              # 백테스트 통합 실행(파라미터 최적화, 과적합 방지, 성과지표 계산)
+    └── run_final_report.py                          # 최종 파라미터로 백테스트 후 결과 보고

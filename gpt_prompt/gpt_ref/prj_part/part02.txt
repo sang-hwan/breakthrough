@@ -1,0 +1,862 @@
+[#2/10]
+# data/db/db_config.py
+
+# 전역 변수 DATABASE:
+# 이 변수는 데이터베이스 접속에 필요한 정보를 담고 있습니다.
+# PostgreSQL 데이터베이스와 연결하기 위해 사용자 이름, 비밀번호, 호스트, 포트, 데이터베이스 이름을 설정합니다.
+DATABASE: dict = {
+    'user': 'postgres',      # 데이터베이스 접속에 사용되는 사용자 이름입니다.
+    'password': '1234',      # 사용자의 비밀번호입니다.
+    'host': 'localhost',     # 데이터베이스가 설치된 서버 주소입니다. 여기서는 로컬 서버를 사용합니다.
+    'port': 5432,            # PostgreSQL의 기본 포트 번호입니다.
+    'dbname': 'my_trading_db'  # 접속할 데이터베이스의 이름입니다.
+}
+
+---
+
+# data/db/db_manager.py
+
+# 필요한 라이브러리 및 모듈을 임포트합니다.
+from sqlalchemy import create_engine, text   # SQLAlchemy: 데이터베이스 엔진 생성 및 SQL 실행
+from psycopg2.extras import execute_values   # psycopg2 헬퍼 함수: 다중 레코드 삽입 최적화
+import pandas as pd                            # 데이터프레임(DataFrame) 처리를 위한 pandas
+from typing import Any, Iterable, Dict          # 타입 힌트를 제공하기 위한 모듈
+from data.db.db_config import DATABASE         # 데이터베이스 접속 설정 정보를 불러옵니다.
+from logs.logger_config import setup_logger     # 로깅 설정을 불러와 로그 기록에 사용합니다.
+
+# 로깅 객체(logger)를 전역 변수로 생성합니다.
+# 모듈명을 기준으로 로거를 설정하여 이후 에러 및 실행 정보를 기록할 때 사용됩니다.
+logger = setup_logger(__name__)
+
+def insert_on_conflict(table: Any, conn: Any, keys: list, data_iter: Iterable) -> None:
+    """
+    pandas의 to_sql 메서드와 함께 사용되는 커스텀 삽입 함수입니다.
+    'timestamp' 컬럼에서 중복(Conflict)이 발생할 경우 아무 작업도 수행하지 않고 건너뜁니다.
+    
+    Parameters:
+        table (Any): 데이터베이스 테이블 객체로, 삽입 대상 테이블을 의미합니다.
+        conn (Any): SQLAlchemy 연결 객체로, 실제 데이터베이스 연결 정보를 포함합니다.
+        keys (list): 삽입할 데이터의 컬럼 이름 리스트입니다.
+        data_iter (Iterable): 삽입할 데이터가 담긴 반복 가능한 객체입니다.
+    
+    Returns:
+        None: 함수는 데이터 삽입 작업만 수행하며 반환값은 없습니다.
+    
+    주요 로직:
+        - SQLAlchemy 연결 객체에서 psycopg2의 원시 연결(raw connection)을 추출합니다.
+        - 커서를 생성하고, 데이터를 리스트로 변환한 후 삽입할 컬럼 이름들을 문자열로 만듭니다.
+        - INSERT SQL문에 'ON CONFLICT (timestamp) DO NOTHING' 구문을 추가하여 timestamp 중복 시 삽입하지 않습니다.
+        - 다중 레코드를 한 번에 삽입한 후 커서를 닫습니다.
+    """
+    try:
+        # SQLAlchemy 연결 객체에서 psycopg2의 원시 커넥션을 가져옵니다.
+        raw_conn = conn.connection
+        # SQL 명령을 실행할 커서를 생성합니다.
+        cur = raw_conn.cursor()
+        # 삽입할 데이터를 리스트 형태로 변환합니다.
+        values = list(data_iter)
+        # 삽입할 컬럼 이름들을 쉼표로 구분하여 하나의 문자열로 만듭니다.
+        columns = ", ".join(keys)
+        # SQL INSERT 문을 생성합니다.
+        # 'ON CONFLICT (timestamp) DO NOTHING'은 timestamp 컬럼에서 충돌 시 아무 작업도 하지 않도록 합니다.
+        sql_str = f"INSERT INTO {table.name} ({columns}) VALUES %s ON CONFLICT (timestamp) DO NOTHING"
+        # psycopg2의 execute_values를 사용하여 다중 레코드를 효율적으로 삽입합니다.
+        execute_values(cur, sql_str, values)
+        # 사용이 끝난 커서를 닫아 리소스를 해제합니다.
+        cur.close()
+    except Exception as e:
+        # 예외 발생 시 에러 메시지와 스택 트레이스를 로깅합니다.
+        logger.error(f"insert_on_conflict 에러: {e}", exc_info=True)
+
+def insert_ohlcv_records(df: pd.DataFrame, table_name: str = 'ohlcv_data', conflict_action: str = "DO NOTHING",
+                         db_config: Dict[str, Any] = None, chunk_size: int = 10000) -> None:
+    """
+    OHLCV (시가, 고가, 저가, 종가, 거래량) 데이터를 지정된 테이블에 삽입합니다.
+    만약 해당 테이블이 존재하지 않으면 새로 생성하며, 데이터 삽입 시 timestamp 충돌 발생 시 아무 작업도 하지 않습니다.
+    
+    Parameters:
+        df (pd.DataFrame): 삽입할 OHLCV 데이터를 담은 pandas DataFrame.
+        table_name (str): 데이터를 삽입할 테이블의 이름. 기본값은 'ohlcv_data'입니다.
+        conflict_action (str): 데이터 삽입 시 충돌 발생 처리 방식. 현재 "DO NOTHING" 방식만 사용합니다.
+        db_config (Dict[str, Any]): 데이터베이스 접속 설정 딕셔너리. 제공되지 않으면 기본 DATABASE를 사용합니다.
+        chunk_size (int): 한 번에 삽입할 데이터 행(row)의 최대 개수. 기본값은 10000입니다.
+    
+    Returns:
+        None: 데이터 삽입 작업을 수행하며, 별도의 반환값은 없습니다.
+    
+    주요 로직:
+        - 데이터베이스 연결 엔진을 생성합니다.
+        - 테이블이 존재하지 않을 경우, OHLCV 데이터를 위한 테이블을 생성하는 SQL문을 실행합니다.
+        - DataFrame의 인덱스를 초기화하여 삽입에 적합한 형태로 변환한 후, to_sql 메서드로 데이터를 삽입합니다.
+        - 삽입 과정에서는 커스텀 함수(insert_on_conflict)를 이용해 timestamp 충돌을 처리합니다.
+    """
+    # db_config가 제공되지 않으면 기본 DATABASE 설정을 사용합니다.
+    if db_config is None:
+        db_config = DATABASE
+
+    # SQLAlchemy 엔진 생성: 데이터베이스와의 연결을 담당합니다.
+    engine = create_engine(
+        f"postgresql://{db_config['user']}:{db_config['password']}@"
+        f"{db_config['host']}:{db_config['port']}/{db_config['dbname']}",
+        pool_pre_ping=True  # 연결 유효성 검사를 활성화하여 끊긴 연결을 감지합니다.
+    )
+
+    # 테이블이 존재하지 않을 경우 생성할 SQL 문을 작성합니다.
+    create_table_sql = text(f"""
+        CREATE TABLE IF NOT EXISTS {table_name} (
+            timestamp TIMESTAMP NOT NULL,
+            open DOUBLE PRECISION,
+            high DOUBLE PRECISION,
+            low DOUBLE PRECISION,
+            close DOUBLE PRECISION,
+            volume DOUBLE PRECISION,
+            PRIMARY KEY (timestamp)
+        );
+    """)
+    try:
+        # 트랜잭션 블록 내에서 테이블 생성 SQL을 실행합니다.
+        with engine.begin() as conn:
+            conn.execute(create_table_sql)
+    except Exception as e:
+        # 테이블 생성 중 오류가 발생하면 에러 메시지를 로깅하고 함수를 종료합니다.
+        logger.error(f"테이블 생성 에러 ({table_name}): {e}", exc_info=True)
+        return
+
+    try:
+        # 원본 DataFrame을 복사하여 작업 시 데이터 무결성을 유지합니다.
+        df = df.copy()
+        # DataFrame의 인덱스를 컬럼으로 변환합니다.
+        df.reset_index(inplace=True)
+        # pandas의 to_sql 메서드를 사용하여 데이터를 데이터베이스에 삽입합니다.
+        # if_exists='append' 옵션을 사용해 기존 데이터에 추가하며,
+        # method 인자로 커스텀 충돌 처리 함수(insert_on_conflict)를 지정합니다.
+        df.to_sql(
+            table_name,
+            engine,
+            if_exists='append',
+            index=False,
+            method=insert_on_conflict,
+            chunksize=chunk_size
+        )
+    except Exception as e:
+        # 데이터 삽입 중 오류가 발생하면 에러 메시지를 로깅합니다.
+        logger.error(f"데이터 저장 에러 ({table_name}): {e}", exc_info=True)
+
+def fetch_ohlcv_records(table_name: str = 'ohlcv_data', start_date: str = None, end_date: str = None,
+                        db_config: Dict[str, Any] = None) -> pd.DataFrame:
+    """
+    지정된 테이블에서 OHLCV 데이터를 조회하여, 선택한 날짜 범위 내의 데이터를 pandas DataFrame으로 반환합니다.
+    
+    Parameters:
+        table_name (str): 조회할 테이블의 이름. 기본값은 'ohlcv_data'입니다.
+        start_date (str): 조회 시작 날짜 (포함). "YYYY-MM-DD" 또는 "YYYY-MM-DD HH:MM:SS" 형식.
+        end_date (str): 조회 종료 날짜 (포함). "YYYY-MM-DD" 또는 "YYYY-MM-DD HH:MM:SS" 형식.
+        db_config (Dict[str, Any]): 데이터베이스 접속 설정 딕셔너리. 제공되지 않으면 기본 DATABASE 사용.
+    
+    Returns:
+        pd.DataFrame: 조회된 OHLCV 데이터를 담은 DataFrame.
+                      오류 발생 시 빈 DataFrame을 반환합니다.
+    
+    주요 로직:
+        - 데이터베이스 연결 엔진을 생성합니다.
+        - 날짜 조건(start_date, end_date)이 있을 경우 SQL WHERE 절에 조건을 추가합니다.
+        - SQLAlchemy의 text() 함수를 사용해 쿼리를 구성하고, pandas의 read_sql로 실행 결과를 DataFrame으로 변환합니다.
+        - 'timestamp' 컬럼을 인덱스로 설정하여 반환합니다.
+    """
+    # db_config가 제공되지 않으면 기본 DATABASE 설정을 사용합니다.
+    if db_config is None:
+        db_config = DATABASE
+
+    try:
+        # 데이터베이스 연결 엔진을 생성합니다.
+        engine = create_engine(
+            f"postgresql://{db_config['user']}:{db_config['password']}@"
+            f"{db_config['host']}:{db_config['port']}/{db_config['dbname']}",
+            pool_pre_ping=True
+        )
+    except Exception as e:
+        # 엔진 생성 실패 시 에러를 로깅하고 빈 DataFrame 반환.
+        logger.error(f"DB 엔진 생성 에러: {e}", exc_info=True)
+        return pd.DataFrame()
+
+    # 기본 SQL 쿼리문: WHERE 1=1은 추가 조건을 쉽게 붙이기 위한 트릭입니다.
+    query = f"SELECT * FROM {table_name} WHERE 1=1"
+    params = {}
+    # 시작 날짜 조건이 제공되면 쿼리에 추가합니다.
+    if start_date:
+        query += " AND timestamp >= :start_date"
+        params['start_date'] = start_date
+    # 종료 날짜 조건이 제공되면 쿼리에 추가합니다.
+    if end_date:
+        query += " AND timestamp <= :end_date"
+        params['end_date'] = end_date
+    # 결과를 timestamp 기준으로 정렬합니다.
+    query += " ORDER BY timestamp"
+    # SQLAlchemy의 text() 함수를 사용하여 SQL 텍스트 객체로 변환합니다.
+    query = text(query)
+    try:
+        # pandas의 read_sql 함수를 이용해 SQL 쿼리 결과를 DataFrame으로 읽어옵니다.
+        # parse_dates를 통해 'timestamp' 컬럼을 날짜형으로 파싱합니다.
+        df = pd.read_sql(query, engine, params=params, parse_dates=['timestamp'])
+        # 'timestamp' 컬럼을 인덱스로 설정합니다.
+        df.set_index('timestamp', inplace=True)
+        return df
+    except Exception as e:
+        # 데이터 조회 중 오류 발생 시 에러 메시지를 로깅하고 빈 DataFrame 반환.
+        logger.error(f"데이터 로드 에러 ({table_name}): {e}", exc_info=True)
+        return pd.DataFrame()
+
+def get_unique_symbol_list(db_config: Dict[str, Any] = None) -> list:
+    """
+    데이터베이스의 public 스키마에서 테이블 이름을 조회하고,
+    테이블 이름이 "ohlcv_{symbol}_{timeframe}" 형식을 따르는 경우 고유한 symbol 목록(예: BTC/USDT)을 반환합니다.
+    
+    Parameters:
+        db_config (Dict[str, Any]): 데이터베이스 접속 설정 딕셔너리.
+                                    제공되지 않으면 기본 DATABASE 사용.
+    
+    Returns:
+        list: 표준 형식으로 변환된 고유한 symbol 목록을 문자열 리스트로 반환합니다.
+              예: ["BTC/USDT", "ETH/USDT", ...]
+    
+    주요 로직:
+        - 데이터베이스 연결을 통해 public 스키마의 모든 테이블 이름을 조회합니다.
+        - 테이블 이름이 'ohlcv_'로 시작하는 경우, 언더스코어('_')를 기준으로 분할하여 symbol 정보를 추출합니다.
+        - 추출한 symbol이 'usdt'로 끝나면, 이를 'BTC/USDT'와 같이 표준 형식으로 변환합니다.
+        - 고유한 symbol을 정렬하여 반환합니다.
+    """
+    # db_config가 제공되지 않으면 기본 DATABASE 설정을 사용합니다.
+    if db_config is None:
+        db_config = DATABASE
+    try:
+        # 데이터베이스 연결 엔진을 생성합니다.
+        engine = create_engine(
+            f"postgresql://{db_config['user']}:{db_config['password']}@"
+            f"{db_config['host']}:{db_config['port']}/{db_config['dbname']}",
+            pool_pre_ping=True
+        )
+        # 엔진을 통해 데이터베이스에 접속하여 public 스키마의 테이블 이름을 조회합니다.
+        with engine.connect() as conn:
+            result = conn.execute(text("SELECT tablename FROM pg_tables WHERE schemaname = 'public'"))
+            tables = [row[0] for row in result]
+    except Exception as e:
+        # 테이블 이름 조회 중 오류가 발생하면 에러 메시지를 로깅하고 빈 리스트 반환.
+        logger.error(f"Error fetching table names: {e}", exc_info=True)
+        return []
+
+    # 중복 제거를 위한 집합을 생성합니다.
+    symbol_set = set()
+    for table in tables:
+        # 테이블 이름이 'ohlcv_'로 시작하는 경우에만 처리합니다.
+        if table.startswith("ohlcv_"):
+            # '_'를 기준으로 분할하면 형식은: ohlcv_{symbol}_{timeframe}이 됩니다.
+            parts = table.split("_")
+            if len(parts) >= 3:
+                # 두 번째 요소(parts[1])가 symbol 정보입니다. 예: 'btcusdt'
+                symbol_key = parts[1]
+                symbol_set.add(symbol_key)
+
+    symbols = []
+    # 추출한 symbol_key를 표준 형식으로 변환합니다.
+    for s in symbol_set:
+        # 만약 symbol_key가 'usdt'로 끝나면, 예: 'btcusdt' -> 'BTC/USDT'
+        if s.endswith("usdt"):
+            base = s[:-4].upper()  # 마지막 4글자('usdt') 제거 후 대문자로 변환
+            symbol = f"{base}/USDT"
+            symbols.append(symbol)
+        else:
+            # 그 외의 경우 단순히 대문자로 변환합니다.
+            symbols.append(s.upper())
+    # 정렬된 symbol 리스트를 반환합니다.
+    return list(sorted(symbols))
+
+def get_date_range(table_name: str, db_config: dict = None) -> tuple:
+    """
+    지정된 테이블에서 가장 오래된(timestamp 최소값) 날짜와 최신(timestamp 최대값) 날짜를 조회하여 반환합니다.
+    
+    Parameters:
+        table_name (str): 날짜 범위를 조회할 테이블의 이름.
+        db_config (dict): 데이터베이스 접속 설정 딕셔너리. 제공되지 않으면 기본 DATABASE 사용.
+    
+    Returns:
+        tuple: (start_date, end_date) 형식의 튜플을 반환합니다.
+               각 날짜는 "YYYY-MM-DD HH:MM:SS" 형식의 문자열입니다.
+               조회에 실패하면 (None, None)을 반환합니다.
+    
+    주요 로직:
+        - 데이터베이스 연결 엔진을 생성합니다.
+        - SQL 쿼리를 통해 해당 테이블의 최소(timestamp) 및 최대(timestamp) 값을 조회합니다.
+        - 조회된 날짜를 지정한 문자열 포맷으로 변환 후 반환합니다.
+    """
+    # db_config가 제공되지 않으면 기본 DATABASE 설정을 사용합니다.
+    if db_config is None:
+        db_config = DATABASE
+    try:
+        # 데이터베이스 연결 엔진 생성
+        engine = create_engine(
+            f"postgresql://{db_config['user']}:{db_config['password']}@"
+            f"{db_config['host']}:{db_config['port']}/{db_config['dbname']}",
+            pool_pre_ping=True
+        )
+    except Exception as e:
+        # 엔진 생성 실패 시 에러 메시지 로깅 후 (None, None) 반환.
+        logger.error(f"DB 엔진 생성 에러: {e}", exc_info=True)
+        return None, None
+
+    # 최소 및 최대 timestamp 값을 조회하는 SQL 쿼리문을 작성합니다.
+    query = f"SELECT MIN(timestamp) AS start_date, MAX(timestamp) AS end_date FROM {table_name}"
+    query = text(query)
+    try:
+        with engine.connect() as conn:
+            result = conn.execute(query)
+            row = result.fetchone()
+            # 유효한 결과가 있는 경우 날짜를 지정한 형식의 문자열로 변환합니다.
+            if row and row[0] and row[1]:
+                start_date = row[0].strftime("%Y-%m-%d %H:%M:%S")
+                end_date = row[1].strftime("%Y-%m-%d %H:%M:%S")
+                return start_date, end_date
+            else:
+                # 유효한 날짜 범위를 찾지 못하면 에러 메시지를 로깅합니다.
+                logger.error(f"테이블 {table_name}에서 날짜 범위를 찾을 수 없습니다.")
+                return None, None
+    except Exception as e:
+        # SQL 실행 중 오류 발생 시 에러 메시지 로깅 후 (None, None) 반환.
+        logger.error(f"날짜 범위 조회 에러 ({table_name}): {e}", exc_info=True)
+        return None, None
+
+---
+
+# data/ohlcv/ohlcv_aggregator.py
+
+import pandas as pd
+from ta.trend import SMAIndicator  # 기술적 지표 중 단순 이동평균(SMA)을 계산하기 위한 라이브러리
+from logs.logger_config import setup_logger  # 로깅 설정을 위한 모듈
+
+# 전역 변수: 로깅 설정 객체
+# 현재 파일의 이름을 기반으로 로깅을 설정하여 디버그 및 에러 로그 기록에 활용됩니다.
+logger = setup_logger(__name__)
+
+def aggregate_to_weekly(
+    df: pd.DataFrame,
+    compute_indicators: bool = True,
+    resample_rule: str = "W-MON",
+    label: str = "left",
+    closed: str = "left",
+    timezone: str = None,
+    sma_window: int = 5
+) -> pd.DataFrame:
+    """
+    OHLCV 데이터를 주간 단위로 집계하고, 선택적으로 기술적 지표를 계산합니다.
+    인덱스의 타임존 조정도 가능하도록 합니다.
+    
+    Parameters:
+        df (pd.DataFrame): datetime 인덱스를 가진 OHLCV 데이터. (open, high, low, close, volume 컬럼 포함)
+        compute_indicators (bool): 추가 지표(주간 SMA, 모멘텀, 변동성)를 계산할지 여부.
+        resample_rule (str): pandas의 재샘플링 규칙 (기본값 "W-MON": 월요일 기준 주간).
+        label (str): 재샘플링 결과의 인덱스 라벨 위치 (기본 "left").
+        closed (str): 구간의 닫힌 쪽 지정 (기본 "left").
+        timezone (str): 인덱스의 타임존 변환 옵션 (예: "UTC", "Asia/Seoul").
+        sma_window (int): 주간 단순 이동평균(SMA) 계산 시 윈도우 크기 (기본 5).
+    
+    Returns:
+        pd.DataFrame: 주간 단위로 집계된 데이터프레임.
+                      기본 컬럼: open, weekly_high, weekly_low, close, volume.
+                      compute_indicators가 True이면 weekly_sma, weekly_momentum, weekly_volatility 컬럼 추가.
+    """
+    
+    # 필수 컬럼들 (OHLCV 데이터) 존재 여부 확인
+    required_columns = {"open", "high", "low", "close", "volume"}
+    missing = required_columns - set(df.columns)
+    if missing:
+        # 필수 컬럼이 누락된 경우 에러 로그 기록 후 빈 DataFrame 반환
+        logger.error(f"Input DataFrame is missing required columns: {missing}", exc_info=True)
+        return pd.DataFrame()
+
+    # 인덱스가 datetime 형식인지 확인 후 변환
+    if not pd.api.types.is_datetime64_any_dtype(df.index):
+        try:
+            df.index = pd.to_datetime(df.index)
+        except Exception as e:
+            logger.error(f"Failed to convert index to datetime: {e}", exc_info=True)
+            return pd.DataFrame()
+
+    if df.empty:
+        logger.error("Input DataFrame for aggregation is empty.", exc_info=True)
+        return df
+
+    try:
+        if timezone:
+            # 타임존이 지정된 경우: 인덱스가 naive이면 UTC로 로컬라이즈 후 지정된 타임존으로 변환
+            if df.index.tz is None:
+                df = df.tz_localize('UTC')
+            df = df.tz_convert(timezone)
+    except Exception as e:
+        logger.error(f"Timezone conversion error: {e}", exc_info=True)
+
+    try:
+        # pandas의 resample 메소드를 이용하여 주간 단위로 OHLCV 데이터를 집계
+        weekly = df.resample(rule=resample_rule, label=label, closed=closed).agg({
+            'open': 'first',    # 해당 주의 첫 번째 가격을 open으로 사용
+            'high': 'max',      # 주간 최고가
+            'low': 'min',       # 주간 최저가
+            'close': 'last',    # 해당 주의 마지막 가격을 close로 사용
+            'volume': 'sum'     # 거래량은 주간 합계
+        })
+    except Exception as e:
+        logger.error(f"Resampling error: {e}", exc_info=True)
+        return pd.DataFrame()
+
+    if weekly.empty:
+        logger.error("Aggregated weekly DataFrame is empty after resampling.", exc_info=True)
+        return weekly
+
+    # 컬럼 이름 변경: 전략 개발 시 명확하게 식별할 수 있도록 high, low 컬럼을 주간 데이터로 재명명
+    weekly.rename(columns={'high': 'weekly_high', 'low': 'weekly_low'}, inplace=True)
+
+    if compute_indicators:
+        try:
+            # 주간 SMA 계산: SMAIndicator를 사용하여 close 가격의 단순 이동평균을 계산합니다.
+            sma_indicator = SMAIndicator(close=weekly['close'], window=sma_window, fillna=True)
+            weekly['weekly_sma'] = sma_indicator.sma_indicator()
+            
+            # 주간 모멘텀 계산: 주간 close 가격의 전 주 대비 백분율 변화
+            weekly['weekly_momentum'] = weekly['close'].pct_change() * 100
+            
+            # 주간 변동성 계산: (주간 최고가 - 주간 최저가) / 주간 최저가,
+            # 만약 주간 최저가가 0이면 0으로 설정하여 division by zero 방지
+            weekly['weekly_volatility'] = weekly.apply(
+                lambda row: (row['weekly_high'] - row['weekly_low']) / row['weekly_low']
+                if row['weekly_low'] != 0 else 0.0, axis=1)
+        except Exception as e:
+            logger.error(f"Error computing weekly indicators: {e}", exc_info=True)
+            
+    # 최종 집계된 주간 데이터프레임 반환
+    return weekly
+
+---
+
+# data/ohlcv/ohlcv_fetcher.py
+
+import ccxt  # 암호화폐 거래소 API 연동을 위한 라이브러리
+import pandas as pd
+from datetime import datetime
+import time  # 시간 지연을 위한 모듈
+from logs.logger_config import setup_logger  # 로깅 설정 모듈
+from functools import lru_cache  # 함수 결과 캐싱을 위한 모듈
+
+# 전역 변수: 로깅 설정 객체
+logger = setup_logger(__name__)
+
+@lru_cache(maxsize=32)  # 캐시를 통해 동일 파라미터 호출 시 중복 API 호출 방지
+def fetch_historical_ohlcv_data(symbol: str, timeframe: str, start_date: str, 
+                                limit_per_request: int = 1000, pause_sec: float = 1.0, 
+                                exchange_id: str = 'binance', single_fetch: bool = False,
+                                time_offset_ms: int = 1, max_retries: int = 3,
+                                exchange_instance=None) -> pd.DataFrame:
+    """
+    지정된 심볼(symbol)과 시간 간격(timeframe)에 대해, start_date부터의 역사적 OHLCV 데이터를 ccxt를 통해 수집합니다.
+    선택적으로 exchange_instance를 재사용하여 API 호출 횟수를 줄입니다.
+    
+    Parameters:
+        symbol (str): 거래 심볼 (예: 'BTC/USDT').
+        timeframe (str): 시간 간격 (예: '1d', '1h').
+        start_date (str): 데이터 수집 시작일 ("YYYY-MM-DD" 또는 "YYYY-MM-DD HH:MM:SS").
+        limit_per_request (int): 한 번 호출 시 가져올 데이터 개수 (기본값 1000).
+        pause_sec (float): API 호출 간 대기 시간 (기본값 1.0초).
+        exchange_id (str): 사용 거래소 ID (기본값 'binance').
+        single_fetch (bool): 한 번의 호출만 수행할지 여부.
+        time_offset_ms (int): 다음 호출 시 타임스탬프 오프셋 (밀리초 단위).
+        max_retries (int): 최대 재시도 횟수 (기본값 3).
+        exchange_instance: 재사용할 ccxt 거래소 인스턴스 (옵션).
+    
+    Returns:
+        pd.DataFrame: OHLCV 데이터를 포함하는 DataFrame. 컬럼은 ['timestamp', 'open', 'high', 'low', 'close', 'volume'].
+    """
+    # exchange_instance가 제공되지 않은 경우, 새로운 ccxt 거래소 인스턴스 생성 및 마켓 로드
+    if exchange_instance is None:
+        try:
+            exchange_class = getattr(ccxt, exchange_id)
+            exchange = exchange_class({'enableRateLimit': True, 'timeout': 30000})
+            logger.debug(f"{exchange_id}: Loading markets...")
+            exchange.load_markets()  # 해당 거래소의 마켓 정보를 불러옴
+            logger.debug(f"{exchange_id}: Markets loaded successfully.")
+        except Exception as e:
+            logger.error(f"Exchange '{exchange_id}' 초기화 에러: {e}", exc_info=True)
+            return pd.DataFrame()
+    else:
+        exchange = exchange_instance
+
+    try:
+        # 시작일이 "YYYY-MM-DD" 형식이면 " 00:00:00"을 추가하여 완전한 datetime 문자열로 만듦
+        if len(start_date.strip()) == 10:
+            start_date += " 00:00:00"
+        # 시작일을 ISO 포맷으로 변환한 후, ccxt의 parse8601를 이용하여 밀리초 단위 timestamp로 변환
+        since = exchange.parse8601(datetime.strptime(start_date, "%Y-%m-%d %H:%M:%S").isoformat())
+    except Exception as e:
+        logger.error(f"start_date ({start_date}) 파싱 에러: {e}", exc_info=True)
+        return pd.DataFrame()
+
+    ohlcv_list = []  # 수집된 OHLCV 데이터를 저장할 리스트
+    retry_count = 0  # 재시도 횟수 초기화
+    while True:
+        try:
+            # 지정된 심볼, 시간 간격, 시작 시점(since), 요청당 데이터 제한을 기준으로 OHLCV 데이터 호출
+            ohlcvs = exchange.fetch_ohlcv(symbol, timeframe, since=since, limit=limit_per_request)
+        except Exception as e:
+            logger.error(f"{symbol}의 {timeframe} 데이터 수집 에러: {e}", exc_info=True)
+            retry_count += 1
+            if retry_count >= max_retries:
+                logger.error(f"최대 재시도({max_retries}) 초과로 {symbol} {timeframe} 데이터 수집 중단")
+                break
+            time.sleep(pause_sec)
+            continue
+
+        if not ohlcvs:
+            # 더 이상 데이터가 없으면 반복문 종료
+            break
+
+        ohlcv_list.extend(ohlcvs)
+        
+        if single_fetch:
+            # 한 번의 호출만 필요한 경우 반복 종료
+            break
+
+        # 마지막 데이터의 타임스탬프를 확인하여, 다음 호출 시 시작점을 업데이트
+        last_timestamp = ohlcvs[-1][0]
+        since = last_timestamp + time_offset_ms
+
+        # 만약 마지막 타임스탬프가 현재 시간(밀리초) 이상이면 더 이상 데이터를 요청하지 않음
+        if last_timestamp >= exchange.milliseconds():
+            break
+
+        time.sleep(pause_sec)  # API rate limit 준수를 위한 대기
+
+    if ohlcv_list:
+        try:
+            # 리스트를 DataFrame으로 변환하고, 컬럼명을 지정
+            df = pd.DataFrame(ohlcv_list, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            # 타임스탬프 컬럼을 datetime 형식으로 변환 (밀리초 단위)
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            # 인덱스를 timestamp로 설정
+            df.set_index('timestamp', inplace=True)
+            return df.copy()  # 복사본 반환
+        except Exception as e:
+            logger.error(f"DataFrame 변환 에러: {e}", exc_info=True)
+            return pd.DataFrame()
+    else:
+        logger.warning(f"{symbol} {timeframe}에 대한 데이터가 없습니다.")
+        return pd.DataFrame()
+
+@lru_cache(maxsize=32)
+def fetch_latest_ohlcv_data(symbol: str, timeframe: str, limit: int = 500, exchange_id: str = 'binance') -> pd.DataFrame:
+    """
+    지정된 심볼(symbol)과 시간 간격(timeframe)에 대해 최신 OHLCV 데이터를 수집합니다.
+    
+    Parameters:
+        symbol (str): 거래 심볼 (예: 'BTC/USDT').
+        timeframe (str): 시간 간격 (예: '1d', '1h').
+        limit (int): 가져올 데이터 개수 제한 (기본값 500).
+        exchange_id (str): 사용 거래소 ID (기본값 'binance').
+    
+    Returns:
+        pd.DataFrame: 최신 OHLCV 데이터를 포함하는 DataFrame.
+    """
+    try:
+        # ccxt 거래소 인스턴스 생성 및 마켓 로드
+        exchange_class = getattr(ccxt, exchange_id)
+        exchange = exchange_class({'enableRateLimit': True, 'timeout': 30000})
+        exchange.load_markets()
+    except Exception as e:
+        logger.error(f"Exchange '{exchange_id}' 초기화 에러: {e}", exc_info=True)
+        return pd.DataFrame()
+    
+    try:
+        # 최신 데이터 호출 (limit 개수만큼)
+        ohlcvs = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+    except Exception as e:
+        logger.error(f"{symbol}의 {timeframe} 최신 데이터 수집 에러: {e}", exc_info=True)
+        return pd.DataFrame()
+    
+    if ohlcvs:
+        try:
+            # 수집된 데이터를 DataFrame으로 변환 및 인덱스 설정
+            df = pd.DataFrame(ohlcvs, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df.set_index('timestamp', inplace=True)
+            return df.copy()
+        except Exception as e:
+            logger.error(f"DataFrame 변환 에러: {e}", exc_info=True)
+            return pd.DataFrame()
+    else:
+        logger.warning(f"{symbol} {timeframe}에 대한 최신 데이터가 없습니다.")
+        return pd.DataFrame()
+
+def get_top_volume_symbols(exchange_id: str = 'binance', quote_currency: str = 'USDT', 
+                           count: int = 5, pause_sec: float = 1.0) -> list:
+    """
+    Binance의 경우, 거래량(quoteVolume)을 시총 대용 지표로 사용하여 거래소 내 유효 심볼 중 상위 count개를 선택합니다.
+    스테이블 코인은 제외하며, 각 심볼의 최초 데이터 제공일(온보딩 날짜)을 함께 반환합니다.
+    
+    Parameters:
+        exchange_id (str): 사용 거래소 ID (기본 'binance').
+        quote_currency (str): 기준 통화 (예: 'USDT').
+        count (int): 반환할 심볼 개수 (기본 5).
+        pause_sec (float): API 호출 사이의 대기 시간 (기본 1.0초).
+    
+    Returns:
+        list: (symbol, first_available_date) 튜플의 리스트.
+    """
+    try:
+        # ccxt 거래소 인스턴스 생성 및 마켓 정보 로드
+        exchange_class = getattr(ccxt, exchange_id)
+        exchange = exchange_class({'enableRateLimit': True, 'timeout': 30000})
+        logger.debug(f"{exchange_id}: Loading markets for top symbol retrieval...")
+        markets = exchange.load_markets()
+        logger.debug(f"{exchange_id}: Markets loaded, total symbols: {len(markets)}")
+    except Exception as e:
+        logger.error(f"{exchange_id}에서 마켓 로드 에러: {e}", exc_info=True)
+        return []
+
+    # USDT 마켓에 해당하는 심볼 필터링 (예: 'BTC/USDT')
+    usdt_symbols = [symbol for symbol in markets if symbol.endswith('/' + quote_currency)]
+    
+    # 스테이블 코인 목록: 해당 코인들은 제외
+    stable_coins = {
+        "USDT", "BUSD", "USDC", "DAI", "TUSD", "PAX", "USDP", "GUSD", "MIM", "UST",
+        "USDe",  # Ethena USD (synthetic dollar)
+        "FDUSD",  # First Digital USD
+        "PYUSD",  # PayPal USD
+        "USD0",  # Usual USD
+        "FRAX",  # Frax Finance Stablecoin
+        "USDY",  # Ondo USD Yield
+        "USDD",  # Tron-based stablecoin
+        "EURS",  # Stasis Euro stablecoin
+        "RLUSD",  # Ripple USD
+        "GHO",  # Aave Stablecoin
+        "crvUSD",  # Curve Finance Stablecoin
+        "LUSD",  # Liquity USD (ETH-backed stablecoin)
+        "XAU₮",  # Tether Gold (Gold-backed stablecoin)
+        "PAXG",  # Paxos Gold
+        "EUROC",  # Circle Euro Coin
+    }
+    
+    # 스테이블 코인 제외: 심볼의 기본 통화가 stable_coins에 속하지 않는 경우만 필터링
+    filtered_symbols = [symbol for symbol in usdt_symbols if symbol.split('/')[0] not in stable_coins]
+    logger.debug(f"Filtered symbols (excluding stablecoins): {len(filtered_symbols)} out of {len(usdt_symbols)}")
+
+    # 거래소가 Binance인 경우, 거래량을 기준으로 정렬하여 상위 심볼 선택
+    if exchange_id == 'binance':
+        try:
+            tickers = exchange.fetch_tickers()
+        except Exception as e:
+            logger.error(f"Error fetching tickers from {exchange_id}: {e}", exc_info=True)
+            tickers = {}
+        symbol_volumes = []
+        for symbol in filtered_symbols:
+            ticker = tickers.get(symbol, {})
+            vol = ticker.get('quoteVolume', 0)
+            try:
+                vol = float(vol)
+            except Exception:
+                vol = 0
+            symbol_volumes.append((symbol, vol))
+        # 거래량(quoteVolume) 기준 내림차순 정렬
+        symbol_volumes.sort(key=lambda x: x[1], reverse=True)
+        sorted_symbols = [item[0] for item in symbol_volumes]
+    else:
+        # Binance가 아닌 경우, marketCap 정보를 사용하여 정렬
+        symbol_caps = []
+        for symbol in filtered_symbols:
+            market_info = markets.get(symbol, {})
+            cap = market_info.get('info', {}).get('marketCap')
+            if cap is None:
+                cap = 0
+            try:
+                cap = float(cap)
+            except Exception:
+                cap = 0
+            symbol_caps.append((symbol, cap))
+        symbol_caps.sort(key=lambda x: x[1], reverse=True)
+        sorted_symbols = [item[0] for item in symbol_caps]
+
+    valid_symbols = []
+    # 각 심볼에 대해 첫 데이터 제공일(온보딩 날짜)을 확인
+    for symbol in sorted_symbols:
+        # 시작 날짜를 "2018-01-01"로 고정하여 데이터 호출
+        df = fetch_historical_ohlcv_data(symbol, '1d', "2018-01-01", 
+                                         limit_per_request=1, pause_sec=pause_sec, 
+                                         exchange_id=exchange_id, single_fetch=True,
+                                         exchange_instance=exchange)
+        if df.empty:
+            # 데이터가 없으면 해당 심볼 건너뜀
+            continue
+        first_timestamp = df.index.min()
+        first_date_str = first_timestamp.strftime("%Y-%m-%d %H:%M:%S")
+        valid_symbols.append((symbol, first_date_str))
+        if len(valid_symbols) >= count:
+            # 원하는 개수만큼 수집되면 종료
+            break
+
+    if len(valid_symbols) < count:
+        logger.warning(f"경고: 유효한 데이터가 있는 심볼이 {len(valid_symbols)}개 밖에 없습니다.")
+    return valid_symbols
+
+def get_latest_onboard_date(symbols: list, exchange_id: str = 'binance') -> str:
+    """
+    전달된 심볼 리스트(튜플 또는 단순 심볼 문자열)에 대해 각 심볼의 최초 데이터 제공일(온보딩 날짜)을 구하여,
+    가장 늦은(최신) 날짜를 반환합니다.
+    
+    Parameters:
+        symbols (list): 심볼 문자열 또는 (symbol, first_available_date) 튜플 리스트.
+        exchange_id (str): 사용 거래소 ID (기본 'binance').
+    
+    Returns:
+        str: 가장 늦은 온보딩 날짜를 "YYYY-MM-DD HH:MM:SS" 형식으로 반환.
+    """
+    onboard_dates = []
+    try:
+        for item in symbols:
+            if isinstance(item, tuple):
+                # 심볼이 튜플인 경우, 두 번째 요소에 첫 데이터 제공일이 포함되어 있음
+                onboard_str = item[1]
+            else:
+                # 단순 심볼인 경우, fetch_historical_ohlcv_data를 호출하여 온보딩 날짜를 확인
+                exchange_class = getattr(ccxt, exchange_id)
+                exchange = exchange_class({'enableRateLimit': True, 'timeout': 30000})
+                exchange.load_markets()
+                df = fetch_historical_ohlcv_data(item, '1d', "2018-01-01", 
+                                                 limit_per_request=1, single_fetch=True, 
+                                                 exchange_instance=exchange)
+                if df.empty:
+                    onboard_str = "2018-01-01 00:00:00"
+                else:
+                    onboard_str = df.index.min().strftime("%Y-%m-%d %H:%M:%S")
+            try:
+                # 문자열을 datetime 객체로 변환하여 리스트에 저장
+                dt = datetime.strptime(onboard_str, "%Y-%m-%d %H:%M:%S")
+                onboard_dates.append(dt)
+            except Exception:
+                onboard_dates.append(datetime.strptime("2018-01-01 00:00:00", "%Y-%m-%d %H:%M:%S"))
+        if onboard_dates:
+            # 가장 최근 날짜를 선택하여 문자열로 반환
+            latest_date = max(onboard_dates)
+            return latest_date.strftime("%Y-%m-%d %H:%M:%S")
+    except Exception as e:
+        logger.error(f"Error in get_latest_onboard_date: {e}", exc_info=True)
+    return "2018-01-01 00:00:00"
+
+---
+
+# data/ohlcv/ohlcv_pipeline.py
+
+import time  # API 호출 간 지연 시간 적용을 위한 모듈
+import threading  # 멀티스레딩 및 동기화를 위한 모듈
+from typing import List, Optional  # 타입 힌트를 위한 모듈
+import concurrent.futures  # 스레드 풀을 사용한 병렬 처리 모듈
+
+from logs.logger_config import setup_logger  # 로깅 설정 모듈
+from data.ohlcv.ohlcv_fetcher import (
+    fetch_historical_ohlcv_data,
+    fetch_latest_ohlcv_data
+)
+from data.db.db_manager import insert_ohlcv_records  # 수집된 데이터를 데이터베이스에 저장하기 위한 함수
+
+# 전역 변수: 로깅 설정 객체
+logger = setup_logger(__name__)
+
+# 전역 변수: API 호출 결과 캐싱을 위한 in-memory 캐시와 해당 접근을 위한 락
+_cache_lock = threading.Lock()  # 멀티스레딩 환경에서 캐시 동시 접근 제어용 락
+_ohlcv_cache: dict = {}         # 이미 호출한 OHLCV 데이터를 저장하여 중복 API 호출 방지
+
+def collect_and_store_ohlcv_data(
+    symbols: List[str],
+    timeframes: List[str],
+    use_historical: bool = True,
+    start_date: Optional[str] = '2018-01-01 00:00:00',
+    limit_per_request: int = 1000,
+    latest_limit: int = 500,
+    pause_sec: float = 1.0,
+    table_name_format: str = "ohlcv_{symbol}_{timeframe}",
+    exchange_id: str = 'binance',
+    time_offset_ms: int = 1
+) -> None:
+    """
+    지정된 심볼과 시간 간격에 대해 OHLCV 데이터를 수집하고 데이터베이스에 저장합니다.
+    - use_historical가 True이면 과거 데이터를, False이면 최신 데이터만 수집합니다.
+    - in-memory 캐시를 사용하여 중복 API 호출을 피하고, 동시 실행을 위해 스레드 풀을 사용합니다.
+    
+    Parameters:
+        symbols (List[str]): 거래 심볼 리스트 (예: ['BTC/USDT', 'ETH/USDT']).
+        timeframes (List[str]): 시간 간격 리스트 (예: ['1d', '1h']).
+        use_historical (bool): 과거 데이터 수집 여부.
+        start_date (Optional[str]): 과거 데이터 수집 시작일 (use_historical True 시 필수).
+        limit_per_request (int): 과거 데이터 수집 시 요청당 데이터 제한.
+        latest_limit (int): 최신 데이터 수집 시 요청 제한 개수.
+        pause_sec (float): API 호출 간 대기 시간.
+        table_name_format (str): 데이터 저장 시 테이블 이름 형식. {symbol}과 {timeframe}이 포맷팅됨.
+        exchange_id (str): 사용 거래소 ID (기본 'binance').
+        time_offset_ms (int): 데이터 수집 시 타임스탬프 오프셋 (밀리초 단위).
+    
+    Returns:
+        None
+    """
+    
+    # 내부 함수: 각 심볼과 시간 간격(timeframe) 조합에 대해 데이터를 처리 및 저장합니다.
+    def process_symbol_tf(symbol: str, tf: str) -> None:
+        # 캐시 키 구성: 파라미터 조합을 튜플로 묶어 고유 식별자 역할 수행
+        key = (symbol, tf, use_historical, start_date, limit_per_request, latest_limit, exchange_id, time_offset_ms)
+        with _cache_lock:
+            # 캐시에서 이미 데이터가 존재하는지 확인
+            if key in _ohlcv_cache:
+                df = _ohlcv_cache[key]
+                logger.debug(f"Cache hit for {symbol} {tf}")
+            else:
+                logger.debug(f"Cache miss for {symbol} {tf}, fetching data")
+                # 과거 데이터를 수집하는 경우 반드시 start_date가 필요함
+                if use_historical:
+                    if not start_date:
+                        raise ValueError("과거 데이터 수집 시 start_date가 필요합니다.")
+                    df = fetch_historical_ohlcv_data(
+                        symbol=symbol,
+                        timeframe=tf,
+                        start_date=start_date,
+                        limit_per_request=limit_per_request,
+                        pause_sec=pause_sec,
+                        exchange_id=exchange_id,
+                        single_fetch=False,
+                        time_offset_ms=time_offset_ms
+                    )
+                else:
+                    # 최신 데이터 수집
+                    df = fetch_latest_ohlcv_data(
+                        symbol=symbol,
+                        timeframe=tf,
+                        limit=latest_limit,
+                        exchange_id=exchange_id
+                    )
+                # 수집한 데이터를 캐시에 저장하여 후속 호출 시 재사용
+                _ohlcv_cache[key] = df
+        
+        if df.empty:
+            logger.warning(f"[OHLCV PIPELINE] {symbol} - {tf} 데이터가 없습니다. 저장 건너뜁니다.")
+            return
+        
+        # 테이블 이름 구성: 심볼의 슬래시 제거 및 소문자 변환, 시간 간격 포함
+        table_name = table_name_format.format(symbol=symbol.replace('/', '').lower(), timeframe=tf)
+        try:
+            # 수집한 OHLCV 데이터를 데이터베이스에 저장하는 함수 호출
+            insert_ohlcv_records(df, table_name=table_name)
+            logger.debug(f"Data inserted for {symbol} {tf} into table {table_name}")
+        except Exception as e:
+            logger.error(f"[OHLCV PIPELINE] 데이터 저장 에러 ({table_name}): {e}", exc_info=True)
+        time.sleep(pause_sec)  # API rate limit 준수를 위해 짧은 대기 시간 적용
+
+    tasks = []  # 스레드풀에 제출할 작업들을 저장하는 리스트
+    # 최대 10개의 스레드로 동시 실행 (병렬 처리)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        for symbol in symbols:
+            for tf in timeframes:
+                # 각 심볼-시간간격 조합에 대해 process_symbol_tf 함수를 스레드풀에 제출
+                tasks.append(executor.submit(process_symbol_tf, symbol, tf))
+        # 모든 제출된 작업이 완료될 때까지 대기
+        concurrent.futures.wait(tasks)
