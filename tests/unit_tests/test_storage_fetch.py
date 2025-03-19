@@ -1,4 +1,3 @@
-[tests 모듈]
 # tests/unit_tests/test_storage_fetch.py
 """
 이 테스트 파일은 data 모듈의 저장(store_data) 및 조회(fetch_data) 기능이 올바르게 동작하는지 검증합니다.
@@ -46,6 +45,3 @@ def test_insert_and_fetch_ohlcv_records():
     # 컬럼 이름이 올바른지 확인
     expected_columns = {"open", "high", "low", "close", "volume"}
     assert expected_columns.issubset(set(df_fetched.columns)), "조회된 데이터에 필요한 컬럼이 모두 포함되어야 합니다."
-
----
-

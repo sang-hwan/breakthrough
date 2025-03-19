@@ -1,543 +1,549 @@
-[#7/10]
-# scripts/run_drop_db_tables.py
-"""
-이 스크립트는 데이터베이스의 모든 테이블을 삭제하는 기능을 수행합니다.
-주로 테스트 환경에서 초기화를 위해 사용될 수 있으며, 
-PostgreSQL의 public 스키마 내 모든 테이블을 제거합니다.
-"""
+[logs 모듈]
+# logs/log_config.py
+import logging  # 로그 기록을 위한 표준 모듈
+import os       # 파일 경로 및 디렉토리 생성 관련 모듈
+import queue    # 로그 메시지 큐를 다루기 위한 모듈
+from logging.handlers import RotatingFileHandler, QueueHandler, QueueListener  # 회전 파일 핸들러 및 큐 관련 핸들러 임포트
+from logs.aggregating_handler import AggregatingHandler  # 사용자 정의 AggregatingHandler 임포트
 
-import sys  # 시스템 종료 및 예외 처리를 위해 사용
-from dotenv import load_dotenv  # 환경변수 로드를 위한 라이브러리
-from sqlalchemy import create_engine, text  # 데이터베이스 연결 및 SQL 실행을 위한 라이브러리
-from data.db.db_config import DATABASE  # 데이터베이스 접속 정보를 담은 설정 객체
-from logs.logger_config import initialize_root_logger, setup_logger  # 로깅 초기화 및 설정 함수
+# 전역 변수: 파일 로그는 INFO 레벨 이상의 메시지만 기록
+FILE_LOG_LEVEL = logging.INFO
+# 전역 변수: 콘솔 로그는 DEBUG 레벨 이상의 메시지를 기록
+detail_level = logging.DEBUG
 
-# 환경변수 로드 및 로깅 초기화
-load_dotenv()  # .env 파일에 정의된 환경변수를 시스템에 로드합니다.
-initialize_root_logger()  # 루트 로거를 초기화합니다.
-logger = setup_logger(__name__)  # 모듈 별 로거를 생성합니다.
+# 로그 파일을 저장할 디렉토리 설정 (logs/log_files)
+LOG_FILES_DIR = os.path.join("logs", "log_files")
+if not os.path.exists(LOG_FILES_DIR):
+    os.makedirs(LOG_FILES_DIR)  # 디렉토리가 없으면 생성
+# 기본 로그 파일 경로 설정
+BASE_LOG_FILE = os.path.join(LOG_FILES_DIR, "project.log")
 
-def drop_all_tables(db_config):
+class OneLineFormatter(logging.Formatter):
     """
-    데이터베이스 내의 모든 테이블을 삭제합니다.
-    
-    Parameters:
-        db_config (dict): 데이터베이스 접속 정보를 담은 딕셔너리 
-                          (예: {'user': ..., 'password': ..., 'host': ..., 'port': ..., 'dbname': ...})
-    
-    Returns:
-        None: 모든 테이블 삭제 작업 후 성공 메시지 혹은 에러 로그를 남깁니다.
+    OneLineFormatter는 로그 메시지 내의 줄바꿈을 파이프(|) 문자로 대체하여 한 줄로 출력하도록 포맷팅합니다.
     """
-    try:
-        # 데이터베이스 연결 문자열을 구성하고 SQLAlchemy 엔진을 생성합니다.
-        engine = create_engine(
-            f"postgresql://{db_config['user']}:{db_config['password']}@"
-            f"{db_config['host']}:{db_config['port']}/{db_config['dbname']}",
-            pool_pre_ping=True  # 커넥션의 유효성을 주기적으로 확인합니다.
-        )
-        # 데이터베이스 트랜잭션을 시작합니다. (자동 커밋 모드)
-        with engine.begin() as conn:
-            # public 스키마 내의 모든 테이블 이름을 조회하는 SQL 문 실행
-            result = conn.execute(text("SELECT tablename FROM pg_tables WHERE schemaname = 'public'"))
-            tables = [row[0] for row in result]  # 결과에서 테이블 이름만 추출하여 리스트로 생성
-            if not tables:
-                logger.debug("No tables found in the database.")
-                return
-            # 조회된 각 테이블에 대해 DROP TABLE 명령어를 실행합니다.
-            for table in tables:
-                logger.debug(f"Dropping table {table}...")
-                conn.execute(text(f"DROP TABLE IF EXISTS {table} CASCADE"))
-            logger.debug("All tables dropped successfully.")
-    except Exception as e:
-        # 예외 발생 시 에러 로그를 기록하고 프로그램을 종료합니다.
-        logger.error(f"Error dropping tables: {e}", exc_info=True)
-        sys.exit(1)
+    def format(self, record):
+        formatted = super().format(record)  # 기본 포맷팅 수행
+        return formatted.replace("\n", " | ")  # 줄바꿈을 ' | '로 대체
 
-def run_drop_db_tables():
+class LineRotatingFileHandler(RotatingFileHandler):
     """
-    데이터베이스 접속 정보(DATABASE)를 사용하여 drop_all_tables 함수를 실행합니다.
+    LineRotatingFileHandler는 로그 파일의 최대 라인 수를 초과하면 새로운 파일로 롤오버하는 기능을 제공합니다.
     
-    Parameters:
-        없음
-    
-    Returns:
-        None
+    주요 기능:
+      - 파일 크기 대신 로그 라인 수를 기준으로 롤오버
+      - 롤오버 시 새로운 파일 이름 생성 및 라인 카운트 초기화
     """
-    drop_all_tables(DATABASE)
+    def __init__(self, base_filename, mode='a', max_lines=500, encoding=None, delay=False):
+        """
+        초기화 메서드
+        
+        Parameters:
+            base_filename (str): 기본 로그 파일 이름
+            mode (str): 파일 열기 모드 (기본 'a' - append)
+            max_lines (int): 하나의 로그 파일에 기록할 최대 라인 수
+            encoding (str): 파일 인코딩 (기본값 None)
+            delay (bool): 파일 열기를 지연할지 여부 (기본 False)
+        """
+        self.base_filename = base_filename
+        self.current_index = 0  # 현재 파일 인덱스, 0이면 기본 파일 사용
+        self._set_current_filename()  # 현재 파일 이름 설정
+        super().__init__(self.current_filename, mode, maxBytes=0, encoding=encoding, delay=delay)
+        self.max_lines = max_lines  # 최대 라인 수 설정
+        self.current_line_count = 0  # 현재까지 기록한 라인 수
 
-# 스크립트가 직접 실행될 경우 run_drop_db_tables 함수를 호출합니다.
-if __name__ == "__main__":
-    run_drop_db_tables()
+    def _set_current_filename(self):
+        """
+        현재 인덱스에 따라 현재 로그 파일 이름을 설정합니다.
+        """
+        base, ext = os.path.splitext(self.base_filename)
+        # 인덱스 0이면 기본 파일명, 그 외에는 인덱스 번호를 포함한 파일명 사용
+        self.current_filename = self.base_filename if self.current_index == 0 else f"{base}{self.current_index}{ext}"
+        self.baseFilename = os.path.abspath(self.current_filename)
 
----
+    def doRollover(self):
+        """
+        로그 파일 롤오버를 수행합니다.
+        
+        주요 동작:
+          - 기존 스트림을 닫고, 파일 인덱스를 증가시킨 후 새로운 파일로 전환
+          - 라인 카운트를 초기화하여 새 파일에서 새로 기록 시작
+        """
+        if self.stream:
+            self.stream.close()
+            self.stream = None
+        self.current_index += 1  # 파일 인덱스 증가
+        self._set_current_filename()  # 새로운 파일 이름 설정
+        self.mode = 'w'  # 새 파일은 쓰기 모드로 열림
+        self.stream = self._open()  # 새로운 파일 스트림 열기
+        self.current_line_count = 0  # 라인 카운트 초기화
 
-# scripts/run_parameter_analysis.py
-"""
-이 스크립트는 거래 전략의 파라미터 민감도 분석을 수행합니다.
-주요 기능은 명령줄 인자를 통해 분석 설정을 받고, 
-각 파라미터에 대해 기본값의 80%에서 120% 범위 내에서 값들을 생성하여
-민감도 분석을 실행하고, 결과 보고서를 생성하는 것입니다.
-"""
-
-import argparse  # 명령줄 인자 파싱을 위한 모듈
-import logging  # 로깅 처리를 위한 모듈
-import numpy as np  # 수치 계산 및 배열 처리 모듈
-from logs.logger_config import setup_logger, initialize_root_logger, shutdown_logging  # 로깅 설정 관련 함수
-from logs.logging_util import LoggingUtil  # 추가 로깅 유틸리티 함수
-from strategies.param_analysis import run_sensitivity_analysis  # 파라미터 민감도 분석 실행 함수
-from reports.final_report import generate_parameter_sensitivity_report  # 분석 결과 보고서 생성 함수
-from data.db.db_manager import get_unique_symbol_list, get_date_range  # 데이터베이스 관련 함수
-from data.db.db_config import DATABASE  # 데이터베이스 접속 정보
-
-def parse_args():
-    """
-    명령줄 인자를 파싱하여 분석에 필요한 옵션들을 반환합니다.
-    
-    Returns:
-        argparse.Namespace: 파라미터 이름, 단계, 자산, 시간 프레임 등 분석에 필요한 인자들을 포함한 객체
-    """
-    parser = argparse.ArgumentParser(
-        description="Run parameter sensitivity analysis for trading strategies."
-    )
-    parser.add_argument("--param_names", type=str, 
-                        default="profit_ratio,atr_multiplier,risk_per_trade,scale_in_threshold,weekly_breakout_threshold,weekly_momentum_threshold",
-                        help="Comma-separated list of parameter names to analyze.")
-    parser.add_argument("--param_steps", type=int, default=3, 
-                        help="Number of steps for each parameter (default: 3)")
-    parser.add_argument("--assets", type=str, default="",
-                        help="Optional: Comma-separated list of assets. If not provided, DB will be queried for unique symbols.")
-    parser.add_argument("--short_tf", type=str, default="4h", 
-                        help="Short time frame (default: 4h)")
-    parser.add_argument("--long_tf", type=str, default="1d", 
-                        help="Long time frame (default: 1d)")
-    parser.add_argument("--periods", type=str, default="", 
-                        help="Optional multiple periods in format start1:end1;start2:end2, etc.")
-    # 새 인자: 분석 기간 축소를 위한 인자 (예: "2022-01-01:2023-01-01")
-    parser.add_argument("--analysis_period", type=str, default="2022-01-01:2023-01-01",
-                        help="Analysis period in format start_date:end_date to reduce overall analysis period.")
-    return parser.parse_args()
-
-def parse_assets(asset_str):
-    """
-    콤마로 구분된 자산 문자열을 개별 자산 리스트로 변환합니다.
-    
-    Parameters:
-        asset_str (str): 콤마로 구분된 자산 문자열 (예: "BTC/USDT,ETH/USDT")
-    
-    Returns:
-        list: 개별 자산 문자열의 리스트
-    """
-    return [asset.strip() for asset in asset_str.split(",") if asset.strip()]
-
-def parse_periods(periods_str, default_start, default_end):
-    """
-    기간 문자열을 파싱하여 (시작 날짜, 종료 날짜) 쌍의 리스트를 생성합니다.
-    
-    Parameters:
-        periods_str (str): 세미콜론(;)으로 구분된 기간 쌍 (예: "start1:end1;start2:end2")
-        default_start (str): 기본 시작 날짜 (분석 기간 인자가 없을 경우 사용)
-        default_end (str): 기본 종료 날짜 (분석 기간 인자가 없을 경우 사용)
-    
-    Returns:
-        list: (시작 날짜, 종료 날짜) 튜플 리스트
-    """
-    if not periods_str:
-        return [(default_start, default_end)]
-    period_list = []
-    for pair in periods_str.split(";"):
-        if pair:
-            try:
-                s, e = pair.split(":")
-                period_list.append((s.strip(), e.strip()))
-            except Exception as e:
-                logging.getLogger(__name__).error(f"Error parsing period pair '{pair}': {e}", exc_info=True)
-    return period_list if period_list else [(default_start, default_end)]
-
-def get_default_date_range(symbol: str, timeframe: str = "1d") -> tuple:
-    """
-    특정 심볼과 시간 프레임에 대해 데이터베이스에서 데이터 날짜 범위를 조회합니다.
-    
-    Parameters:
-        symbol (str): 거래 심볼 (예: "BTC/USDT")
-        timeframe (str): 데이터의 시간 간격 (기본값: "1d")
-    
-    Returns:
-        tuple: (시작 날짜, 종료 날짜) 문자열. 데이터가 없으면 기본 날짜 범위("2022-01-01", "2023-01-01")를 반환합니다.
-    """
-    symbol_key = symbol.replace("/", "").lower()  # 테이블명 생성을 위한 심볼 변환
-    table_name = f"ohlcv_{symbol_key}_{timeframe}"
-    start_date, end_date = get_date_range(table_name, DATABASE)
-    # 데이터가 없는 경우 기본 날짜 범위로 설정합니다.
-    if start_date is None or end_date is None:
-        start_date, end_date = "2022-01-01 00:00:00", "2023-01-01 23:59:59"
-    return start_date, end_date
-
-def run_parameter_analysis():
-    """
-    거래 전략 파라미터의 민감도를 분석합니다.
-    
-    주요 단계:
-      1. 기존 로깅 파일 삭제 및 로거 초기화
-      2. 명령줄 인자 파싱 및 자산, 분석 기간 설정
-      3. 기본 파라미터값의 80% ~ 120% 범위 내에서 각 파라미터의 분석 값 생성
-      4. 민감도 분석 실행 및 결과 보고서 생성
-      5. 로깅 종료
-      
-    Parameters:
-        없음
-    
-    Returns:
-        None
-    """
-    # 기존 로깅 파일 초기화 및 로깅 설정 재설정
-    LoggingUtil.clear_log_files()
-    initialize_root_logger()
-
-    args = parse_args()  # 명령줄 인자 파싱
-    logger = setup_logger(__name__)
-    logger.info("Starting parameter sensitivity analysis.")
-
-    # 자산 목록 결정: 인자로 주어진 자산 사용, 없으면 DB에서 조회
-    if args.assets:
-        assets = parse_assets(args.assets)
-    else:
-        assets = get_unique_symbol_list() or ["BTC/USDT"]
-    logger.info(f"Assets for analysis: {assets}")
-
-    # 분석 기간 인자 파싱 (예: "2022-01-01:2023-01-01")
-    try:
-        analysis_start, analysis_end = args.analysis_period.split(":")
-        analysis_start = analysis_start.strip() + " 00:00:00"
-        analysis_end = analysis_end.strip() + " 23:59:59"
-    except Exception as e:
-        logger.error(f"Error parsing analysis_period: {e}", exc_info=True)
-        analysis_start, analysis_end = "2022-01-01 00:00:00", "2023-01-01 23:59:59"
-    logger.info(f"Using analysis period: {analysis_start} to {analysis_end}")
-
-    # 분석 기간을 기본 날짜 범위로 사용
-    default_start, default_end = analysis_start, analysis_end
-    logger.info(f"Default analysis date range: {default_start} to {default_end}")
-    periods = parse_periods(args.periods, default_start, default_end)
-
-    from parameter_management.config_manager import ConfigManager
-    cm = ConfigManager()
-    defaults = cm.get_defaults()  # 기본 파라미터 값을 조회합니다.
-    logger.info(f"Default parameters: {defaults}")
-    
-    # 분석할 파라미터 이름 리스트 생성
-    param_names = [p.strip() for p in args.param_names.split(",") if p.strip()]
-    param_settings = {}
-    for pname in param_names:
-        if pname not in defaults:
-            logger.warning(f"Parameter {pname} not found in default parameters. Skipping.")
-            continue
+    def emit(self, record):
+        """
+        로그 레코드를 기록하기 전에 메시지의 라인 수를 체크하고,
+        최대 라인 수를 초과하면 롤오버를 수행한 후 기록합니다.
+        
+        Parameters:
+            record (logging.LogRecord): 기록할 로그 이벤트
+        
+        주요 동작:
+          - 로그 메시지를 포맷팅하여 몇 줄인지 확인
+          - 현재 기록된 라인 수와 합산해 최대치를 초과하면 doRollover() 호출
+          - 업데이트된 라인 수를 반영 후 상위 emit() 메서드로 메시지 기록
+        """
         try:
-            default_val = float(defaults[pname])
+            if record.levelno < FILE_LOG_LEVEL:
+                return  # 설정된 레벨보다 낮은 메시지는 무시
+            msg = self.format(record)  # 로그 메시지 포맷팅
+            lines_in_msg = msg.count("\n") or 1  # 메시지 내 줄바꿈 수 계산 (없으면 1라인)
+            if self.current_line_count + lines_in_msg > self.max_lines:
+                self.doRollover()  # 최대 라인 수 초과 시 롤오버 수행
+            self.current_line_count += lines_in_msg  # 현재 라인 수 업데이트
+            super().emit(record)  # 상위 클래스의 emit() 호출하여 로그 기록
         except Exception:
-            logger.warning(f"Parameter {pname} is not numeric. Skipping.")
-            continue
-        start_val = default_val * 0.8  # 기본값의 80%
-        end_val = default_val * 1.2    # 기본값의 120%
-        # 지정된 단계 수(param_steps) 만큼 균등 간격의 값을 생성합니다.
-        param_settings[pname] = np.linspace(start_val, end_val, args.param_steps)
-        logger.info(f"Analyzing {pname} over range {start_val:.4f} to {end_val:.4f}")
+            self.handleError(record)
 
-    # 파라미터 민감도 분석 실행
-    results_all = run_sensitivity_analysis(
-        param_settings, assets, args.short_tf, args.long_tf, default_start, default_end, periods
+# 전역 변수: 로그 메시지 큐 (크기 무제한)
+log_queue = queue.Queue(-1)
+queue_listener = None  # 전역 변수: QueueListener 객체 (추후 초기화)
+
+def initialize_root_logger():
+    """
+    루트 로거를 초기화하여 파일 핸들러, 콘솔 핸들러, 큐 핸들러 및 AggregatingHandler를 추가합니다.
+    
+    주요 동작:
+      - 루트 로거의 레벨 설정 및 기존 핸들러 제거
+      - 로그 파일용 핸들러와 콘솔용 핸들러 생성 및 설정
+      - 큐 핸들러를 통해 비동기 로깅 구성
+      - 외부 라이브러리(ccxt, urllib3)의 로그 레벨을 경고(WARNING)로 설정
+    """
+    root_logger = logging.getLogger()
+    root_logger.setLevel(detail_level)
+
+    # 기존 핸들러 제거
+    for handler in root_logger.handlers[:]:
+        root_logger.removeHandler(handler)
+
+    # 파일 핸들러 생성: 로그 파일은 LOG_FILES_DIR 내에 생성됨
+    file_handler = LineRotatingFileHandler(
+        base_filename=BASE_LOG_FILE,
+        max_lines=500,
+        encoding="utf-8",
+        delay=True
     )
-    # 결과에 기반하여 보고서 제목 생성 후 최종 보고서 생성
-    report_title = "Multi-Parameter Analysis: " + ", ".join([str(k) for k in results_all.keys()])
-    generate_parameter_sensitivity_report(report_title, results_all)
-    shutdown_logging()  # 로깅 시스템 종료
+    file_handler.setLevel(FILE_LOG_LEVEL)
+    formatter = OneLineFormatter('[%(asctime)s] %(levelname)s:%(name)s:%(filename)s:%(funcName)s: %(message)s')
+    file_handler.setFormatter(formatter)
+    root_logger.addHandler(file_handler)
 
-if __name__ == "__main__":
-    run_parameter_analysis()
+    # 콘솔 핸들러 생성
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(detail_level)
+    console_formatter = OneLineFormatter('[%(asctime)s] %(levelname)s:%(name)s:%(filename)s:%(funcName)s: %(message)s')
+    console_handler.setFormatter(console_formatter)
+    # _is_summary 속성이 있는 레코드는 필터링(제외)
+    console_handler.addFilter(lambda record: not getattr(record, '_is_summary', False))
 
----
+    # 큐 핸들러 추가: 로그 메시지를 큐에 넣어 비동기 처리 지원
+    q_handler = QueueHandler(log_queue)
+    root_logger.addHandler(q_handler)
 
-# scripts/run_strategy_performance.py
-"""
-이 스크립트는 전체 거래 전략의 성능 평가를 위한 프로젝트 테스트를 수행합니다.
-주요 작업:
-  1. 워크포워드 방식의 파라미터 최적화 수행
-  2. 최적의 파라미터를 적용하여 각 자산에 대해 백테스팅 실행
-  3. 백테스트 결과를 기반으로 거래 성과 계산 및 최종 보고서 생성
-"""
+    global queue_listener
+    queue_listener = QueueListener(log_queue, console_handler)
+    queue_listener.start()
 
-from logs.logger_config import setup_logger, initialize_root_logger, shutdown_logging  # 로깅 설정 함수들
-from logs.logging_util import LoggingUtil  # 기존 로깅 파일 관리 함수
-from strategies.optimizer import DynamicParameterOptimizer  # 동적 파라미터 최적화 클래스
-from backtesting.backtester import Backtester  # 백테스팅 수행 클래스
-from backtesting.performance import compute_performance  # 거래 성과 계산 함수
-from reports.final_report import generate_final_report  # 최종 보고서 생성 함수
-from parameter_management.config_manager import ConfigManager  # 설정 관리 클래스
-from data.db.db_manager import get_unique_symbol_list, get_date_range  # DB 관련 함수
-from data.db.db_config import DATABASE  # DB 접속 정보
-
-def get_default_date_range(symbol: str, timeframe: str = "1d") -> tuple:
-    """
-    주어진 심볼과 시간 프레임에 대해 데이터베이스에서 날짜 범위를 조회합니다.
-    
-    Parameters:
-        symbol (str): 거래 심볼 (예: "BTC/USDT")
-        timeframe (str): 데이터의 시간 간격 (기본값: "1d")
-    
-    Returns:
-        tuple: (시작 날짜, 종료 날짜) 문자열. 데이터가 없으면 기본 날짜 범위를 반환합니다.
-    """
-    symbol_key = symbol.replace("/", "").lower()  # 테이블명 생성을 위해 심볼 포맷 변환
-    table_name = f"ohlcv_{symbol_key}_{timeframe}"
-    start_date, end_date = get_date_range(table_name, DATABASE)
-    if start_date is None or end_date is None:
-        start_date, end_date = "2018-01-01 00:00:00", "2025-12-31 23:59:59"
-    return start_date, end_date
-
-def run_strategy_performance():
-    """
-    거래 전략의 성능을 평가하기 위한 전체 테스트를 수행합니다.
-    
-    주요 단계:
-      1. 기존 로깅 파일 정리 및 로깅 시스템 초기화
-      2. 워크포워드 파라미터 최적화를 통해 최적의 파라미터 탐색
-      3. 각 자산별 백테스팅 실행 및 데이터 로드
-      4. 백테스트 결과를 이용해 거래 성과 계산 후 최종 보고서 생성
-      5. 로깅 종료
-      
-    Parameters:
-        없음
-    
-    Returns:
-        None
-    """
-    # 기존 로깅 파일 삭제 및 로깅 시스템 초기화
-    LoggingUtil.clear_log_files()
-    initialize_root_logger()
-
-    logger = setup_logger(__name__)
-    logger.info("Starting full project test.")
-
-    # DB에서 분석 대상 자산 목록 조회, 없으면 기본 자산 리스트 사용
-    assets = get_unique_symbol_list() or ["BTC/USDT", "ETH/USDT", "XRP/USDT"]
-    logger.info(f"Assets for strategy performance: {assets}")
-
-    logger.info("Starting Walk-Forward parameter optimization.")
-    # 동적 파라미터 최적화를 위한 객체 생성 (최적화 반복 횟수: 10회)
-    optimizer = DynamicParameterOptimizer(n_trials=10, assets=assets)
-    best_trial = optimizer.optimize()  # 최적의 파라미터 탐색
-
-    config_manager = ConfigManager()
-    # 최적화된 파라미터와 기존 설정을 병합하여 최종 파라미터 결정
-    best_params = config_manager.merge_optimized(best_trial.params)
-    logger.info(f"Optimal parameters determined: {best_params}")
-
-    # 대표 자산의 1일(1d) 데이터 테이블을 통해 기본 날짜 범위를 조회
-    default_start, default_end = get_default_date_range(assets[0], "1d")
-    logger.info(f"Using date range from DB: {default_start} to {default_end}")
-    timeframes = {"short_tf": "4h", "long_tf": "1d"}
-
-    # 각 자산에 대해 백테스팅 실행
-    for symbol in assets:
-        symbol_key = symbol.replace("/", "").lower()  # 테이블명 생성을 위해 심볼 형식 변환
-        # 초기 계좌 크기를 10,000으로 설정하여 백테스터 인스턴스 생성
-        backtester = Backtester(symbol=symbol, account_size=10000)
-        try:
-            # 단기 및 장기 데이터 테이블 형식 지정 후 데이터 로드
-            backtester.load_data(
-                short_table_format=f"ohlcv_{symbol_key}_{{timeframe}}",
-                long_table_format=f"ohlcv_{symbol_key}_{{timeframe}}",
-                short_tf=timeframes["short_tf"],
-                long_tf=timeframes["long_tf"],
-                start_date=default_start,
-                end_date=default_end,
-                use_weekly=True  # 주간 데이터도 함께 로드
-            )
-        except Exception as e:
-            logger.error(f"Data load failed for {symbol}: {e}", exc_info=True)
-            continue
-
-        try:
-            # 최적 파라미터를 적용하여 백테스트 실행; 실행 결과로 거래 내역 반환
-            trades, _ = backtester.run_backtest(dynamic_params=best_params)
-            logger.info(f"Backtest complete for {symbol}: {len(trades)} trades executed.")
-        except Exception as e:
-            logger.error(f"Backtest error for {symbol}: {e}", exc_info=True)
-            continue
-
-        if trades:
-            # 거래 성과 계산 (예: 수익률, 승률 등) 후 최종 보고서 생성
-            performance_data = compute_performance(trades, weekly_data=backtester.df_weekly)
-            generate_final_report(performance_data, symbol=symbol)
-        else:
-            logger.info(f"No trades executed for {symbol}.")
-
-    logger.info("Project test complete.")
-    shutdown_logging()  # 로깅 시스템 종료
-
-if __name__ == "__main__":
-    run_strategy_performance()
-
----
-
-# scripts/run_update_ohlcv_data.py
-"""
-이 스크립트는 거래 데이터(OHLCV: Open, High, Low, Close, Volume)를
-최신 상태로 업데이트하기 위한 작업을 수행합니다.
-
-주요 기능:
-  1. .env에 정의된 데이터베이스가 없으면 생성
-  2. 상위 거래량 심볼 및 해당 심볼의 최초 온보딩 날짜를 조회하여
-     공통 시작 날짜를 결정
-  3. 각 심볼과 각 시간 프레임에 대해 기존 데이터를 조회하고,
-     새로운 데이터를 API 등으로 가져와서 데이터베이스에 삽입
-"""
-
-import sys  # 시스템 종료를 위해 사용
-from datetime import datetime, timedelta, timezone  # 날짜 및 시간 처리를 위한 모듈
-import pandas as pd  # 데이터프레임 처리를 위한 라이브러리
-from dotenv import load_dotenv  # 환경변수 로드를 위한 라이브러리
-import psycopg2  # PostgreSQL 데이터베이스 연결 라이브러리
-from psycopg2 import sql  # SQL 쿼리 작성 시 안전하게 식별자 처리를 위한 모듈
-
-from data.db.db_config import DATABASE  # 데이터베이스 접속 정보를 담은 설정 객체
-from data.db.db_manager import fetch_ohlcv_records, insert_ohlcv_records  # 기존 데이터 조회 및 삽입 함수
-from data.ohlcv.ohlcv_fetcher import fetch_historical_ohlcv_data, get_top_volume_symbols, get_latest_onboard_date  # OHLCV 데이터 관련 함수들
-from logs.logger_config import initialize_root_logger, setup_logger  # 로깅 초기화 및 설정 함수
-
-# 환경변수 로드 및 로깅 초기화
-load_dotenv()
-initialize_root_logger()
-logger = setup_logger(__name__)
-
-def create_database_if_not_exists(db_config):
-    """
-    .env에 명시된 데이터베이스가 존재하지 않을 경우,
-    PostgreSQL의 기본 데이터베이스("postgres")에 접속하여 해당 데이터베이스를 생성합니다.
-    
-    Parameters:
-        db_config (dict): 데이터베이스 접속 정보를 담은 딕셔너리 
-                          (예: {'dbname': ..., 'user': ..., 'password': ..., 'host': ..., 'port': ...})
-    
-    Returns:
-        None: 데이터베이스 생성 여부에 따라 로그를 기록하며, 에러 발생 시 프로그램을 종료합니다.
-    """
-    dbname = db_config.get('dbname')
-    user = db_config.get('user')
-    password = db_config.get('password')
-    host = db_config.get('host')
-    port = db_config.get('port')
+    # AggregatingHandler 추가: 로그 이벤트 집계를 위해 설정
     try:
-        # PostgreSQL 기본 데이터베이스인 "postgres"에 접속합니다.
-        conn = psycopg2.connect(dbname="postgres", user=user, password=password, host=host, port=port)
-        conn.autocommit = True  # 자동 커밋 모드를 활성화합니다.
-        cur = conn.cursor()
-        # 타겟 데이터베이스의 존재 여부를 확인합니다.
-        cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (dbname,))
-        exists = cur.fetchone()
-        if not exists:
-            logger.debug(f"Database '{dbname}' does not exist. Creating database.")
-            # 안전한 SQL 식별자 처리를 위해 psycopg2.sql 모듈 사용
-            cur.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(dbname)))
-        else:
-            logger.debug(f"Database '{dbname}' already exists.")
-        cur.close()
-        conn.close()
+        aggregator_handler = AggregatingHandler(level=detail_level)
+        aggregator_handler.addFilter(lambda record: not getattr(record, '_is_summary', False))
+        aggregator_formatter = OneLineFormatter('[%(asctime)s] %(levelname)s:%(name)s:%(filename)s:%(funcName)s: %(message)s')
+        aggregator_handler.setFormatter(aggregator_formatter)
+        root_logger.addHandler(aggregator_handler)
     except Exception as e:
-        logger.error(f"Error checking/creating database: {e}", exc_info=True)
-        sys.exit(1)
+        logging.getLogger().error("Failed to add AggregatingHandler: " + str(e), exc_info=True)
 
-def run_update_ohlcv_data():
+    # 외부 라이브러리 로그 레벨 조정 (불필요한 디버그 메시지 제거)
+    logging.getLogger("ccxt").setLevel(logging.WARNING)
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
+
+def setup_logger(module_name: str) -> logging.Logger:
     """
-    최신 OHLCV 데이터를 가져와서 데이터베이스에 업데이트하는 메인 함수입니다.
+    모듈별 로거를 설정하여 반환합니다.
     
-    주요 단계:
-      1. 데이터베이스가 존재하지 않으면 생성
-      2. 상위 거래량 심볼(예: Binance에서 USDT 마켓 상위 심볼)과 각 심볼의 첫 거래 날짜를 조회
-      3. 공통 시작 날짜(모든 심볼에 적용)를 결정
-      4. 각 심볼과 각 시간 프레임(1d, 4h, 1h, 15m)에 대해:
-            - 기존 데이터를 조회하고,
-            - 데이터가 있다면 마지막 타임스탬프 이후부터, 없으면 공통 시작 날짜부터
-            - 새로운 OHLCV 데이터를 API로 조회 후,
-            - 조회된 데이터가 있으면 데이터베이스에 삽입
-      5. 각 단계에서 에러 발생 시 로깅 처리 후 다음 처리로 진행 또는 종료
-      
     Parameters:
-        없음
+        module_name (str): 해당 모듈을 식별하기 위한 이름.
     
     Returns:
-        None
+        logging.Logger: 설정된 로거 객체.
+    
+    주요 동작:
+      - 모듈 이름에 따라 로거 생성 후, 모듈 전용 AggregatingHandler를 추가하여 집계 기능 제공.
     """
-    # 데이터베이스가 존재하지 않으면 생성합니다.
-    create_database_if_not_exists(DATABASE)
-    
-    # 상위 거래량 심볼 조회: (심볼, 첫 거래일) 튜플 리스트 반환
-    symbols_with_onboard = get_top_volume_symbols(exchange_id='binance', quote_currency='USDT', count=3)
-    if not symbols_with_onboard:
-        logger.error("No valid symbols found from Binance.")
-        sys.exit(1)
-    logger.debug(f"Top symbols (with onboard date): {symbols_with_onboard}")
-    
-    # 모든 심볼에 대해 공통 시작 날짜를 결정 (가장 늦은 온보딩 날짜 사용)
-    global_start_date = get_latest_onboard_date(symbols_with_onboard, exchange_id='binance')
-    logger.debug(f"Unified start date for all symbols: {global_start_date}")
-    
-    # 심볼 이름만 추출하여 리스트 생성
-    symbols = [item[0] for item in symbols_with_onboard]
-    # 데이터 업데이트할 다양한 시간 프레임 설정
-    timeframes = ["1d", "4h", "1h", "15m"]
-    
-    # 업데이트 종료 시점을 현재 UTC 시간으로 설정
-    end_date = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-    
-    # 각 심볼과 각 시간 프레임에 대해 데이터 업데이트를 수행합니다.
-    for symbol in symbols:
-        symbol_key = symbol.replace("/", "").lower()  # 테이블명 생성을 위한 심볼 변환
-        logger.debug(f"Processing {symbol} (table prefix: ohlcv_{symbol_key}_)")
-        for tf in timeframes:
-            table_name = f"ohlcv_{symbol_key}_{tf}"
-            logger.debug(f"Processing {symbol} - {tf} (table: {table_name})")
-            
-            try:
-                # 데이터베이스에서 기존 OHLCV 데이터를 조회합니다.
-                df_existing = fetch_ohlcv_records(table_name=table_name)
-            except Exception as e:
-                logger.error(f"Error fetching existing data for table {table_name}: {e}", exc_info=True)
-                df_existing = pd.DataFrame()  # 에러 발생 시 빈 DataFrame 사용
-            
-            if not df_existing.empty:
-                # 기존 데이터가 있다면 마지막 타임스탬프 이후부터 새로운 데이터 조회
-                last_timestamp = df_existing.index.max()
-                new_start_dt = last_timestamp + timedelta(seconds=1)
-                new_start_date = new_start_dt.strftime("%Y-%m-%d %H:%M:%S")
-                logger.debug(f"Existing data found in {table_name}. Fetching new data from {new_start_date} to {end_date}.")
-            else:
-                # 데이터가 없으면 공통 시작 날짜부터 조회
-                new_start_date = global_start_date
-                logger.debug(f"No existing data in {table_name}. Fetching data from {new_start_date} to {end_date}.")
-            
-            try:
-                # 지정된 기간 동안 OHLCV 데이터를 조회합니다.
-                df_new = fetch_historical_ohlcv_data(
-                    symbol=symbol,
-                    timeframe=tf,
-                    start_date=new_start_date,
-                    exchange_id='binance'
-                )
-                if df_new.empty:
-                    logger.debug(f"No new data fetched for {symbol} - {tf}.")
-                    continue
-                else:
-                    logger.debug(f"Fetched {len(df_new)} new rows for {symbol} - {tf}.")
-            except Exception as e:
-                logger.error(f"Error fetching OHLCV data for {symbol} - {tf}: {e}", exc_info=True)
-                continue
-            
-            try:
-                # 조회된 새로운 데이터를 데이터베이스 테이블에 삽입합니다.
-                insert_ohlcv_records(df_new, table_name=table_name)
-                logger.debug(f"Inserted new data into table {table_name}.")
-            except Exception as e:
-                logger.error(f"Error inserting data into table {table_name}: {e}", exc_info=True)
+    logger = logging.getLogger(module_name)
+    logger.setLevel(detail_level)
+    logger.propagate = True  # 상위 로거로 메시지 전파
+    try:
+        agg_handler = AggregatingHandler(level=detail_level)
+        agg_handler.addFilter(lambda record: not getattr(record, '_is_summary', False))
+        formatter = OneLineFormatter('[%(asctime)s] %(levelname)s:%(name)s:%(filename)s:%(funcName)s: %(message)s')
+        agg_handler.setFormatter(formatter)
+        logger.addHandler(agg_handler)
+    except Exception as e:
+        logger.error("Failed to add module-specific AggregatingHandler: " + str(e), exc_info=True)
+    return logger
 
-if __name__ == "__main__":
-    run_update_ohlcv_data()
+def shutdown_logging():
+    """
+    로깅 시스템을 종료합니다.
+    
+    주요 동작:
+      - 루트 로거에 추가된 핸들러 중 flush_aggregation_summary() 메서드가 있으면 호출하여 집계 결과 플러시
+      - 큐 리스너를 중지한 후 logging.shutdown()을 호출하여 모든 로깅 자원 정리
+    """
+    root_logger = logging.getLogger()
+    for handler in root_logger.handlers:
+        try:
+            if hasattr(handler, 'flush_aggregation_summary'):
+                handler.flush_aggregation_summary()
+        except Exception:
+            pass
+    global queue_listener
+    if queue_listener is not None:
+        queue_listener.stop()
+        queue_listener = None
+    logging.shutdown()
+
+import logging  # 로그 기록을 위한 표준 모듈
+import os       # 파일 및 경로 관련 작업 지원
+import threading  # 스레드 동기화를 위한 모듈
+
+class AggregatingHandler(logging.Handler):
+    """
+    AggregatingHandler는 (logger 이름, 파일명, 함수명)별로 이벤트 발생 횟수를 집계합니다.
+    플러시 시 집계된 결과를 최종 로그로 출력하고, 집계를 초기화합니다.
+    
+    주요 기능:
+      - 로그 이벤트가 발생할 때마다 해당 키의 발생 횟수를 카운트합니다.
+      - 'is_weekly_signal' 속성이 있는 경우 별도로 주간 신호 집계합니다.
+    """
+    def __init__(self, level=logging.DEBUG):
+        """
+        초기화 메서드
+        
+        Parameters:
+            level (int): 로깅 레벨 (기본값: logging.DEBUG)
+        
+        주요 동작:
+          - 전체 로그 집계와 주간 신호 집계를 위한 딕셔너리 초기화
+          - 스레드 안전성을 보장하기 위해 RLock 객체 생성
+        """
+        super().__init__(level)
+        self.total_aggregation = {}       # 전체 로그 집계를 위한 딕셔너리, key: (logger name, filename, funcName)
+        self.weekly_signal_aggregation = {}  # 주간 신호 로그 집계를 위한 딕셔너리
+        self.lock = threading.RLock()       # 스레드 간 동시 접근 제어를 위한 재진입 락
+
+    def emit(self, record):
+        """
+        로그 레코드가 발생할 때마다 호출되며, 해당 이벤트를 집계합니다.
+        
+        Parameters:
+            record (logging.LogRecord): 발생한 로그 이벤트에 대한 정보를 담은 객체
+        
+        주요 동작:
+          - record에서 (logger name, 파일명, 함수명)을 추출하여 집계의 key로 사용
+          - 전체 집계와 'is_weekly_signal' 속성에 따른 주간 신호 집계를 각각 업데이트
+          - 예외 발생 시 handleError() 호출하여 오류 처리
+        """
+        try:
+            # 파일 경로에서 파일 이름만 추출하여 key 생성
+            key = (record.name, os.path.basename(record.pathname), record.funcName)
+            with self.lock:  # 스레드 안전하게 집계 딕셔너리 업데이트
+                self.total_aggregation[key] = self.total_aggregation.get(key, 0) + 1
+                # 'is_weekly_signal' 속성이 True면 주간 신호 집계 업데이트
+                if getattr(record, 'is_weekly_signal', False):
+                    self.weekly_signal_aggregation[key] = self.weekly_signal_aggregation.get(key, 0) + 1
+        except Exception:
+            self.handleError(record)
+
+    def flush_aggregation_summary(self):
+        """
+        집계된 로그 결과를 포맷팅하여 최종 로그로 출력한 후, 집계 데이터를 초기화합니다.
+        
+        주요 동작:
+          - 전체 집계와 주간 신호 집계에 대해 각각 문자열 리스트를 생성 후 하나의 메시지로 결합
+          - 생성된 메시지를 로그에 기록하고, 집계 딕셔너리를 초기화
+        """
+        with self.lock:  # 집계 데이터에 대한 동시 접근 제어
+            if self.total_aggregation:
+                summary_lines = [
+                    f"{filename}:{funcname} (logger: {logger_name}) - 총 {count}회 발생"
+                    for (logger_name, filename, funcname), count in self.total_aggregation.items()
+                ]
+                summary = "\n".join(summary_lines)
+                try:
+                    # 전체 집계 결과를 info 레벨로 로그 출력
+                    logging.getLogger().info("전체 누적 로그 집계:\n" + summary)
+                except Exception:
+                    pass
+                self.total_aggregation.clear()  # 전체 집계 초기화
+            if self.weekly_signal_aggregation:
+                weekly_summary_lines = [
+                    f"{filename}:{funcname} (logger: {logger_name}) - 주간 신호 {count}회 발생"
+                    for (logger_name, filename, funcname), count in self.weekly_signal_aggregation.items()
+                ]
+                weekly_summary = "\n".join(weekly_summary_lines)
+                try:
+                    logging.getLogger().info("전체 주간 신호 로그 집계:\n" + weekly_summary)
+                except Exception:
+                    pass
+                self.weekly_signal_aggregation.clear()  # 주간 신호 집계 초기화
+
+import threading  # 동시성 제어를 위한 모듈
+import time       # 시간 관련 함수 제공
+from logs.log_config import setup_logger, LOG_FILES_DIR  # 로거 설정 및 로그 파일 경로 임포트
+from logs.state_change_manager import StateChangeManager  # 상태 변화 관리 클래스 임포트
+
+class DynamicLogTracker:
+    """
+    각 state_key별로 최근 이벤트 발생 빈도를 EMA(지수이동평균)로 계산하여 저장합니다.
+    
+    주요 기능:
+      - 특정 이벤트의 발생 간격을 측정하여 빈도를 산출
+      - EMA를 통해 이벤트 빈도의 평활화(smoothing) 수행
+    """
+    def __init__(self, alpha=0.1, baseline=1.0):
+        """
+        초기화 메서드
+        
+        Parameters:
+            alpha (float): EMA 계산 시 가중치 계수 (기본값: 0.1)
+            baseline (float): 기본 빈도 기준값 (기본값: 1.0)
+        
+        주요 동작:
+          - 각 state_key의 이벤트 빈도 계산을 위한 초기 데이터 구조(self.data) 설정
+        """
+        self.alpha = alpha
+        self.baseline = baseline
+        self.data = {}  # 각 state_key에 대해 {'last_time': timestamp, 'ema_freq': float} 저장
+
+    def update(self, state_key, current_time):
+        """
+        주어진 state_key에 대해 현재 시간 기준으로 EMA 기반 이벤트 빈도를 업데이트합니다.
+        
+        Parameters:
+            state_key (str): 이벤트를 식별하는 키
+            current_time (float): 현재 시간 (타임스탬프)
+        
+        Returns:
+            float: 업데이트된 EMA 빈도 값
+        
+        주요 동작:
+          - 해당 state_key에 대한 이전 기록이 없으면 초기값 설정 후 0 반환
+          - 이전 이벤트 발생 시간과의 간격(dt)을 계산하여 현재 빈도를 도출
+          - EMA 공식을 적용하여 평활화된 빈도를 계산, 업데이트 후 반환
+        """
+        if state_key not in self.data:
+            self.data[state_key] = {'last_time': current_time, 'ema_freq': 0.0}
+            return 0.0
+        else:
+            last_time = self.data[state_key]['last_time']
+            dt = current_time - last_time  # 이전 이벤트와의 시간 간격
+            freq = 1.0 / dt if dt > 0 else 100.0  # dt가 0이면 매우 높은 빈도로 가정
+            ema_old = self.data[state_key]['ema_freq']
+            # EMA 계산: 새로운 빈도 = alpha * 현재 빈도 + (1 - alpha) * 이전 EMA
+            ema_new = self.alpha * freq + (1 - self.alpha) * ema_old
+            self.data[state_key]['ema_freq'] = ema_new
+            self.data[state_key]['last_time'] = current_time  # 마지막 시간 업데이트
+            return ema_new
+
+    def get_ema(self, state_key):
+        """
+        지정된 state_key의 현재 EMA 빈도 값을 반환합니다.
+        
+        Parameters:
+            state_key (str): 이벤트 식별 키
+        
+        Returns:
+            float: 해당 state_key의 EMA 빈도 (기본값 0.0)
+        """
+        return self.data.get(state_key, {}).get('ema_freq', 0.0)
+
+class LoggingUtil:
+    """
+    이벤트 로그 기록 시 동적 필터링을 적용합니다.
+    동일 이벤트(state_key)의 중복 기록을 방지하고, EMA 기반 필터링을 통해
+    중요도에 따라 로그 레벨을 조절하거나 생략합니다.
+    """
+    def __init__(self, module_name: str):
+        """
+        초기화 메서드
+        
+        Parameters:
+            module_name (str): 로거를 식별하기 위한 모듈 이름
+        
+        주요 동작:
+          - 지정 모듈의 로거 객체를 생성 및 초기화
+          - 상태 변화 관리를 위한 StateChangeManager와 동적 로그 추적을 위한 DynamicLogTracker 초기화
+        """
+        self.module_name = module_name
+        self.lock = threading.RLock()  # 동시 접근 제어를 위한 락
+        self.logger = setup_logger(module_name)  # 모듈 전용 로거 생성
+        self.state_manager = StateChangeManager()  # 상태 변화 관리 객체 생성
+        self.log_tracker = DynamicLogTracker(alpha=0.1, baseline=1.0)  # 동적 로그 빈도 추적 객체 생성
+    
+    def log_event(self, event_message: str, state_key: str = None, importance: str = 'MEDIUM'):
+        """
+        이벤트 메시지를 기록하는 메서드.
+        동일 state_key의 이벤트가 자주 발생하면 EMA를 통해 로그 레벨을 조절하거나 생략합니다.
+        
+        Parameters:
+            event_message (str): 기록할 이벤트 메시지
+            state_key (str, optional): 이벤트를 식별하는 키 (기본값: None)
+            importance (str, optional): 이벤트의 중요도 ('LOW', 'MEDIUM', 'HIGH'; 기본 'MEDIUM')
+        
+        Returns:
+            None: 결과는 로그로 기록되며 반환값은 없습니다.
+        
+        주요 동작:
+          - 현재 시간을 기준으로 해당 state_key의 이벤트 빈도를 업데이트
+          - 이전 상태와 동일한 경우 기록을 생략
+          - 계산된 EMA 값에 따라 로그 레벨(INFO 또는 DEBUG) 결정 후 메시지 기록
+        """
+        with self.lock:
+            current_time = time.time()
+            ema = 0.0
+            if state_key:
+                ema = self.log_tracker.update(state_key, current_time)
+            
+            # 동일 state_key에 대해 상태 변화가 없으면 로그 기록 생략
+            if state_key and not self.state_manager.has_changed(state_key, event_message):
+                return
+            
+            effective_level = 'INFO'  # 기본 로그 레벨
+            if ema > self.log_tracker.baseline * 2:
+                # EMA가 기준치의 2배 이상이면, 중요도에 따라 로그 레벨 조정 또는 생략
+                if importance.upper() == 'LOW':
+                    return  # 낮은 중요도 이벤트는 생략
+                elif importance.upper() == 'MEDIUM':
+                    effective_level = 'DEBUG'
+                else:
+                    effective_level = 'INFO'
+            
+            msg = f"[{self.module_name}] Event: {event_message}"
+            if effective_level == 'DEBUG':
+                self.logger.debug(msg)
+            else:
+                self.logger.info(msg)
+    
+    @staticmethod
+    def clear_log_files():
+        """
+        로그 파일들을 삭제하여 초기화하는 정적 메서드.
+        
+        주요 동작:
+          - LOG_FILES_DIR 내 모든 .log 파일을 찾아 삭제 시도
+          - 삭제 성공/실패 결과를 출력
+        """
+        import os, glob
+        log_files = glob.glob(os.path.join(LOG_FILES_DIR, "*.log"))
+        for log_file in log_files:
+            try:
+                os.remove(log_file)
+                print(f"Deleted log file: {log_file}")
+            except Exception as e:
+                print(f"Failed to remove log file {log_file}: {e}")
+
+class StateChangeManager:
+    """
+    StateChangeManager는 상태 값을 추적하며,
+    이전 상태와 비교하여 의미 있는 변화가 있는지 확인합니다.
+    숫자형 상태의 경우, 상대 변화율이 일정 임계값 이상일 때만 변화를 감지합니다.
+    """
+    def __init__(self, numeric_threshold: float = 0.01):
+        """
+        초기화 메서드
+        
+        Parameters:
+            numeric_threshold (float): 숫자형 상태 값의 상대 변화 임계값 (기본값 0.01, 즉 1%)
+        
+        주요 동작:
+          - 상태 값을 저장할 내부 딕셔너리 초기화
+          - 숫자형 상태 변화 감지를 위한 임계값 설정
+        """
+        self._state_dict = {}  # 상태 값을 저장할 딕셔너리, key: 상태 키, value: 상태 값
+        self.numeric_threshold = numeric_threshold
+
+    def has_changed(self, key: str, new_value) -> bool:
+        """
+        기존 상태와 비교하여 주어진 key의 상태가 의미 있게 변경되었는지 확인합니다.
+        - 숫자형 상태의 경우, 상대 변화율(또는 절대값 비교)을 통해 판단.
+        - 숫자형이 아닌 경우, 단순 불일치를 확인.
+        
+        Parameters:
+            key (str): 상태를 식별하는 키
+            new_value: 새로운 상태 값 (숫자형 또는 기타)
+        
+        Returns:
+            bool: 상태가 변경되었으면 True, 그렇지 않으면 False
+        
+        주요 동작:
+          - 초기 상태라면 저장 후 True 반환
+          - 숫자형 값이면, old_value가 0인 경우 절대 변화량 비교, 아니면 상대 변화율 비교
+          - 숫자형이 아닌 경우 단순 비교 수행
+        """
+        old_value = self._state_dict.get(key)
+        # 처음 상태인 경우
+        if old_value is None:
+            self._state_dict[key] = new_value
+            return True
+
+        # 숫자형 값인 경우: 상대 변화율 비교 (old_value가 0인 경우 절대 변화량으로 판단)
+        if isinstance(old_value, (int, float)) and isinstance(new_value, (int, float)):
+            if old_value == 0:
+                if abs(new_value) >= self.numeric_threshold:
+                    self._state_dict[key] = new_value
+                    return True
+                else:
+                    return False
+            else:
+                relative_change = abs(new_value - old_value) / abs(old_value)
+                if relative_change >= self.numeric_threshold:
+                    self._state_dict[key] = new_value
+                    return True
+                else:
+                    return False
+        else:
+            # 숫자형이 아닌 경우 단순 비교
+            if old_value != new_value:
+                self._state_dict[key] = new_value
+                return True
+            else:
+                return False
+
+    def get_state(self, key: str):
+        """
+        현재 저장된 상태 값을 반환합니다.
+        
+        Parameters:
+            key (str): 상태를 식별하는 키
+        
+        Returns:
+            해당 key에 대한 상태 값 (존재하지 않으면 None)
+        """
+        return self._state_dict.get(key)
+
+    def reset_state(self, key: str = None):
+        """
+        상태 값을 리셋합니다.
+        
+        Parameters:
+            key (str, optional): 특정 상태만 리셋할 경우 해당 키 지정. (지정하지 않으면 전체 상태 초기화)
+        
+        Returns:
+            None
+        """
+        if key:
+            if key in self._state_dict:
+                del self._state_dict[key]
+        else:
+            self._state_dict.clear()

@@ -1,17 +1,13 @@
 my_trading_project/
 ├── README.md                                        # 프로젝트 개요 및 실행 방법
 ├── requirements.txt                                 # 필요 라이브러리 목록
-├── data/                                            # 데이터 관련 디렉토리
-│   ├── collector/                                   # (데이터 수집) 관련 스크립트
-│   │   └── collect_data.py                          # 시장 분석/신호 계산/거래 모듈에 필요한 데이터를 수집
-│   ├── storage/                                     # (데이터 저장) 관련 스크립트
-│   │   └── store_data.py                            # PostgreSQL에 데이터 저장 (raw SQL 사용)
-│   ├── updater/                                     # (데이터 최신화) 관련 스크립트
-│   │   └── update_data.py                           # 기존 DB 데이터 최신화
-│   ├── deleter/                                     # (데이터 삭제) 관련 스크립트
-│   │   └── delete_data.py                           # 기존 DB에서 특정 데이터 삭제
-│   └── fetcher/                                     # (데이터 조회) 관련 스크립트
-│       └── fetch_data.py                            # DB로부터 데이터 조회하여 반환
+├── data/                                            # 데이터 디렉토리
+│   ├── collect_data.py                              # 데이터 수집 기능 통합
+│   ├── data_utils.py                                # 데이터베이스 연결 및 공통 유틸리티
+│   ├── db_config.py                                 # DB 설정
+│   ├── delete_data.py                               # 데이터 삭제 기능 통합
+│   ├── fetch_data.py                                # 데이터 조회 인터페이스
+│   ├── store_data.py                                # 데이터 저장 기능 통합
 ├── market_analysis/                                 # 시장 분석 디렉토리
 │   └── analyze_market.py                            # 시장 분석 기법 (상승/하락/횡보 등) 및 추세 판단 로직
 ├── signal_calc/                                     # 신호 계산 디렉토리
@@ -31,15 +27,13 @@ my_trading_project/
 │   ├── signal_metrics.py                            # 신호 계산 모듈용 성과 지표 계산
 │   ├── trade_optimize.py                            # 거래 모듈용 최적화, 과적합 방지 로직
 │   └── trade_metrics.py                             # 거래 모듈용 성과 지표 계산
-├── logs/                                           # 로그 관련 디렉토리
+├── logs/                                            # 로그 관련 디렉토리
 │   ├── log_config.py                                # 로그 중앙 관리 설정 (DEBUG→콘솔, INFO→log_files)
 │   └── log_files/                                   # INFO 이상 로그 파일 저장 디렉토리
-│       └── .gitignore                               # 로그 파일 커밋 제외 (선택 사항)
-├── tests/                                          # 단위 테스트 디렉토리
-│   ├── test_market_analysis.py                      # 시장 분석 모듈 단위 테스트
-│   ├── test_signal_calc.py                          # 신호 계산 모듈 단위 테스트
-│   ├── test_trading.py                              # 거래 모듈 단위 테스트
-│   └── __init__.py                                  # 테스트 디렉토리 패키지화 (필요 시)
+├── tests/                                           # 테스트 디렉토리
+│   ├── integration_tests/                           # 통합 테스트
+│   └── unit_tests/                                  # 단위 테스트
+│       └── test_storage_fetch.py                    # data 모듈의 저장(store_data) 및 조회(fetch_data) 테스트
 └── scripts/                                         # 실행 스크립트 디렉토리
     ├── run_data_store.py                            # 데이터 저장 스크립트
     ├── run_data_update.py                           # 데이터 최신화 스크립트

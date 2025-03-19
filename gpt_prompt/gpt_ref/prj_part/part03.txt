@@ -1,558 +1,726 @@
-[#3/10]
-# logs/aggregating_handler.py
-import logging  # 로그 기록을 위한 표준 모듈
-import os       # 파일 및 경로 관련 작업 지원
-import threading  # 스레드 동기화를 위한 모듈
+[signal_calc 모듈]
+# signal_calc/calc_signal.py
 
-class AggregatingHandler(logging.Handler):
-    """
-    AggregatingHandler는 (logger 이름, 파일명, 함수명)별로 이벤트 발생 횟수를 집계합니다.
-    플러시 시 집계된 결과를 최종 로그로 출력하고, 집계를 초기화합니다.
+# 이 파일은 모든 트레이딩 전략 클래스들이 상속할 기본 전략(BaseStrategy)을 정의합니다.
+# 각 전략 클래스는 get_signal() 메서드를 구현하여 거래 신호를 생성해야 합니다.
+
+from logs.log_config import setup_logger  # 로깅 설정을 위한 함수 임포트
+
+class BaseStrategy:
+    def __init__(self):
+        """
+        기본 전략 클래스의 생성자.
+        
+        목적:
+          - 자식 클래스에서 사용할 로거(logger) 객체를 초기화합니다.
+        
+        동작:
+          - 클래스 이름을 이용해 로거를 설정함으로써, 로그 메시지에 전략 이름을 포함시킵니다.
+        """
+        self.logger = setup_logger(self.__class__.__name__)
     
-    주요 기능:
-      - 로그 이벤트가 발생할 때마다 해당 키의 발생 횟수를 카운트합니다.
-      - 'is_weekly_signal' 속성이 있는 경우 별도로 주간 신호 집계합니다.
-    """
-    def __init__(self, level=logging.DEBUG):
+    def get_signal(self, data, current_time, **kwargs):
         """
-        초기화 메서드
+        거래 신호를 생성하기 위한 추상 메서드.
         
         Parameters:
-            level (int): 로깅 레벨 (기본값: logging.DEBUG)
+            data (pandas.DataFrame): 거래 데이터 (예: OHLCV 데이터 등).
+            current_time (datetime): 거래 신호를 생성할 기준 시점.
+            **kwargs: 추가 인자들.
         
-        주요 동작:
-          - 전체 로그 집계와 주간 신호 집계를 위한 딕셔너리 초기화
-          - 스레드 안전성을 보장하기 위해 RLock 객체 생성
-        """
-        super().__init__(level)
-        self.total_aggregation = {}       # 전체 로그 집계를 위한 딕셔너리, key: (logger name, filename, funcName)
-        self.weekly_signal_aggregation = {}  # 주간 신호 로그 집계를 위한 딕셔너리
-        self.lock = threading.RLock()       # 스레드 간 동시 접근 제어를 위한 재진입 락
-
-    def emit(self, record):
-        """
-        로그 레코드가 발생할 때마다 호출되며, 해당 이벤트를 집계합니다.
+        Returns:
+            str: 거래 신호 (예: "enter_long", "exit_all", "hold").
         
-        Parameters:
-            record (logging.LogRecord): 발생한 로그 이벤트에 대한 정보를 담은 객체
-        
-        주요 동작:
-          - record에서 (logger name, 파일명, 함수명)을 추출하여 집계의 key로 사용
-          - 전체 집계와 'is_weekly_signal' 속성에 따른 주간 신호 집계를 각각 업데이트
-          - 예외 발생 시 handleError() 호출하여 오류 처리
+        주의:
+            - 이 메서드는 구현되어 있지 않으므로 반드시 자식 클래스에서 오버라이딩 해야 합니다.
         """
-        try:
-            # 파일 경로에서 파일 이름만 추출하여 key 생성
-            key = (record.name, os.path.basename(record.pathname), record.funcName)
-            with self.lock:  # 스레드 안전하게 집계 딕셔너리 업데이트
-                self.total_aggregation[key] = self.total_aggregation.get(key, 0) + 1
-                # 'is_weekly_signal' 속성이 True면 주간 신호 집계 업데이트
-                if getattr(record, 'is_weekly_signal', False):
-                    self.weekly_signal_aggregation[key] = self.weekly_signal_aggregation.get(key, 0) + 1
-        except Exception:
-            self.handleError(record)
+        raise NotImplementedError("Subclasses must implement get_signal()")
 
-    def flush_aggregation_summary(self):
-        """
-        집계된 로그 결과를 포맷팅하여 최종 로그로 출력한 후, 집계 데이터를 초기화합니다.
-        
-        주요 동작:
-          - 전체 집계와 주간 신호 집계에 대해 각각 문자열 리스트를 생성 후 하나의 메시지로 결합
-          - 생성된 메시지를 로그에 기록하고, 집계 딕셔너리를 초기화
-        """
-        with self.lock:  # 집계 데이터에 대한 동시 접근 제어
-            if self.total_aggregation:
-                summary_lines = [
-                    f"{filename}:{funcname} (logger: {logger_name}) - 총 {count}회 발생"
-                    for (logger_name, filename, funcname), count in self.total_aggregation.items()
-                ]
-                summary = "\n".join(summary_lines)
-                try:
-                    # 전체 집계 결과를 info 레벨로 로그 출력
-                    logging.getLogger().info("전체 누적 로그 집계:\n" + summary)
-                except Exception:
-                    pass
-                self.total_aggregation.clear()  # 전체 집계 초기화
-            if self.weekly_signal_aggregation:
-                weekly_summary_lines = [
-                    f"{filename}:{funcname} (logger: {logger_name}) - 주간 신호 {count}회 발생"
-                    for (logger_name, filename, funcname), count in self.weekly_signal_aggregation.items()
-                ]
-                weekly_summary = "\n".join(weekly_summary_lines)
-                try:
-                    logging.getLogger().info("전체 주간 신호 로그 집계:\n" + weekly_summary)
-                except Exception:
-                    pass
-                self.weekly_signal_aggregation.clear()  # 주간 신호 집계 초기화
+# 로깅 설정
+from logs.log_config import setup_logger
+# 다양한 트레이딩 전략 임포트:
+# SelectStrategy, TrendFollowingStrategy, BreakoutStrategy, CounterTrendStrategy,
+# HighFrequencyStrategy, WeeklyBreakoutStrategy, WeeklyMomentumStrategy
+from strategies.trading_strategies import (
+    SelectStrategy, TrendFollowingStrategy, BreakoutStrategy,
+    CounterTrendStrategy, HighFrequencyStrategy, WeeklyBreakoutStrategy, WeeklyMomentumStrategy
+)
+# 설정 관리: 동적 파라미터를 가져오기 위해 사용
+from parameters_sensitivity.config_manager import ConfigManager
 
----
-
-# logs/logger_config.py
-import logging  # 로그 기록을 위한 표준 모듈
-import os       # 파일 경로 및 디렉토리 생성 관련 모듈
-import queue    # 로그 메시지 큐를 다루기 위한 모듈
-from logging.handlers import RotatingFileHandler, QueueHandler, QueueListener  # 회전 파일 핸들러 및 큐 관련 핸들러 임포트
-from logs.aggregating_handler import AggregatingHandler  # 사용자 정의 AggregatingHandler 임포트
-
-# 전역 변수: 파일 로그는 INFO 레벨 이상의 메시지만 기록
-FILE_LOG_LEVEL = logging.INFO
-# 전역 변수: 콘솔 로그는 DEBUG 레벨 이상의 메시지를 기록
-detail_level = logging.DEBUG
-
-# 로그 파일을 저장할 디렉토리 설정 (logs/log_files)
-LOG_FILES_DIR = os.path.join("logs", "log_files")
-if not os.path.exists(LOG_FILES_DIR):
-    os.makedirs(LOG_FILES_DIR)  # 디렉토리가 없으면 생성
-# 기본 로그 파일 경로 설정
-BASE_LOG_FILE = os.path.join(LOG_FILES_DIR, "project.log")
-
-class OneLineFormatter(logging.Formatter):
+def compute_dynamic_weights(market_volatility: float, liquidity_info: str, volume: float = None):
     """
-    OneLineFormatter는 로그 메시지 내의 줄바꿈을 파이프(|) 문자로 대체하여 한 줄로 출력하도록 포맷팅합니다.
-    """
-    def format(self, record):
-        formatted = super().format(record)  # 기본 포맷팅 수행
-        return formatted.replace("\n", " | ")  # 줄바꿈을 ' | '로 대체
-
-class LineRotatingFileHandler(RotatingFileHandler):
-    """
-    LineRotatingFileHandler는 로그 파일의 최대 라인 수를 초과하면 새로운 파일로 롤오버하는 기능을 제공합니다.
-    
-    주요 기능:
-      - 파일 크기 대신 로그 라인 수를 기준으로 롤오버
-      - 롤오버 시 새로운 파일 이름 생성 및 라인 카운트 초기화
-    """
-    def __init__(self, base_filename, mode='a', max_lines=500, encoding=None, delay=False):
-        """
-        초기화 메서드
-        
-        Parameters:
-            base_filename (str): 기본 로그 파일 이름
-            mode (str): 파일 열기 모드 (기본 'a' - append)
-            max_lines (int): 하나의 로그 파일에 기록할 최대 라인 수
-            encoding (str): 파일 인코딩 (기본값 None)
-            delay (bool): 파일 열기를 지연할지 여부 (기본 False)
-        """
-        self.base_filename = base_filename
-        self.current_index = 0  # 현재 파일 인덱스, 0이면 기본 파일 사용
-        self._set_current_filename()  # 현재 파일 이름 설정
-        super().__init__(self.current_filename, mode, maxBytes=0, encoding=encoding, delay=delay)
-        self.max_lines = max_lines  # 최대 라인 수 설정
-        self.current_line_count = 0  # 현재까지 기록한 라인 수
-
-    def _set_current_filename(self):
-        """
-        현재 인덱스에 따라 현재 로그 파일 이름을 설정합니다.
-        """
-        base, ext = os.path.splitext(self.base_filename)
-        # 인덱스 0이면 기본 파일명, 그 외에는 인덱스 번호를 포함한 파일명 사용
-        self.current_filename = self.base_filename if self.current_index == 0 else f"{base}{self.current_index}{ext}"
-        self.baseFilename = os.path.abspath(self.current_filename)
-
-    def doRollover(self):
-        """
-        로그 파일 롤오버를 수행합니다.
-        
-        주요 동작:
-          - 기존 스트림을 닫고, 파일 인덱스를 증가시킨 후 새로운 파일로 전환
-          - 라인 카운트를 초기화하여 새 파일에서 새로 기록 시작
-        """
-        if self.stream:
-            self.stream.close()
-            self.stream = None
-        self.current_index += 1  # 파일 인덱스 증가
-        self._set_current_filename()  # 새로운 파일 이름 설정
-        self.mode = 'w'  # 새 파일은 쓰기 모드로 열림
-        self.stream = self._open()  # 새로운 파일 스트림 열기
-        self.current_line_count = 0  # 라인 카운트 초기화
-
-    def emit(self, record):
-        """
-        로그 레코드를 기록하기 전에 메시지의 라인 수를 체크하고,
-        최대 라인 수를 초과하면 롤오버를 수행한 후 기록합니다.
-        
-        Parameters:
-            record (logging.LogRecord): 기록할 로그 이벤트
-        
-        주요 동작:
-          - 로그 메시지를 포맷팅하여 몇 줄인지 확인
-          - 현재 기록된 라인 수와 합산해 최대치를 초과하면 doRollover() 호출
-          - 업데이트된 라인 수를 반영 후 상위 emit() 메서드로 메시지 기록
-        """
-        try:
-            if record.levelno < FILE_LOG_LEVEL:
-                return  # 설정된 레벨보다 낮은 메시지는 무시
-            msg = self.format(record)  # 로그 메시지 포맷팅
-            lines_in_msg = msg.count("\n") or 1  # 메시지 내 줄바꿈 수 계산 (없으면 1라인)
-            if self.current_line_count + lines_in_msg > self.max_lines:
-                self.doRollover()  # 최대 라인 수 초과 시 롤오버 수행
-            self.current_line_count += lines_in_msg  # 현재 라인 수 업데이트
-            super().emit(record)  # 상위 클래스의 emit() 호출하여 로그 기록
-        except Exception:
-            self.handleError(record)
-
-# 전역 변수: 로그 메시지 큐 (크기 무제한)
-log_queue = queue.Queue(-1)
-queue_listener = None  # 전역 변수: QueueListener 객체 (추후 초기화)
-
-def initialize_root_logger():
-    """
-    루트 로거를 초기화하여 파일 핸들러, 콘솔 핸들러, 큐 핸들러 및 AggregatingHandler를 추가합니다.
-    
-    주요 동작:
-      - 루트 로거의 레벨 설정 및 기존 핸들러 제거
-      - 로그 파일용 핸들러와 콘솔용 핸들러 생성 및 설정
-      - 큐 핸들러를 통해 비동기 로깅 구성
-      - 외부 라이브러리(ccxt, urllib3)의 로그 레벨을 경고(WARNING)로 설정
-    """
-    root_logger = logging.getLogger()
-    root_logger.setLevel(detail_level)
-
-    # 기존 핸들러 제거
-    for handler in root_logger.handlers[:]:
-        root_logger.removeHandler(handler)
-
-    # 파일 핸들러 생성: 로그 파일은 LOG_FILES_DIR 내에 생성됨
-    file_handler = LineRotatingFileHandler(
-        base_filename=BASE_LOG_FILE,
-        max_lines=500,
-        encoding="utf-8",
-        delay=True
-    )
-    file_handler.setLevel(FILE_LOG_LEVEL)
-    formatter = OneLineFormatter('[%(asctime)s] %(levelname)s:%(name)s:%(filename)s:%(funcName)s: %(message)s')
-    file_handler.setFormatter(formatter)
-    root_logger.addHandler(file_handler)
-
-    # 콘솔 핸들러 생성
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(detail_level)
-    console_formatter = OneLineFormatter('[%(asctime)s] %(levelname)s:%(name)s:%(filename)s:%(funcName)s: %(message)s')
-    console_handler.setFormatter(console_formatter)
-    # _is_summary 속성이 있는 레코드는 필터링(제외)
-    console_handler.addFilter(lambda record: not getattr(record, '_is_summary', False))
-
-    # 큐 핸들러 추가: 로그 메시지를 큐에 넣어 비동기 처리 지원
-    q_handler = QueueHandler(log_queue)
-    root_logger.addHandler(q_handler)
-
-    global queue_listener
-    queue_listener = QueueListener(log_queue, console_handler)
-    queue_listener.start()
-
-    # AggregatingHandler 추가: 로그 이벤트 집계를 위해 설정
-    try:
-        aggregator_handler = AggregatingHandler(level=detail_level)
-        aggregator_handler.addFilter(lambda record: not getattr(record, '_is_summary', False))
-        aggregator_formatter = OneLineFormatter('[%(asctime)s] %(levelname)s:%(name)s:%(filename)s:%(funcName)s: %(message)s')
-        aggregator_handler.setFormatter(aggregator_formatter)
-        root_logger.addHandler(aggregator_handler)
-    except Exception as e:
-        logging.getLogger().error("Failed to add AggregatingHandler: " + str(e), exc_info=True)
-
-    # 외부 라이브러리 로그 레벨 조정 (불필요한 디버그 메시지 제거)
-    logging.getLogger("ccxt").setLevel(logging.WARNING)
-    logging.getLogger("urllib3").setLevel(logging.WARNING)
-
-def setup_logger(module_name: str) -> logging.Logger:
-    """
-    모듈별 로거를 설정하여 반환합니다.
+    시장 변동성, 유동성 정보 및 거래량을 고려하여 단기 전략과 주간 전략에 적용할 동적 가중치를 계산합니다.
     
     Parameters:
-        module_name (str): 해당 모듈을 식별하기 위한 이름.
+        market_volatility (float): 현재 시장 변동성 (없을 경우 기본값 사용).
+        liquidity_info (str): 유동성 정보, "high"일 경우 높은 유동성으로 간주.
+        volume (float, optional): 거래량; 낮은 경우 추가 조정.
     
     Returns:
-        logging.Logger: 설정된 로거 객체.
-    
-    주요 동작:
-      - 모듈 이름에 따라 로거 생성 후, 모듈 전용 AggregatingHandler를 추가하여 집계 기능 제공.
+        tuple: (short_weight, weekly_weight)
+            - short_weight: 단기 전략에 적용할 가중치.
+            - weekly_weight: 주간 전략에 적용할 가중치.
     """
-    logger = logging.getLogger(module_name)
-    logger.setLevel(detail_level)
-    logger.propagate = True  # 상위 로거로 메시지 전파
+    # market_volatility가 None이면 기본값 설정
+    if market_volatility is None:
+        market_volatility = 0.02
+
+    # 설정 관리자를 통해 동적 파라미터를 불러옴
+    config = ConfigManager().get_dynamic_params()
+    # 유동성이 높은 경우와 그렇지 않은 경우에 따라 기본 가중치 할당
+    if liquidity_info.lower() == "high":
+        short_weight = config.get("liquidity_weight_high", 0.8)
+        weekly_weight = 1 - short_weight
+    else:
+        short_weight = config.get("liquidity_weight_low", 0.6)
+        weekly_weight = 1 - short_weight
+
+    # 시장 변동성이 특정 임계값을 넘으면 가중치 조정
+    vol_threshold = config.get("weight_vol_threshold", 0.05)
+    if market_volatility > vol_threshold:
+        factor = config.get("vol_weight_factor", 0.9)
+        short_weight *= factor
+        weekly_weight = 1 - short_weight
+
+    # 거래량(volume)이 주어지고 낮은 경우 추가 가중치 조정
+    if volume is not None and volume < 1000:
+        short_weight *= 0.8
+        weekly_weight = 1 - short_weight
+
+    return short_weight, weekly_weight
+
+class Ensemble:
+    def __init__(self):
+        """
+        다양한 트레이딩 전략들을 집계(ensemble)하여 최종 거래 신호를 도출하기 위한 Ensemble 객체를 초기화합니다.
+        
+        각 하위 전략(Select, TrendFollowing, Breakout, CounterTrend, HighFrequency, WeeklyBreakout, WeeklyMomentum)
+        인스턴스를 생성하고, 로깅을 위한 로거 객체를 설정합니다.
+        """
+        self.logger = setup_logger(__name__)
+        self.select_strategy = SelectStrategy()
+        self.trend_following_strategy = TrendFollowingStrategy()
+        self.breakout_strategy = BreakoutStrategy()
+        self.counter_trend_strategy = CounterTrendStrategy()
+        self.high_frequency_strategy = HighFrequencyStrategy()
+        self.weekly_breakout_strategy = WeeklyBreakoutStrategy()
+        self.weekly_momentum_strategy = WeeklyMomentumStrategy()
+        # 마지막 최종 신호를 저장하여 변경 시 로깅에 활용
+        self.last_final_signal = None
+
+    def get_final_signal(self, market_regime, liquidity_info, data, current_time, data_weekly=None, 
+                         market_volatility: float = None, volume: float = None):
+        """
+        여러 하위 전략들로부터 개별 거래 신호를 수집한 후, 동적 가중치 기반 투표 방식을 통해 최종 거래 신호를 결정합니다.
+        
+        1. 동적 가중치(short_weight, weekly_weight)를 계산.
+        2. 단기 전략(Select, Trend, Breakout, Counter, HF) 및 (옵션) 주간 전략에서 신호를 수집.
+        3. 각 신호에 대해 가중치 합산을 통해 'enter_long'와 'exit_all' 중 우세한 신호를 결정.
+        4. 투표 결과에 따라 최종 신호("enter_long", "exit_all", 또는 "hold")를 반환.
+        
+        Parameters:
+            market_regime (str): 현재 시장 상황(직접 사용되지는 않음).
+            liquidity_info (str): 시장 유동성 정보 (예: "high").
+            data: 단기 전략에 필요한 시장 데이터.
+            current_time: 신호 산출 시점의 타임스탬프.
+            data_weekly: 주간 전략에 사용할 주간 시장 데이터 (옵션).
+            market_volatility (float, optional): 시장 변동성 수치.
+            volume (float, optional): 거래량 수치.
+        
+        Returns:
+            str: 최종 거래 신호 ("enter_long", "exit_all", 또는 "hold").
+        """
+        # 동적 가중치 계산: 단기와 주간 전략의 영향력 비율 결정
+        short_weight, weekly_weight = compute_dynamic_weights(market_volatility, liquidity_info, volume)
+
+        # 각 하위 전략에서 신호 수집 (단기 데이터 기반)
+        signals = {
+            "select": self.select_strategy.get_signal(data, current_time),
+            "trend": self.trend_following_strategy.get_signal(data, current_time),
+            "breakout": self.breakout_strategy.get_signal(data, current_time),
+            "counter": self.counter_trend_strategy.get_signal(data, current_time),
+            "hf": self.high_frequency_strategy.get_signal(data, current_time)
+        }
+        # 주간 데이터가 제공되면 주간 전략 신호 추가
+        if data_weekly is not None:
+            signals["weekly_breakout"] = self.weekly_breakout_strategy.get_signal(data_weekly, current_time)
+            signals["weekly_momentum"] = self.weekly_momentum_strategy.get_signal(data_weekly, current_time)
+
+        # 단기 전략 신호에 대해 'enter_long'와 'exit_all' 가중치 합산
+        vote_enter = sum(short_weight for key in ["select", "trend", "breakout", "counter", "hf"] if signals.get(key) == "enter_long")
+        vote_exit = sum(short_weight for key in ["select", "trend", "breakout", "counter", "hf"] if signals.get(key) == "exit_all")
+        # 주간 전략 신호가 있으면 해당 가중치도 포함
+        if data_weekly is not None:
+            vote_enter += sum(weekly_weight for key in ["weekly_breakout", "weekly_momentum"] if signals.get(key) == "enter_long")
+            vote_exit += sum(weekly_weight for key in ["weekly_breakout", "weekly_momentum"] if signals.get(key) == "exit_all")
+
+        # 가중치 투표 결과에 따라 최종 신호 결정:
+        # - exit_all이 더 많은 경우: "exit_all"
+        # - enter_long이 더 많은 경우: "enter_long"
+        # - 동점이면 "hold"
+        final_signal = "exit_all" if vote_exit > vote_enter else ("enter_long" if vote_enter > vote_exit else "hold")
+        # 최종 신호가 변경되었으면 디버그 로그 기록
+        if self.last_final_signal != final_signal:
+            self.logger.debug(
+                f"Ensemble final signal changed to {final_signal} at {current_time} "
+                f"with dynamic weights: short={short_weight}, weekly={weekly_weight}, "
+                f"signals: {signals}"
+            )
+            self.last_final_signal = final_signal
+        return final_signal
+
+import pandas as pd
+from ta.trend import SMAIndicator, MACD
+from ta.momentum import RSIIndicator
+from ta.volatility import BollingerBands
+from logs.log_config import setup_logger
+
+# 전역 변수 및 객체 정의
+# logger: 이 모듈에서 발생하는 디버그 및 에러 메시지를 기록하는 로깅 객체입니다.
+logger = setup_logger(__name__)
+
+
+def compute_sma(data: pd.DataFrame, price_column: str = 'close', period: int = 20, fillna: bool = False, output_col: str = 'sma') -> pd.DataFrame:
+    """
+    주어진 데이터프레임의 지정된 가격 열을 기준으로 단순 이동평균(SMA)을 계산합니다.
+    
+    Parameters:
+      - data (pd.DataFrame): 가격 정보가 포함된 입력 데이터프레임.
+      - price_column (str): SMA 계산에 사용할 가격 열 이름 (예: 'close').
+      - period (int): SMA 계산에 사용될 기간 (예: 20일).
+      - fillna (bool): 결측치가 있을 경우 보정 여부.
+      - output_col (str): 계산된 SMA 결과를 저장할 컬럼 이름.
+    
+    Returns:
+      - pd.DataFrame: 입력 데이터프레임에 SMA 컬럼이 추가된 결과 데이터프레임.
+    
+    동작 방식:
+      - ta 라이브러리의 SMAIndicator 클래스를 사용하여 주어진 기간의 단순 이동평균을 계산합니다.
+      - 계산된 결과를 데이터프레임의 새로운 컬럼(output_col)에 추가합니다.
+    """
     try:
-        agg_handler = AggregatingHandler(level=detail_level)
-        agg_handler.addFilter(lambda record: not getattr(record, '_is_summary', False))
-        formatter = OneLineFormatter('[%(asctime)s] %(levelname)s:%(name)s:%(filename)s:%(funcName)s: %(message)s')
-        agg_handler.setFormatter(formatter)
-        logger.addHandler(agg_handler)
+        # SMAIndicator 객체를 생성하여 지정된 가격 열과 기간에 따른 SMA를 계산하도록 설정합니다.
+        sma = SMAIndicator(close=data[price_column], window=period, fillna=fillna)
+        # 계산된 SMA 값을 output_col 이름의 컬럼에 저장합니다.
+        data[output_col] = sma.sma_indicator()
+        logger.debug(f"SMA computed with period {period}")
     except Exception as e:
-        logger.error("Failed to add module-specific AggregatingHandler: " + str(e), exc_info=True)
-    return logger
+        # 예외 발생 시 에러 로그에 기록합니다.
+        logger.error(f"compute_sma error: {e}", exc_info=True)
+    return data
 
-def shutdown_logging():
+
+def compute_macd(data: pd.DataFrame, price_column: str = 'close', slow_period: int = 26, fast_period: int = 12, signal_period: int = 9, fillna: bool = False, prefix: str = 'macd_') -> pd.DataFrame:
     """
-    로깅 시스템을 종료합니다.
+    주어진 데이터프레임의 가격 정보를 바탕으로 MACD (이동평균 수렴·발산 지표)를 계산합니다.
     
-    주요 동작:
-      - 루트 로거에 추가된 핸들러 중 flush_aggregation_summary() 메서드가 있으면 호출하여 집계 결과 플러시
-      - 큐 리스너를 중지한 후 logging.shutdown()을 호출하여 모든 로깅 자원 정리
+    Parameters:
+      - data (pd.DataFrame): 가격 정보가 포함된 입력 데이터프레임.
+      - price_column (str): MACD 계산에 사용할 가격 열 이름.
+      - slow_period (int): 느린 이동평균에 사용되는 기간.
+      - fast_period (int): 빠른 이동평균에 사용되는 기간.
+      - signal_period (int): 시그널 라인 계산에 사용되는 기간.
+      - fillna (bool): 결측치 보정 여부.
+      - prefix (str): 결과 컬럼 이름에 붙일 접두사.
+    
+    Returns:
+      - pd.DataFrame: MACD, 시그널 라인, 그리고 두 값의 차이(diff)를 포함하는 컬럼들이 추가된 데이터프레임.
+    
+    동작 방식:
+      - ta 라이브러리의 MACD 클래스를 활용해 MACD 관련 값을 계산하고,
+        각 결과를 접두사(prefix)를 붙여 데이터프레임에 저장합니다.
     """
-    root_logger = logging.getLogger()
-    for handler in root_logger.handlers:
+    try:
+        # MACD 객체 생성: 지정된 가격 열과 기간 값들을 이용하여 MACD 계산을 설정합니다.
+        macd = MACD(close=data[price_column],
+                    window_slow=slow_period,
+                    window_fast=fast_period,
+                    window_sign=signal_period,
+                    fillna=fillna)
+        # MACD 관련 값을 각각 새로운 컬럼에 저장합니다.
+        data[f'{prefix}macd'] = macd.macd()
+        data[f'{prefix}signal'] = macd.macd_signal()
+        data[f'{prefix}diff'] = macd.macd_diff()
+        logger.debug(f"MACD computed (slow={slow_period}, fast={fast_period}, signal={signal_period})")
+    except Exception as e:
+        logger.error(f"compute_macd error: {e}", exc_info=True)
+    return data
+
+
+def compute_rsi(data: pd.DataFrame, price_column: str = 'close', period: int = 14, fillna: bool = False, output_col: str = 'rsi') -> pd.DataFrame:
+    """
+    주어진 데이터프레임의 가격 정보를 바탕으로 상대 강도 지수(RSI)를 계산합니다.
+    
+    Parameters:
+      - data (pd.DataFrame): 가격 정보가 포함된 입력 데이터프레임.
+      - price_column (str): RSI 계산에 사용할 가격 열 이름.
+      - period (int): RSI 계산에 사용될 기간.
+      - fillna (bool): 결측치 보정 여부.
+      - output_col (str): 계산된 RSI 결과를 저장할 컬럼 이름.
+    
+    Returns:
+      - pd.DataFrame: RSI 컬럼이 추가된 데이터프레임.
+    
+    동작 방식:
+      - ta 라이브러리의 RSIIndicator 클래스를 사용하여 주어진 기간 동안의 RSI를 계산하고,
+        결과를 데이터프레임에 추가합니다.
+    """
+    try:
+        # RSIIndicator 객체 생성: 지정된 가격 열과 기간에 따른 RSI를 계산하도록 설정합니다.
+        rsi = RSIIndicator(close=data[price_column], window=period, fillna=fillna)
+        # 계산된 RSI 값을 output_col 이름의 컬럼에 저장합니다.
+        data[output_col] = rsi.rsi()
+        logger.debug(f"RSI computed with period {period}")
+    except Exception as e:
+        logger.error(f"compute_rsi error: {e}", exc_info=True)
+    return data
+
+
+def compute_bollinger_bands(data: pd.DataFrame, price_column: str = 'close', period: int = 20, std_multiplier: float = 2.0, fillna: bool = False, prefix: str = 'bb_') -> pd.DataFrame:
+    """
+    주어진 가격 데이터를 바탕으로 Bollinger Bands(볼린저 밴드) 및 관련 지표들을 계산합니다.
+    
+    Parameters:
+      - data (pd.DataFrame): 가격 정보가 포함된 입력 데이터프레임.
+      - price_column (str): Bollinger Bands 계산에 사용할 가격 열 이름.
+      - period (int): 중간 이동평균 계산에 사용되는 기간.
+      - std_multiplier (float): 표준편차 배수 (상한/하한 밴드 계산에 사용).
+      - fillna (bool): 결측치 보정 여부.
+      - prefix (str): 결과 컬럼 이름에 붙일 접두사.
+    
+    Returns:
+      - pd.DataFrame: 중간 이동평균, 상한/하한 밴드, 퍼센트 밴드, 폭 밴드 및 밴드 지표들을 포함하는 컬럼들이 추가된 데이터프레임.
+    
+    동작 방식:
+      - ta 라이브러리의 BollingerBands 클래스를 사용하여 각 밴드와 지표들을 계산한 후,
+        계산 결과를 각각의 컬럼에 저장합니다.
+    """
+    try:
+        # BollingerBands 객체 생성: 지정된 가격 열, 기간, 표준편차 배수를 이용하여 볼린저 밴드를 계산하도록 설정합니다.
+        bb = BollingerBands(close=data[price_column], window=period, window_dev=std_multiplier, fillna=fillna)
+        # 계산된 각 지표들을 접두사(prefix)를 붙여 데이터프레임에 저장합니다.
+        data[f'{prefix}mavg'] = bb.bollinger_mavg()
+        data[f'{prefix}hband'] = bb.bollinger_hband()
+        data[f'{prefix}lband'] = bb.bollinger_lband()
+        data[f'{prefix}pband'] = bb.bollinger_pband()
+        data[f'{prefix}wband'] = bb.bollinger_wband()
+        data[f'{prefix}hband_ind'] = bb.bollinger_hband_indicator()
+        data[f'{prefix}lband_ind'] = bb.bollinger_lband_indicator()
+        logger.debug(f"Bollinger Bands computed (period={period}, std_multiplier={std_multiplier})")
+    except Exception as e:
+        logger.error(f"compute_bollinger_bands error: {e}", exc_info=True)
+    return data
+
+from logs.log_config import setup_logger  # 로거 설정 함수
+from strategies.base_strategy import BaseStrategy  # 기본 전략 클래스
+from market_analysis.regime_filter import determine_weekly_extreme_signal  # 주간 극단값 신호를 판단하는 함수
+
+# ------------------------------------------------------------------
+# SelectStrategy: 여러 개의 개별 신호(캔들 패턴, SMA/RSI, 볼린저 밴드)를 결합해 최종 거래 신호를 생성
+# ------------------------------------------------------------------
+class SelectStrategy(BaseStrategy):
+    def __init__(self):
+        """
+        SelectStrategy 생성자.
+        
+        목적:
+          - BaseStrategy를 상속받아 로거를 초기화하고, 이전 신호를 저장할 변수를 설정합니다.
+        """
+        super().__init__()
+        self.previous_signal = None  # 이전에 생성된 거래 신호를 저장 (변경 시 로깅용)
+
+    def _get_candle_pattern_signal(self, row):
+        """
+        캔들 패턴 데이터를 기반으로 상승 또는 하락 신호를 판단합니다.
+        
+        Parameters:
+            row (dict): 현재 캔들 데이터 (open, close 등 포함).
+        
+        Returns:
+            str or None: "bullish" (상승) 또는 "bearish" (하락) 신호, 해당하지 않으면 None.
+        """
+        open_price = row.get('open')
+        close_price = row.get('close')
+        if open_price is None or close_price is None:
+            return None
+        # 상승: 종가가 시가 대비 0.5% 이상 상승, 하락: 종가가 시가 대비 1% 이상 하락
+        return "bullish" if close_price > open_price * 1.005 else ("bearish" if close_price < open_price * 0.99 else None)
+
+    def _get_sma_rsi_signal(self, row, previous_sma):
+        """
+        단순 이동평균(SMA)과 RSI 지표를 이용해 거래 신호를 생성합니다.
+        
+        Parameters:
+            row (dict): 현재 시점의 데이터 (SMA, RSI 포함).
+            previous_sma (float): 바로 이전 시점의 SMA 값.
+        
+        Returns:
+            str: 조건에 따라 "enter_long" (매수 진입) 또는 "hold" (대기) 신호.
+        """
+        sma = row.get('sma')
+        rsi = row.get('rsi')
+        # 조건: 현재 SMA가 이전 SMA보다 상승하고 RSI가 35 미만이면 매수 신호
+        return "enter_long" if sma is not None and previous_sma is not None and sma > previous_sma and rsi is not None and rsi < 35 else "hold"
+
+    def _get_bb_signal(self, row):
+        """
+        볼린저 밴드 하단을 기준으로 거래 신호를 생성합니다.
+        
+        Parameters:
+            row (dict): 현재 데이터 행 (종가, 볼린저 밴드 하단 포함).
+        
+        Returns:
+            str: "enter_long" (매수 진입) 또는 "hold" (대기).
+        """
+        bb_lband = row.get('bb_lband')
+        close_price = row.get('close', 0)
+        # 조건: 종가가 볼린저 밴드 하단의 0.2% 범위 내이면 매수 신호
+        return "enter_long" if bb_lband is not None and close_price <= bb_lband * 1.002 else "hold"
+
+    def get_signal(self, data, current_time, **kwargs):
+        """
+        여러 개의 신호 생성 함수를 결합하여 최종 거래 신호를 도출합니다.
+        
+        Parameters:
+            data (pandas.DataFrame): 시계열 시장 데이터 (각종 지표 포함).
+            current_time (datetime): 기준 시점.
+            **kwargs: 추가 인자들.
+        
+        Returns:
+            str: "enter_long" 또는 "hold"와 같이 거래 진입 여부를 나타내는 신호.
+        """
         try:
-            if hasattr(handler, 'flush_aggregation_summary'):
-                handler.flush_aggregation_summary()
+            # 현재 시점에 해당하는 데이터 행 선택
+            current_row = data.loc[current_time]
         except Exception:
-            pass
-    global queue_listener
-    if queue_listener is not None:
-        queue_listener.stop()
-        queue_listener = None
-    logging.shutdown()
+            return "hold"
+        # 세 가지 개별 신호를 생성 후, 하나라도 "enter_long"이면 최종 신호는 "enter_long"로 결정
+        signals = [
+            "enter_long" if self._get_candle_pattern_signal(current_row) == "bullish" else "hold",
+            self._get_sma_rsi_signal(
+                current_row,
+                # 현재 시점까지의 데이터 중 바로 이전 행의 SMA 값 사용 (데이터가 1개인 경우 현재값 사용)
+                data.loc[:current_time].iloc[-2].get('sma') if len(data.loc[:current_time]) > 1 else current_row.get('sma')
+            ),
+            self._get_bb_signal(current_row)
+        ]
+        final_signal = "enter_long" if "enter_long" in signals else "hold"
+        # 신호가 변경된 경우에만 로깅 처리
+        if self.previous_signal != final_signal:
+            self.logger.info(f"SelectStrategy 신호: {final_signal}")
+            self.previous_signal = final_signal
+        return final_signal
 
----
-
-# logs/logging_util.py
-import threading  # 동시성 제어를 위한 모듈
-import time       # 시간 관련 함수 제공
-from logs.logger_config import setup_logger, LOG_FILES_DIR  # 로거 설정 및 로그 파일 경로 임포트
-from logs.state_change_manager import StateChangeManager  # 상태 변화 관리 클래스 임포트
-
-class DynamicLogTracker:
-    """
-    각 state_key별로 최근 이벤트 발생 빈도를 EMA(지수이동평균)로 계산하여 저장합니다.
-    
-    주요 기능:
-      - 특정 이벤트의 발생 간격을 측정하여 빈도를 산출
-      - EMA를 통해 이벤트 빈도의 평활화(smoothing) 수행
-    """
-    def __init__(self, alpha=0.1, baseline=1.0):
+# ------------------------------------------------------------------
+# TrendFollowingStrategy: 단순 이동평균을 기반으로 추세 추종 거래 전략을 구현
+# ------------------------------------------------------------------
+class TrendFollowingStrategy(BaseStrategy):
+    def __init__(self):
         """
-        초기화 메서드
+        TrendFollowingStrategy 생성자.
+        
+        목적:
+          - 이동평균(SMA) 기반 전략을 사용하여 단순 추세에 따라 거래 신호를 결정합니다.
+        """
+        super().__init__()
+        self.previous_signal = None
+
+    def get_signal(self, data, current_time, **kwargs):
+        """
+        이동평균과 종가를 비교하여 거래 신호를 생성합니다.
         
         Parameters:
-            alpha (float): EMA 계산 시 가중치 계수 (기본값: 0.1)
-            baseline (float): 기본 빈도 기준값 (기본값: 1.0)
-        
-        주요 동작:
-          - 각 state_key의 이벤트 빈도 계산을 위한 초기 데이터 구조(self.data) 설정
-        """
-        self.alpha = alpha
-        self.baseline = baseline
-        self.data = {}  # 각 state_key에 대해 {'last_time': timestamp, 'ema_freq': float} 저장
-
-    def update(self, state_key, current_time):
-        """
-        주어진 state_key에 대해 현재 시간 기준으로 EMA 기반 이벤트 빈도를 업데이트합니다.
-        
-        Parameters:
-            state_key (str): 이벤트를 식별하는 키
-            current_time (float): 현재 시간 (타임스탬프)
+            data (pandas.DataFrame): 시장 데이터 (SMA, 종가 포함).
+            current_time (datetime): 기준 시점.
+            **kwargs: 추가 인자들.
         
         Returns:
-            float: 업데이트된 EMA 빈도 값
-        
-        주요 동작:
-          - 해당 state_key에 대한 이전 기록이 없으면 초기값 설정 후 0 반환
-          - 이전 이벤트 발생 시간과의 간격(dt)을 계산하여 현재 빈도를 도출
-          - EMA 공식을 적용하여 평활화된 빈도를 계산, 업데이트 후 반환
+            str: "enter_long" (매수 진입) 또는 "hold" (대기) 신호.
         """
-        if state_key not in self.data:
-            self.data[state_key] = {'last_time': current_time, 'ema_freq': 0.0}
-            return 0.0
-        else:
-            last_time = self.data[state_key]['last_time']
-            dt = current_time - last_time  # 이전 이벤트와의 시간 간격
-            freq = 1.0 / dt if dt > 0 else 100.0  # dt가 0이면 매우 높은 빈도로 가정
-            ema_old = self.data[state_key]['ema_freq']
-            # EMA 계산: 새로운 빈도 = alpha * 현재 빈도 + (1 - alpha) * 이전 EMA
-            ema_new = self.alpha * freq + (1 - self.alpha) * ema_old
-            self.data[state_key]['ema_freq'] = ema_new
-            self.data[state_key]['last_time'] = current_time  # 마지막 시간 업데이트
-            return ema_new
+        try:
+            row = data.loc[current_time]
+        except Exception:
+            return "hold"
+        # 조건: 종가가 SMA보다 높으면 매수 신호로 판단
+        final_signal = "enter_long" if row.get('sma') is not None and row.get('close') > row.get('sma') else "hold"
+        if self.previous_signal != final_signal:
+            self.logger.info(f"TrendFollowingStrategy signal changed to {final_signal} at {current_time}")
+            self.previous_signal = final_signal
+        return final_signal
 
-    def get_ema(self, state_key):
+# ------------------------------------------------------------------
+# BreakoutStrategy: 최근 고점을 돌파하는 경우 매수 신호를 발생시키는 전략
+# ------------------------------------------------------------------
+class BreakoutStrategy(BaseStrategy):
+    def __init__(self, window=20):
         """
-        지정된 state_key의 현재 EMA 빈도 값을 반환합니다.
+        BreakoutStrategy 생성자.
         
         Parameters:
-            state_key (str): 이벤트 식별 키
+            window (int): 돌파 판단을 위한 최근 데이터 포인트 수 (기본값: 20).
+        """
+        super().__init__()
+        self.window = window  # 고점 계산에 사용할 기간
+        self.previous_signal = None
+
+    def get_signal(self, data, current_time, **kwargs):
+        """
+        최근 'window' 기간 동안의 최고가를 기준으로 돌파 여부를 판단하여 거래 신호를 생성합니다.
+        
+        Parameters:
+            data (pandas.DataFrame): 시장 데이터 (고가, 종가 등 포함).
+            current_time (datetime): 기준 시점.
+            **kwargs: 추가 인자들.
         
         Returns:
-            float: 해당 state_key의 EMA 빈도 (기본값 0.0)
+            str: 돌파 시 "enter_long", 아니면 "hold".
         """
-        return self.data.get(state_key, {}).get('ema_freq', 0.0)
-
-class LoggingUtil:
-    """
-    이벤트 로그 기록 시 동적 필터링을 적용합니다.
-    동일 이벤트(state_key)의 중복 기록을 방지하고, EMA 기반 필터링을 통해
-    중요도에 따라 로그 레벨을 조절하거나 생략합니다.
-    """
-    def __init__(self, module_name: str):
-        """
-        초기화 메서드
-        
-        Parameters:
-            module_name (str): 로거를 식별하기 위한 모듈 이름
-        
-        주요 동작:
-          - 지정 모듈의 로거 객체를 생성 및 초기화
-          - 상태 변화 관리를 위한 StateChangeManager와 동적 로그 추적을 위한 DynamicLogTracker 초기화
-        """
-        self.module_name = module_name
-        self.lock = threading.RLock()  # 동시 접근 제어를 위한 락
-        self.logger = setup_logger(module_name)  # 모듈 전용 로거 생성
-        self.state_manager = StateChangeManager()  # 상태 변화 관리 객체 생성
-        self.log_tracker = DynamicLogTracker(alpha=0.1, baseline=1.0)  # 동적 로그 빈도 추적 객체 생성
-    
-    def log_event(self, event_message: str, state_key: str = None, importance: str = 'MEDIUM'):
-        """
-        이벤트 메시지를 기록하는 메서드.
-        동일 state_key의 이벤트가 자주 발생하면 EMA를 통해 로그 레벨을 조절하거나 생략합니다.
-        
-        Parameters:
-            event_message (str): 기록할 이벤트 메시지
-            state_key (str, optional): 이벤트를 식별하는 키 (기본값: None)
-            importance (str, optional): 이벤트의 중요도 ('LOW', 'MEDIUM', 'HIGH'; 기본 'MEDIUM')
-        
-        Returns:
-            None: 결과는 로그로 기록되며 반환값은 없습니다.
-        
-        주요 동작:
-          - 현재 시간을 기준으로 해당 state_key의 이벤트 빈도를 업데이트
-          - 이전 상태와 동일한 경우 기록을 생략
-          - 계산된 EMA 값에 따라 로그 레벨(INFO 또는 DEBUG) 결정 후 메시지 기록
-        """
-        with self.lock:
-            current_time = time.time()
-            ema = 0.0
-            if state_key:
-                ema = self.log_tracker.update(state_key, current_time)
-            
-            # 동일 state_key에 대해 상태 변화가 없으면 로그 기록 생략
-            if state_key and not self.state_manager.has_changed(state_key, event_message):
-                return
-            
-            effective_level = 'INFO'  # 기본 로그 레벨
-            if ema > self.log_tracker.baseline * 2:
-                # EMA가 기준치의 2배 이상이면, 중요도에 따라 로그 레벨 조정 또는 생략
-                if importance.upper() == 'LOW':
-                    return  # 낮은 중요도 이벤트는 생략
-                elif importance.upper() == 'MEDIUM':
-                    effective_level = 'DEBUG'
-                else:
-                    effective_level = 'INFO'
-            
-            msg = f"[{self.module_name}] Event: {event_message}"
-            if effective_level == 'DEBUG':
-                self.logger.debug(msg)
+        try:
+            # 현재 시점까지의 데이터를 선택
+            data_sub = data.loc[:current_time]
+            # 충분한 데이터가 없는 경우 대기
+            if len(data_sub) < self.window:
+                final_signal = "hold"
             else:
-                self.logger.info(msg)
-    
-    @staticmethod
-    def clear_log_files():
+                # 최근 'window' 기간 동안의 최고가 계산
+                recent_high = data_sub['high'].iloc[-self.window:].max()
+                final_signal = "enter_long" if data.loc[current_time, 'close'] > recent_high else "hold"
+        except Exception:
+            final_signal = "hold"
+        if self.previous_signal != final_signal:
+            self.logger.info(f"BreakoutStrategy signal changed to {final_signal} at {current_time}")
+            self.previous_signal = final_signal
+        return final_signal
+
+# ------------------------------------------------------------------
+# CounterTrendStrategy: RSI 지표를 이용한 역추세 거래 전략
+# ------------------------------------------------------------------
+class CounterTrendStrategy(BaseStrategy):
+    def __init__(self):
         """
-        로그 파일들을 삭제하여 초기화하는 정적 메서드.
+        CounterTrendStrategy 생성자.
         
-        주요 동작:
-          - LOG_FILES_DIR 내 모든 .log 파일을 찾아 삭제 시도
-          - 삭제 성공/실패 결과를 출력
+        목적:
+          - RSI 지표를 활용해 과매도 혹은 과매수 상황에서 거래 신호를 생성합니다.
         """
-        import os, glob
-        log_files = glob.glob(os.path.join(LOG_FILES_DIR, "*.log"))
-        for log_file in log_files:
-            try:
-                os.remove(log_file)
-                print(f"Deleted log file: {log_file}")
-            except Exception as e:
-                print(f"Failed to remove log file {log_file}: {e}")
+        super().__init__()
+        self.previous_signal = None
 
----
-
-# logs/state_change_manager.py
-class StateChangeManager:
-    """
-    StateChangeManager는 상태 값을 추적하며,
-    이전 상태와 비교하여 의미 있는 변화가 있는지 확인합니다.
-    숫자형 상태의 경우, 상대 변화율이 일정 임계값 이상일 때만 변화를 감지합니다.
-    """
-    def __init__(self, numeric_threshold: float = 0.01):
+    def get_signal(self, data, current_time, **kwargs):
         """
-        초기화 메서드
+        RSI 값에 따라 거래 신호를 생성합니다.
         
         Parameters:
-            numeric_threshold (float): 숫자형 상태 값의 상대 변화 임계값 (기본값 0.01, 즉 1%)
-        
-        주요 동작:
-          - 상태 값을 저장할 내부 딕셔너리 초기화
-          - 숫자형 상태 변화 감지를 위한 임계값 설정
-        """
-        self._state_dict = {}  # 상태 값을 저장할 딕셔너리, key: 상태 키, value: 상태 값
-        self.numeric_threshold = numeric_threshold
-
-    def has_changed(self, key: str, new_value) -> bool:
-        """
-        기존 상태와 비교하여 주어진 key의 상태가 의미 있게 변경되었는지 확인합니다.
-        - 숫자형 상태의 경우, 상대 변화율(또는 절대값 비교)을 통해 판단.
-        - 숫자형이 아닌 경우, 단순 불일치를 확인.
-        
-        Parameters:
-            key (str): 상태를 식별하는 키
-            new_value: 새로운 상태 값 (숫자형 또는 기타)
+            data (pandas.DataFrame): 시장 데이터 (RSI 포함).
+            current_time (datetime): 기준 시점.
+            **kwargs: 추가 인자들.
         
         Returns:
-            bool: 상태가 변경되었으면 True, 그렇지 않으면 False
-        
-        주요 동작:
-          - 초기 상태라면 저장 후 True 반환
-          - 숫자형 값이면, old_value가 0인 경우 절대 변화량 비교, 아니면 상대 변화율 비교
-          - 숫자형이 아닌 경우 단순 비교 수행
+            str: RSI가 30 미만이면 "enter_long", 70 초과면 "exit_all", 그 외에는 "hold".
         """
-        old_value = self._state_dict.get(key)
-        # 처음 상태인 경우
-        if old_value is None:
-            self._state_dict[key] = new_value
-            return True
-
-        # 숫자형 값인 경우: 상대 변화율 비교 (old_value가 0인 경우 절대 변화량으로 판단)
-        if isinstance(old_value, (int, float)) and isinstance(new_value, (int, float)):
-            if old_value == 0:
-                if abs(new_value) >= self.numeric_threshold:
-                    self._state_dict[key] = new_value
-                    return True
-                else:
-                    return False
-            else:
-                relative_change = abs(new_value - old_value) / abs(old_value)
-                if relative_change >= self.numeric_threshold:
-                    self._state_dict[key] = new_value
-                    return True
-                else:
-                    return False
+        try:
+            row = data.loc[current_time]
+        except Exception:
+            return "hold"
+        rsi = row.get('rsi')
+        if rsi is not None:
+            final_signal = "enter_long" if rsi < 30 else ("exit_all" if rsi > 70 else "hold")
         else:
-            # 숫자형이 아닌 경우 단순 비교
-            if old_value != new_value:
-                self._state_dict[key] = new_value
-                return True
+            final_signal = "hold"
+        if self.previous_signal != final_signal:
+            self.logger.info(f"CounterTrendStrategy signal changed to {final_signal} at {current_time} (RSI: {rsi})")
+            self.previous_signal = final_signal
+        return final_signal
+
+# ------------------------------------------------------------------
+# HighFrequencyStrategy: 고빈도 거래를 위한 빠른 신호 결정 전략
+# ------------------------------------------------------------------
+class HighFrequencyStrategy(BaseStrategy):
+    def __init__(self):
+        """
+        HighFrequencyStrategy 생성자.
+        
+        목적:
+          - 인접한 데이터 포인트 간의 미세한 가격 변화를 분석하여 빠른 거래 신호를 생성합니다.
+        """
+        super().__init__()
+        self.previous_signal = None
+
+    def get_signal(self, data, current_time, **kwargs):
+        """
+        인접 데이터 간의 가격 변화율을 계산하여 거래 신호를 생성합니다.
+        
+        Parameters:
+            data (pandas.DataFrame): 고빈도 시계열 데이터 (종가 포함).
+            current_time (datetime): 기준 시점.
+            **kwargs: 추가 인자들.
+        
+        Returns:
+            str: 가격 상승 시 "enter_long", 하락 시 "exit_all", 아니면 "hold".
+        """
+        try:
+            # 현재 시점의 인덱스 위치 확인
+            idx = data.index.get_loc(current_time)
+            if idx == 0:
+                final_signal = "hold"  # 첫 데이터인 경우 이전 데이터가 없으므로 대기
             else:
-                return False
+                current_row = data.iloc[idx]
+                prev_row = data.iloc[idx - 1]
+                cp, pp = current_row.get('close'), prev_row.get('close')
+                if cp is None or pp is None:
+                    final_signal = "hold"
+                else:
+                    threshold = 0.002  # 가격 변화 임계값 (0.2%)
+                    price_change = (cp - pp) / pp  # 상대 가격 변화율 계산
+                    final_signal = "enter_long" if price_change > threshold else ("exit_all" if price_change < -threshold else "hold")
+        except Exception:
+            final_signal = "hold"
+        if self.previous_signal != final_signal:
+            self.logger.info(f"HighFrequencyStrategy signal changed to {final_signal} at {current_time}")
+            self.previous_signal = final_signal
+        return final_signal
 
-    def get_state(self, key: str):
+# ------------------------------------------------------------------
+# WeeklyBreakoutStrategy: 주간 데이터 기반 돌파 전략
+# ------------------------------------------------------------------
+class WeeklyBreakoutStrategy(BaseStrategy):
+    def __init__(self):
         """
-        현재 저장된 상태 값을 반환합니다.
+        WeeklyBreakoutStrategy 생성자.
+        
+        목적:
+          - 주간 데이터를 분석하여 돌파 상황(고점 돌파 또는 저점 하향 돌파)을 판단하고 거래 신호를 생성합니다.
+        """
+        super().__init__()
+        self.previous_signal = None
+
+    def get_signal(self, data_weekly, current_time, breakout_threshold=0.01, **kwargs):
+        """
+        주간 데이터에 기반하여 거래 신호를 결정합니다.
         
         Parameters:
-            key (str): 상태를 식별하는 키
+            data_weekly (pandas.DataFrame): 주간 시장 데이터 (고가, 저가, 종가 등 포함).
+            current_time (datetime): 기준 시점.
+            breakout_threshold (float): 돌파 임계값 (예: 1%).
+            **kwargs: 추가 인자들.
         
         Returns:
-            해당 key에 대한 상태 값 (존재하지 않으면 None)
+            str: 돌파 발생 시 "enter_long" 또는 "exit_all", 아니면 "hold".
         """
-        return self._state_dict.get(key)
+        try:
+            # 현재 시점까지의 주간 데이터 선택
+            weekly_data = data_weekly.loc[data_weekly.index <= current_time]
+            if len(weekly_data) < 2:
+                return "hold"
+            # 바로 이전 주와 현재 주 데이터 추출
+            prev_week = weekly_data.iloc[-2]
+            current_week = weekly_data.iloc[-1]
+            price_data = {"current_price": current_week.get('close')}
+            weekly_extremes = {"weekly_low": prev_week.get('weekly_low'), "weekly_high": prev_week.get('weekly_high')}
+            # 주간 극단값(최고/최저) 기준 신호 결정
+            extreme_signal = determine_weekly_extreme_signal(price_data, weekly_extremes, threshold=breakout_threshold)
+            if extreme_signal:
+                signal = extreme_signal
+            else:
+                # 추가 조건: 현재 주 종가가 이전 주의 고점 또는 저점을 돌파하는 경우 신호 발생
+                if current_week.get('close') >= prev_week.get('weekly_high') * (1 + breakout_threshold):
+                    signal = "enter_long"
+                elif current_week.get('close') <= prev_week.get('weekly_low') * (1 - breakout_threshold):
+                    signal = "exit_all"
+                else:
+                    signal = "hold"
+            if self.previous_signal != signal:
+                self.logger.info(f"WeeklyBreakoutStrategy signal changed to {signal} at {current_time}")
+                self.previous_signal = signal
+            return signal
+        except Exception:
+            return "hold"
 
-    def reset_state(self, key: str = None):
+# ------------------------------------------------------------------
+# WeeklyMomentumStrategy: 주간 모멘텀 지표를 활용한 거래 전략
+# ------------------------------------------------------------------
+class WeeklyMomentumStrategy(BaseStrategy):
+    def __init__(self):
         """
-        상태 값을 리셋합니다.
+        WeeklyMomentumStrategy 생성자.
+        
+        목적:
+          - 주간 모멘텀을 분석하여 거래 진입 또는 청산 신호를 결정합니다.
+        """
+        super().__init__()
+        self.previous_signal = None
+
+    def get_signal(self, data_weekly, current_time, momentum_threshold=0.5, **kwargs):
+        """
+        주간 모멘텀 지표를 기반으로 거래 신호를 생성합니다.
         
         Parameters:
-            key (str, optional): 특정 상태만 리셋할 경우 해당 키 지정. (지정하지 않으면 전체 상태 초기화)
+            data_weekly (pandas.DataFrame): 주간 시장 데이터 (모멘텀 포함).
+            current_time (datetime): 기준 시점.
+            momentum_threshold (float): 모멘텀 임계값.
+            **kwargs: 추가 인자들.
         
         Returns:
-            None
+            str: 모멘텀이 임계값 이상이면 "enter_long", 이하이면 "exit_all", 그 외는 "hold".
         """
-        if key:
-            if key in self._state_dict:
-                del self._state_dict[key]
-        else:
-            self._state_dict.clear()
+        try:
+            weekly_data = data_weekly.loc[data_weekly.index <= current_time]
+            if weekly_data.empty:
+                return "hold"
+            momentum = weekly_data.iloc[-1].get('weekly_momentum')
+            if momentum is None:
+                return "hold"
+            signal = "enter_long" if momentum >= momentum_threshold else ("exit_all" if momentum <= -momentum_threshold else "hold")
+            if self.previous_signal != signal:
+                self.logger.info(f"WeeklyMomentumStrategy signal changed to {signal} at {current_time}")
+                self.previous_signal = signal
+            return signal
+        except Exception:
+            return "hold"
+
+# ------------------------------------------------------------------
+# TradingStrategies: 여러 전략(앙상블)을 결합하여 최종 거래 신호를 도출하는 클래스
+# ------------------------------------------------------------------
+class TradingStrategies:
+    def __init__(self):
+        """
+        TradingStrategies 생성자.
+        
+        목적:
+          - 개별 전략들을 결합한 앙상블 전략을 초기화하고, 최종 거래 신호 도출을 위한 환경을 구성합니다.
+        """
+        self.logger = setup_logger(self.__class__.__name__)
+        from signal_calculation.ensemble import Ensemble
+        self.ensemble = Ensemble()
+        # 앙상블 내 주간 돌파 및 모멘텀 전략 할당
+        self.weekly_breakout = self.ensemble.weekly_breakout_strategy
+        self.weekly_momentum = self.ensemble.weekly_momentum_strategy
+
+    def get_final_signal(self, market_regime, liquidity_info, data, current_time, data_weekly=None, **kwargs):
+        """
+        앙상블 전략 및 시장 상황에 따라 최종 거래 신호를 생성합니다.
+        
+        Parameters:
+            market_regime (str): 현재 시장의 추세 ("bullish", "bearish" 등).
+            liquidity_info (str): 자산의 유동성 정보.
+            data (pandas.DataFrame): 시계열 시장 데이터.
+            current_time (datetime): 기준 시점.
+            data_weekly (pandas.DataFrame, optional): 주간 시장 데이터.
+            **kwargs: 추가 인자들.
+        
+        Returns:
+            str: 최종 거래 신호 ("enter_long", "exit_all", "hold" 등).
+        """
+        # 앙상블 전략으로부터 기본 신호 도출
+        ensemble_signal = self.ensemble.get_final_signal(market_regime, liquidity_info, data, current_time, data_weekly, **kwargs)
+        # 시장 상황에 따른 신호 보정:
+        # - 하락장(bearish)에서는 모든 신호를 청산("exit_all")으로 강제
+        if market_regime == "bearish":
+            self.logger.info("Market regime bearish: overriding final signal to exit_all")
+            return "exit_all"
+        # - 상승장(bullish)에서는 신호가 없으면 최소한 매수("enter_long")로 보정
+        elif market_regime == "bullish":
+            self.logger.info("Market regime bullish: ensuring signal is at least enter_long")
+            return "enter_long" if ensemble_signal == "hold" else ensemble_signal
+        return ensemble_signal
