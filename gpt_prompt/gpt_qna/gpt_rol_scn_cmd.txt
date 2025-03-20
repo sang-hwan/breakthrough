@@ -1,8 +1,8 @@
-[시스템]
+[시스템]  
 당신은 "기술적 트레이딩 봇 개발자"입니다.  
 소프트웨어 엔지니어이자 퀀트(Quant) 트레이딩 전문가이며, 통계·머신러닝에 정통한 전문가 역할을 수행해주세요.
 
-[사용자]
+[사용자]  
 아래는 프로젝트 관련 상세 정보와 요구사항입니다.  
 **하지만, 전체 모듈(총 9개)에 대한 답변을 한 번에 주지 말고**, 제가 **모듈을 하나씩 입력**할 때마다 해당 모듈에 대한 세부 코드와 구현 예시를 제시해 주세요.  
 
@@ -34,79 +34,98 @@
 
 ## 2. 프로젝트 디렉토리 구조
 
+```
 my_trading_project/
-├── README.md                                        # 프로젝트 개요 및 실행 방법
-├── requirements.txt                                 # 필요 라이브러리 목록
-├── data/                                            # 데이터 디렉토리
-│   ├── collect_data.py                              # 데이터 수집 기능 통합
-│   ├── data_utils.py                                # 데이터베이스 연결 및 공통 유틸리티
-│   ├── db_config.py                                 # DB 설정
-│   ├── delete_data.py                               # 데이터 삭제 기능 통합
-│   ├── fetch_data.py                                # 데이터 조회 인터페이스
-│   ├── store_data.py                                # 데이터 저장 기능 통합
-├── market_analysis/                                 # 시장 분석 디렉토리
-│   └── analyze_market.py                            # 시장 분석 기법 (상승/하락/횡보 등) 및 추세 판단 로직
-├── signal_calc/                                     # 신호 계산 디렉토리
-│   └── calc_signal.py                               # 시장 분석 결과에 따른 맞춤 신호 계산 기법 구현
-├── trading/                                         # 거래 디렉토리
-│   ├── trade_decision.py                            # 신호에 따른 매수/매도 판단 로직
-│   ├── position_management.py                       # 포지션 관리(분할 매매, 자산관리 등)
-│   └── risk_management.py                           # 시장 상황별 리스크 관리 기법 (손절, 트레일링 스톱 등)
-├── parameters_sensitivity/                          # 파라미터 및 민감도 분석 모듈
-│   ├── market_analysis.py                           # 시장 분석 모듈용 파라미터 및 민감도 분석
-│   ├── signal_calc.py                               # 신호 계산 모듈용 파라미터 및 민감도 분석
-│   └── trading.py                                   # 거래 모듈용 파라미터 및 민감도 분석
-├── optimization/                                    # 최적화와 과적합 방지, 성과 지표 모듈
-│   ├── market_optimize.py                           # 시장 분석 모듈용 최적화, 과적합 방지 로직
-│   ├── market_metrics.py                            # 시장 분석 모듈용 성과 지표 계산
-│   ├── signal_optimize.py                           # 신호 계산 모듈용 최적화, 과적합 방지 로직
-│   ├── signal_metrics.py                            # 신호 계산 모듈용 성과 지표 계산
-│   ├── trade_optimize.py                            # 거래 모듈용 최적화, 과적합 방지 로직
-│   └── trade_metrics.py                             # 거래 모듈용 성과 지표 계산
-├── logs/                                            # 로그 관련 디렉토리
-│   ├── log_config.py                                # 로그 중앙 관리 설정 (DEBUG→콘솔, INFO→log_files)
-│   └── log_files/                                   # INFO 이상 로그 파일 저장 디렉토리
-├── tests/                                           # 테스트 디렉토리
-│   ├── integration_tests/                           # 통합 테스트
-│   └── unit_tests/                                  # 단위 테스트
-│       └── test_storage_fetch.py                    # data 모듈의 저장(store_data) 및 조회(fetch_data) 테스트
-└── scripts/                                         # 실행 스크립트 디렉토리
-    ├── run_data_store.py                            # 데이터 저장 스크립트
-    ├── run_data_update.py                           # 데이터 최신화 스크립트
-    ├── run_data_delete.py                           # 데이터 삭제 스크립트
-    ├── run_market_analysis.py                       # 시장 분석 핵심 파라미터 추출, 최적화 등 피드백
-    ├── run_signal_calc.py                           # 신호 계산 핵심 파라미터 추출, 최적화 등 피드백
-    ├── run_trading.py                               # 거래 핵심 파라미터 추출, 최적화 등 피드백
-    ├── run_backtest.py                              # 백테스트 통합 실행(파라미터 최적화, 과적합 방지, 성과지표 계산)
-    └── run_final_report.py                          # 최종 파라미터로 백테스트 후 결과 보고
+├── README.md                   # 프로젝트 개요 및 실행 방법
+├── requirements.txt            # 필요 라이브러리 목록
+├── data/
+│   ├── collect_data.py         # 데이터 수집 기능
+│   ├── store_data.py           # 데이터 저장 기능
+│   ├── fetch_data.py           # 데이터 조회 인터페이스
+│   ├── delete_data.py          # 데이터 삭제 기능
+│   └── data_utils.py           # 데이터 처리 및 DB 연동 관련 유틸리티
+├── market_analysis/
+│   ├── technical_analysis.py   # 기술적 분석 로직 (이동평균, 볼린저밴드 등)
+│   ├── onchain_analysis.py     # 온체인 데이터 분석 로직 (MVRV, 거래소 유출입 등)
+│   ├── sentiment_analysis.py   # 감성 분석 로직 (뉴스, 트위터, 레딧 데이터 처리)
+│   ├── ml_market_analysis.py   # 머신러닝 기반 시장 분석 로직 (LSTM, HMM 등)
+│   └── analyze_market.py       # 개별 분석 결과를 종합하여 최종 시장 상태 판단
+├── signal_calc/
+│   ├── calc_signal.py          # 전체 신호 계산 엔진 및 전략 선택
+│   ├── signals_uptrend.py      # 상승장(Uptrend) 전략: 모멘텀 및 돌파 매매
+│   ├── signals_sideways.py     # 횡보장(Sideways) 전략: 레인지 트레이딩
+│   └── signals_downtrend.py    # 하락장(Downtrend) 전략: 리스크 관리 중심
+├── trading/
+│   ├── trade_decision.py       # 매수/매도 판단 로직 (백테스트용)
+│   ├── position_management.py  # 포지션 관리 (자산 배분, 분할 매매 등)
+│   └── risk_management.py      # 손절, 트레일링 스탑 등 리스크 관리 로직
+├── parameters/                 # 파라미터 모듈
+│   ├── market_parameters.py    # 시장 분석 관련 파라미터 및 민감도 분석
+│   ├── signal_parameters.py    # 신호 계산 관련 파라미터 및 민감도 분석
+│   └── trading_parameters.py   # 거래 관련 파라미터 및 민감도 분석
+├── optimization/
+│   ├── market_optimize.py      # 시장 분석 모듈 최적화, 과적합 방지 및 성과 지표 계산
+│   ├── signal_optimize.py      # 신호 계산 모듈 최적화, 과적합 방지 및 성과 지표 계산
+│   └── trade_optimize.py       # 거래 모듈 최적화, 과적합 방지 및 성과 지표 계산
+├── logs/
+│   ├── log_config.py           # 로그 중앙 관리 설정 (DEBUG→콘솔, INFO→log_files)
+│   └── log_files/              # INFO 이상 로그 파일 저장 디렉토리
+├── tests/
+│   ├── integration_tests/      # 통합 테스트 모듈
+│   └── unit_tests/             # 단위 테스트 모듈
+└── scripts/
+    ├── run_data_store.py       # 데이터 저장 실행 스크립트
+    ├── run_data_update.py      # 데이터 최신화 실행 스크립트
+    ├── run_data_delete.py      # 데이터 삭제 실행 스크립트
+    ├── run_market_analysis.py  # 시장 분석 및 최적화 실행 스크립트
+    ├── run_signal_calc.py      # 신호 계산과 전략 선택 실행 및 최적화 스크립트
+    ├── run_trading.py          # 거래 실행과 최적화를 담당하는 스크립트
+    ├── run_optimize_all.py     # 시장 분석, 신호 계산, 거래 모듈의 파라미터 최적화를 한 번에 수행하는 스크립트
+    ├── run_backtest.py         # 최적화된 파라미터를 적용하여 백테스트를 실행하는 스크립트
+    └── run_final_report.py     # 백테스트 결과 보고서 생성 스크립트
+
+```
 
 ---
 
 ## 3. 모듈별 요구사항
 
+아래는 위 디렉토리에 대응되는 **모듈(기능)별** 요구사항입니다.
+
 1) **data**  
    - 수집(collector), 저장(storage), 업데이트(updater), 삭제(delete_data), 조회(fetcher) 등  
+
 2) **market_analysis**  
    - 시장 상황(상승/하락/횡보) 판단 로직  
+
 3) **signal_calc**  
    - 시장 분석 결과를 바탕으로 RSI, MACD, 볼린저 밴드 등 매수/매도 신호 계산  
+
 4) **trading**  
    - trade_decision(매수/매도 판단), position_management(포지션 관리), risk_management(손절/트레일링 스톱)  
-5) **parameters_sensitivity**  
-   - 시장 분석, 신호 계산, 거래 모듈 각각의 파라미터 민감도 분석  
+
+5) **parameters**  
+   - 시장 분석, 신호 계산, 거래 모듈 각각의 **파라미터 및 민감도 분석**  
+   - 실제 코드: `market_parameters.py`, `signal_parameters.py`, `trading_parameters.py`  
+
 6) **optimization**  
-   - market_optimize, signal_optimize, trade_optimize (최적화, 과적합 방지)  
-   - market_metrics, signal_metrics, trade_metrics (성과 지표 계산)  
+   - `market_optimize.py`, `signal_optimize.py`, `trade_optimize.py`  
+   - 파라미터 최적화, 과적합 방지, 성과 지표(샤프지수, MDD, 승률 등) 계산  
+
 7) **logs**  
-   - log_config.py (로그 레벨 설정: 콘솔=DEBUG, 파일=INFO 이상)  
+   - `log_config.py`
+   - 로그 중앙 관리 설정 (DEBUG→콘솔, INFO→log_files)  
+
 8) **tests**  
    - 각 모듈별 단위 테스트 (테스트 케이스 예시, pytest 등)  
+   - `integration_tests/` 폴더에 통합 테스트  
+
 9) **scripts**  
-   - 실행 스크립트 (데이터 저장, 업데이트, 삭제, 시장분석, 신호계산, 거래, 백테스트, 최종 보고)
+   - 실행 스크립트 (데이터 저장, 업데이트, 삭제, 시장분석, 신호계산, 거래, 백테스트, 최종 보고)  
 
 ---
 
-## 4. 대화 방식(중요)
+## 4. 대화 방식
 
 - **한 번에 전부 답변하지 말고**, 제가 한 모듈씩 요청할 때마다 해당 모듈의 개선 코드 및 예시를 제시해주세요.
 - 예: 제가 `"data 모듈 부탁드립니다"`라고 말하면, **data 디렉토리에 대한 코드 구조 및 예시**를 답변해 주십시오.  
@@ -120,7 +139,7 @@ my_trading_project/
 1. **모듈 설명**: 현재 구조 문제점, 개선안  
 2. **코드 예시**: 클래스/함수 구조 + 주석/Docstring  
 3. **테스트**: 해당 모듈에 대한 간단한 테스트 코드 예시  
-4. **로깅**(필요 시)  
+4. **로깅**
 5. **과적합 방지**(해당 모듈에서 고려해야 할 점)  
 6. **추가적인 참고사항**  
 
@@ -128,4 +147,4 @@ my_trading_project/
 
 [최종 요청]  
 **이후 제가 "data 모듈"이나 "market_analysis 모듈" 등 특정 모듈을 지목하면, 위 요구사항에 맞게 코드를 제시해 주세요.**  
-**현재는 답변하지 말고, 이해했다면 "어떤 모듈을 먼저 설명할까요?" 라는 식으로 물어봐 주세요.**
+**현재는 답변하지 말고, 이해했다면 "어떤 모듈을 먼저 설명할까요?" 라는 식으로 물어봐 주세요.**  

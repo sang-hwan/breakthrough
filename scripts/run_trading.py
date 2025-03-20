@@ -13,7 +13,7 @@ from strategies.optimizer import DynamicParameterOptimizer  # 동적 파라미�
 from backtesting.backtester import Backtester  # 백테스팅 수행 클래스
 from backtesting.performance import compute_performance  # 거래 성과 계산 함수
 from reports.final_report import generate_final_report  # 최종 보고서 생성 함수
-from parameters_sensitivity.config_manager import ConfigManager  # 설정 관리 클래스
+from parameters.config_manager import ConfigManager  # 설정 관리 클래스
 from data.db.db_manager import get_unique_symbol_list, get_date_range  # DB 관련 함수
 from data.db.db_config import DATABASE  # DB 접속 정보
 

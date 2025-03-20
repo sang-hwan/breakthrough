@@ -1,414 +1,521 @@
 [market_analysis 모듈]
 # market_analysis/analyze_market.py
-
-# 로그 설정 모듈에서 설정 함수 import
 from logs.log_config import setup_logger
+import pandas as pd
+import numpy as np
 
-# 글로벌 로거 객체 정의:
-#  - 이 모듈에서 발생하는 이벤트(디버그, 에러 등)를 기록하기 위해 사용됩니다.
+# 다른 분석 모듈에서 필요한 함수 임포트 (필요 시 실제 모듈에서 호출)
+from market_analysis.technical_analysis import compute_rsi
+from market_analysis.onchain_analysis import calculate_mvrv_ratio, analyze_exchange_flow
+from market_analysis.sentiment_analysis import aggregate_sentiment
+from market_analysis.ml_market_analysis import MarketLSTMAnalyzer
+
 logger = setup_logger(__name__)
 
-def determine_market_regime(price_data: dict) -> str:
+def get_technical_signal(price_series: pd.Series, window: int = 14) -> str:
     """
-    주어진 가격 데이터를 기반으로 시장 레짐(시장 상태)을 결정하는 함수입니다.
-    
-    이 함수는 'current_price'와 'previous_price'를 포함하는 가격 데이터를 입력받아,
-    가격 변화율에 따라 'bullish' (상승장), 'bearish' (하락장), 'sideways' (횡보장) 중 하나를 반환합니다.
-    
+    기술적 분석 신호를 산출합니다.
+    - RSI가 50 이상이면 bullish, 50 미만이면 bearish로 판단하며,
+      단, 극단 값(예: RSI가 70 이상 또는 30 이하)일 경우 추가 고려할 수 있습니다.
+      
     Parameters:
-      - price_data (dict): 현재 가격과 이전 가격 정보를 포함하는 딕셔너리.
-        필수 키: 'current_price', 'previous_price'
+        price_series (pd.Series): 가격 시계열 데이터.
+        window (int): RSI 계산 기간 (기본: 14).
     
     Returns:
-      - str: 결정된 시장 레짐. ('bullish', 'bearish', 'sideways', 에러 시 'unknown')
+        str: 'bullish', 'bearish' 또는 'sideways'.
     """
     try:
-        # price_data 딕셔너리에서 현재 가격과 이전 가격을 추출합니다.
-        current_price = price_data.get("current_price")
-        previous_price = price_data.get("previous_price")
-        
-        # 필수 데이터가 누락되었을 경우, 에러 로그를 남기고 'unknown'을 반환합니다.
-        if current_price is None or previous_price is None:
-            logger.error("필수 가격 데이터 누락: 'current_price' 또는 'previous_price'가 제공되지 않음.", exc_info=True)
-            return "unknown"
-        
-        # 가격 변화율 계산: (현재가격 - 이전가격) / 이전가격
-        change_percent = (current_price - previous_price) / previous_price
-        
-        # 변화율 기준에 따라 시장 상태 결정
-        if change_percent > 0.02:
-            # 변화율이 2% 이상이면 상승장(bullish)으로 간주
-            regime = "bullish"
-        elif change_percent < -0.02:
-            # 변화율이 -2% 이하이면 하락장(bearish)으로 간주
-            regime = "bearish"
+        rsi = compute_rsi(price_series, window)
+        current_rsi = rsi.iloc[-1]
+        logger.debug(f"Computed RSI: {current_rsi:.2f}")
+        if current_rsi >= 50:
+            return "bullish"
+        elif current_rsi < 50:
+            return "bearish"
         else:
-            # 2% 이내의 변화는 횡보장(sideways)으로 간주
-            regime = "sideways"
-        
-        # 결정된 상태와 계산된 변화율을 디버깅 로그에 기록합니다.
-        logger.debug(f"시장 레짐 결정: {regime} (변화율: {change_percent:.2%})")
-        return regime
+            return "sideways"
     except Exception as e:
-        # 예외 발생 시, 에러 로그를 기록하고 'unknown'을 반환합니다.
-        logger.error(f"시장 레짐 결정 중 에러 발생: {e}", exc_info=True)
-        return "unknown"
+        logger.error(f"Error in technical signal computation: {e}", exc_info=True)
+        return "sideways"
 
-def filter_regime(price_data: dict, target_regime: str = "bullish") -> bool:
+def get_onchain_signal(market_cap: float, realized_cap: float,
+                       exchange_inflow: float, exchange_outflow: float,
+                       mvrv_threshold: float = 2.0) -> str:
     """
-    결정된 시장 레짐이 목표 레짐과 일치하는지 확인하는 함수입니다.
+    온체인 데이터를 바탕으로 시장 신호를 산출합니다.
     
-    주어진 가격 데이터를 사용하여 시장 상태를 판단한 뒤,
-    목표 레짐과 비교하여 일치하면 True, 그렇지 않으면 False를 반환합니다.
+    - MVRV 비율이 높으면(예: mvrv > threshold) bearish, 낮으면 bullish로 판단합니다.
+    - 거래소 유입/유출 데이터에 따라 'accumulation'은 bullish, 'distribution'은 bearish 신호로 해석합니다.
+    - 두 신호가 상반될 경우 'sideways'로 판단합니다.
     
     Parameters:
-      - price_data (dict): 가격 데이터를 포함하는 딕셔너리.
-      - target_regime (str): 목표로 하는 시장 레짐 (기본값은 'bullish').
-    
+        market_cap (float): 시가총액.
+        realized_cap (float): 실현 시가총액.
+        exchange_inflow (float): 거래소 유입량.
+        exchange_outflow (float): 거래소 유출량.
+        mvrv_threshold (float): MVRV 비율 임계값 (기본: 2.0).
+        
     Returns:
-      - bool: 목표 레짐과 일치하면 True, 아니면 False.
-    """
-    # 위에서 정의한 determine_market_regime 함수를 호출하여 현재 시장 상태를 파악합니다.
-    regime = determine_market_regime(price_data)
-    
-    # 결정된 상태가 목표 상태와 동일한지 여부를 비교합니다.
-    match = (regime == target_regime)
-    
-    # 비교 결과(일치 여부)를 디버깅 로그에 기록합니다.
-    logger.debug(f"레짐 필터링: 목표={target_regime}, 결정={regime}, 일치 여부={match}")
-    return match
-
-def determine_weekly_extreme_signal(price_data: dict, weekly_data: dict, threshold: float = 0.002) -> str:
-    """
-    주간 가격 데이터와 현재 가격 데이터를 바탕으로 극단적인 가격 신호(매수 또는 매도)를 판단하는 함수입니다.
-    
-    현재 가격이 주간 최저치에 근접하면 'enter_long' (매수 신호),
-    주간 최고치에 근접하면 'exit_all' (매도 신호)를 반환하며,
-    두 조건 모두 만족하지 않으면 빈 문자열("")을 반환합니다.
-    
-    Parameters:
-      - price_data (dict): 'current_price' 키를 포함하는 현재 가격 데이터.
-      - weekly_data (dict): 'weekly_low'와 'weekly_high' 키를 포함하는 주간 가격 데이터.
-      - threshold (float): 가격이 극값에 근접한 것으로 판단하는 임계값 (기본 0.002, 즉 0.2%).
-    
-    Returns:
-      - str: 주간 신호. 'enter_long'이면 매수 신호, 'exit_all'이면 매도 신호, 조건 미충족 시 빈 문자열.
+        str: 'bullish', 'bearish' 또는 'sideways'.
     """
     try:
-        # 현재 가격과 주간 최저/최고 가격 정보를 추출합니다.
-        current_price = price_data.get("current_price")
-        weekly_low = weekly_data.get("weekly_low")
-        weekly_high = weekly_data.get("weekly_high")
+        mvrv = calculate_mvrv_ratio(market_cap, realized_cap)
+        flow_signal = analyze_exchange_flow(exchange_inflow, exchange_outflow)
+        logger.debug(f"MVRV ratio: {mvrv:.2f}, Flow signal: {flow_signal}")
+
+        # 단순 판단: MVRV가 임계값보다 높으면 bearish, 낮으면 bullish
+        onchain_signal_mvrv = "bearish" if mvrv > mvrv_threshold else "bullish"
         
-        # 필수 데이터가 누락된 경우, 에러 로그를 남기고 빈 문자열을 반환합니다.
-        if current_price is None or weekly_low is None or weekly_high is None:
-            logger.error("필수 데이터 누락: 'current_price', 'weekly_low', 'weekly_high' 모두 제공되어야 합니다.", exc_info=True)
-            return ""
+        # 거래소 흐름 신호: accumulation은 bullish, distribution은 bearish
+        onchain_signal_flow = "bullish" if flow_signal == "accumulation" else "bearish"
         
-        # 현재 가격이 주간 최저치에 얼마나 가까운지 비율로 계산 후 임계값과 비교
-        if abs(current_price - weekly_low) / weekly_low <= threshold:
-            logger.debug(f"주간 저점 신호 감지: current_price={current_price}, weekly_low={weekly_low}")
-            return "enter_long"  # 매수 신호: 주간 저점 근접
-        # 현재 가격이 주간 최고치에 얼마나 가까운지 비율로 계산 후 임계값과 비교
-        elif abs(weekly_high - current_price) / weekly_high <= threshold:
-            logger.debug(f"주간 고점 신호 감지: current_price={current_price}, weekly_high={weekly_high}")
-            return "exit_all"   # 매도 신호: 주간 고점 근접
-        # 신호 조건에 부합하지 않으면 빈 문자열 반환
-        return ""
+        # 두 신호가 일치하면 해당 신호, 다르면 중립적 판단
+        if onchain_signal_mvrv == onchain_signal_flow:
+            return onchain_signal_mvrv
+        else:
+            return "sideways"
     except Exception as e:
-        # 예외 발생 시, 에러 로그를 기록하고 빈 문자열 반환
-        logger.error(f"주간 극값 신호 결정 중 에러 발생: {e}", exc_info=True)
-        return ""
+        logger.error(f"Error in onchain signal computation: {e}", exc_info=True)
+        return "sideways"
 
-import numpy as np      # 수치 계산 및 배열 처리
-import pandas as pd     # 데이터프레임 사용 및 데이터 처리
-from hmmlearn.hmm import GaussianHMM  # Gaussian Hidden Markov Model 구현을 위한 라이브러리
-from logs.log_config import setup_logger  # 로거 설정 모듈
-from datetime import timedelta  # 시간 간격 계산에 사용
-import warnings  # 경고 메시지 관리를 위한 모듈
-
-class MarketRegimeHMM:
+def get_sentiment_signal(texts: list, bullish_threshold: float = 0.1, bearish_threshold: float = -0.1) -> str:
     """
-    HMM(Hidden Markov Model)을 활용하여 시장의 숨겨진 레짐(상태)를 학습, 예측하는 클래스입니다.
+    감성 분석 결과를 기반으로 시장 신호를 산출합니다.
     
-    주요 기능:
-      - 과거 데이터를 사용하여 HMM 모델을 학습합니다.
-      - 새로운 데이터에 대해 상태(레짐)를 예측합니다.
-      - 재학습 여부를 피처 변화량 및 시간 간격에 따라 결정합니다.
+    Parameters:
+        texts (list): 분석할 텍스트 문자열 리스트.
+        bullish_threshold (float): 긍정적 신호 기준 (기본: 0.1).
+        bearish_threshold (float): 부정적 신호 기준 (기본: -0.1).
+        
+    Returns:
+        str: 'bullish', 'bearish' 또는 'sideways'.
+    """
+    try:
+        sentiment = aggregate_sentiment(texts)
+        logger.debug(f"Aggregated sentiment score: {sentiment:.2f}")
+        if sentiment >= bullish_threshold:
+            return "bullish"
+        elif sentiment <= bearish_threshold:
+            return "bearish"
+        else:
+            return "sideways"
+    except Exception as e:
+        logger.error(f"Error in sentiment signal computation: {e}", exc_info=True)
+        return "sideways"
+
+def get_ml_signal(ml_model: MarketLSTMAnalyzer, ml_input: pd.DataFrame, current_price: float) -> str:
+    """
+    머신러닝 모델의 예측 결과를 기반으로 시장 신호를 산출합니다.
+    
+    Parameters:
+        ml_model (MarketLSTMAnalyzer): 학습된 LSTM 분석 모델.
+        ml_input (pd.DataFrame): 예측에 사용할 데이터.
+        current_price (float): 현재 가격.
+    
+    Returns:
+        str: 'bullish' (예측 가격이 현재보다 높음), 'bearish' (낮음), 또는 'sideways' (변화 미미).
+    """
+    try:
+        predictions = ml_model.predict(ml_input)
+        # 예측 결과는 (n_samples, 1) 배열로 가정
+        predicted_price = predictions[-1, 0]
+        logger.debug(f"ML predicted price: {predicted_price:.2f}, current price: {current_price:.2f}")
+        if predicted_price > current_price * 1.01:  # 1% 이상 상승 예측 시 bullish
+            return "bullish"
+        elif predicted_price < current_price * 0.99:  # 1% 이상 하락 예측 시 bearish
+            return "bearish"
+        else:
+            return "sideways"
+    except Exception as e:
+        logger.error(f"Error in ML signal computation: {e}", exc_info=True)
+        return "sideways"
+      
+def determine_final_market_state(technical_signal: str,
+                                 onchain_signal: str,
+                                 sentiment_signal: str,
+                                 ml_signal: str) -> str:
+    """
+    개별 분석 신호(기술적, 온체인, 감성, 머신러닝)를 종합하여 최종 시장 상태를 결정합니다.
+    
+    단순 다수결(majority vote) 방식으로 최종 상태를 산출하며,
+    신호 간 상반되는 경우 'sideways'로 판단합니다.
+    
+    Parameters:
+        technical_signal (str): 기술적 분석 신호.
+        onchain_signal (str): 온체인 분석 신호.
+        sentiment_signal (str): 감성 분석 신호.
+        ml_signal (str): 머신러닝 분석 신호.
+    
+    Returns:
+        str: 최종 시장 상태 ('bullish', 'bearish', 'sideways').
+    """
+    signals = [technical_signal, onchain_signal, sentiment_signal, ml_signal]
+    logger.info(f"Individual signals: {signals}")
+    counts = {"bullish": signals.count("bullish"),
+              "bearish": signals.count("bearish"),
+              "sideways": signals.count("sideways")}
+    
+    logger.debug(f"Signal counts: {counts}")
+    
+    # 단순 다수결: 가장 많은 신호를 최종 상태로 결정
+    final_state = max(counts, key=counts.get)
+    # 만약 두 신호 이상이 동일한 경우(예: bullish와 bearish가 같으면) 보수적으로 sideways 반환
+    if list(counts.values()).count(counts[final_state]) > 1:
+        final_state = "sideways"
+    
+    logger.info(f"Final market state determined: {final_state}")
+    return final_state
+
+def aggregate_market_analysis(technical_data: dict,
+                              onchain_data: dict,
+                              sentiment_texts: list,
+                              ml_data: dict) -> str:
+    """
+    개별 분석 모듈에서 산출한 데이터를 입력받아 최종 시장 상태를 판단합니다.
+    
+    Parameters:
+        technical_data (dict): {'price_series': pd.Series, 'rsi_window': int (선택)}
+        onchain_data (dict): {'market_cap': float, 'realized_cap': float,
+                              'exchange_inflow': float, 'exchange_outflow': float}
+        sentiment_texts (list): 감성 분석 대상 텍스트 리스트.
+        ml_data (dict): {'ml_model': MarketLSTMAnalyzer, 'ml_input': pd.DataFrame,
+                          'current_price': float}
+    
+    Returns:
+        str: 최종 시장 상태 ('bullish', 'bearish', 'sideways').
+    """
+    try:
+        # 기술적 분석 신호 산출
+        technical_signal = get_technical_signal(technical_data.get("price_series"),
+                                                  technical_data.get("rsi_window", 14))
+        
+        # 온체인 분석 신호 산출
+        onchain_signal = get_onchain_signal(onchain_data.get("market_cap"),
+                                            onchain_data.get("realized_cap"),
+                                            onchain_data.get("exchange_inflow"),
+                                            onchain_data.get("exchange_outflow"))
+        
+        # 감성 분석 신호 산출
+        sentiment_signal = get_sentiment_signal(sentiment_texts)
+        
+        # 머신러닝 분석 신호 산출
+        ml_signal = get_ml_signal(ml_data.get("ml_model"),
+                                  ml_data.get("ml_input"),
+                                  ml_data.get("current_price"))
+        
+        # 최종 신호 종합
+        final_state = determine_final_market_state(technical_signal,
+                                                   onchain_signal,
+                                                   sentiment_signal,
+                                                   ml_signal)
+        return final_state
+    except Exception as e:
+        logger.error(f"Error aggregating market analysis: {e}", exc_info=True)
+        return "sideways"
+
+---
+
+# market_analysis/ml_market_analysis.py
+from logs.log_config import setup_logger
+import pandas as pd
+import numpy as np
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense, Dropout
+from tensorflow.keras.callbacks import EarlyStopping
+import tensorflow as tf
+
+logger = setup_logger(__name__)
+
+class MarketLSTMAnalyzer:
+    """
+    LSTM 모델을 활용한 머신러닝 기반 시장 분석 클래스입니다.
     
     Attributes:
-      - n_components (int): 모델이 예측할 상태(레짐)의 수.
-      - covariance_type (str): 공분산 행렬의 형태 ('full', 'diag' 등).
-      - n_iter (int): HMM 학습 시 최대 반복 횟수.
-      - random_state (int): 재현성을 위한 랜덤 시드.
-      - model (GaussianHMM): 실제 HMM 모델 객체.
-      - logger: 로그 기록을 위한 로거 객체.
-      - trained (bool): 모델이 학습되었는지 여부.
-      - last_train_time: 마지막 학습 시각.
-      - retrain_interval_minutes (int): 재학습을 위한 최소 시간 간격 (분).
-      - last_feature_stats: 마지막 학습 시 사용한 피처들의 평균 통계값.
-      - retrain_feature_threshold (float): 피처 평균의 변화량 임계값; 변화가 작으면 재학습을 생략.
+        model (tf.keras.Model): LSTM 모델 객체.
+        input_shape (tuple): (timesteps, features) 형태의 입력 데이터.
     """
-    def __init__(self, n_components: int = 3, covariance_type: str = 'full',
-                 n_iter: int = 1000, random_state: int = 42, retrain_interval_minutes: int = 60):
-        # ───────────────────────────────────────────────────────
-        # 초기 HMM 파라미터 설정:
-        #  - n_components: 모델이 가정할 숨겨진 상태의 개수 (기본 3: bullish, bearish, sideways)
-        #  - covariance_type, n_iter, random_state: 모델 학습에 필요한 설정 값들
-        self.n_components = n_components
-        self.covariance_type = covariance_type
-        self.n_iter = n_iter
-        self.random_state = random_state
-        
-        # GaussianHMM 모델 객체 생성
-        self.model = GaussianHMM(
-            n_components=self.n_components,
-            covariance_type=self.covariance_type,
-            n_iter=self.n_iter,
-            random_state=self.random_state
-        )
-        # ───────────────────────────────────────────────────────
-        
-        # 로거 객체 설정: 모듈의 이벤트, 디버그, 에러 등을 기록
-        self.logger = setup_logger(__name__)
-        
-        # 모델 학습 상태 플래그 (초기에는 아직 학습되지 않음)
-        self.trained = False
-        
-        # 마지막 학습 시각 (초기에는 None)
-        self.last_train_time = None
-        
-        # 재학습 최소 간격 (분 단위)
-        self.retrain_interval_minutes = retrain_interval_minutes
-        
-        # 마지막 학습 시 사용한 피처들의 평균 통계값 (재학습 조건 판단에 사용)
-        self.last_feature_stats = None
-        
-        # 피처 평균 변화량 임계값: 이 값보다 변화가 작으면 재학습을 건너뛸 수 있음
-        self.retrain_feature_threshold = 0.01
-        # ───────────────────────────────────────────────────────
-
-    def train(self, historical_data: pd.DataFrame, feature_columns: list = None,
-              max_train_samples: int = None, min_samples: int = 50) -> None:
+    def __init__(self, input_shape: tuple):
         """
-        HMM 모델을 주어진 과거 데이터(historical_data)로 학습합니다.
-        
-        데이터가 충분하지 않거나(최소 샘플 수 미달) 최근 업데이트 조건(시간 간격, 피처 변화량)이 
-        만족되지 않을 경우 학습을 생략할 수 있습니다.
+        초기화: LSTM 모델 구성 및 컴파일.
         
         Parameters:
-          - historical_data (pd.DataFrame): 학습에 사용될 과거 데이터 (인덱스에 시간 정보가 포함될 수 있음).
-          - feature_columns (list): 학습에 사용할 피처 컬럼 리스트. None인 경우, 데이터프레임의 모든 컬럼 사용.
-          - max_train_samples (int): 학습에 사용할 최대 샘플 수. 지정하지 않으면 전체 데이터를 사용.
-          - min_samples (int): 학습을 진행하기 위한 최소 샘플 수 (기본값: 50).
+            input_shape (tuple): (timesteps, features) 형태의 입력 데이터.
+        """
+        self.input_shape = input_shape
+        self.model = self.build_model()
+        logger.debug("MarketLSTMAnalyzer initialized.")
+        
+    def build_model(self) -> tf.keras.Model:
+        """
+        LSTM 모델을 구성하고 컴파일합니다.
         
         Returns:
-          - None
+            tf.keras.Model: 구성된 LSTM 모델.
         """
-        # 충분한 데이터가 없는 경우, 경고 로그를 남기고 학습을 생략합니다.
-        if historical_data.empty or len(historical_data) < min_samples:
-            self.logger.warning(
-                f"Insufficient data for HMM training: {len(historical_data)} samples available; minimum required is {min_samples}. "
-                "Skipping training; default regime will be used."
+        model = Sequential()
+        model.add(LSTM(50, return_sequences=True, input_shape=self.input_shape))
+        model.add(Dropout(0.2))
+        model.add(LSTM(50))
+        model.add(Dropout(0.2))
+        model.add(Dense(1, activation='linear'))
+        model.compile(optimizer='adam', loss='mean_squared_error')
+        logger.debug("LSTM model built and compiled.")
+        return model
+    
+    def train(self, X_train: np.ndarray, y_train: np.ndarray, epochs: int = 50, batch_size: int = 32, validation_split: float = 0.2) -> None:
+        """
+        LSTM 모델을 주어진 데이터로 학습합니다.
+        
+        Parameters:
+            X_train (np.ndarray): 학습 입력 데이터.
+            y_train (np.ndarray): 학습 대상 데이터.
+            epochs (int): 학습 에포크 수.
+            batch_size (int): 배치 크기.
+            validation_split (float): 검증 데이터 비율.
+        
+        Returns:
+            None
+        """
+        try:
+            early_stop = EarlyStopping(monitor='val_loss', patience=5)
+            self.model.fit(
+                X_train, y_train,
+                epochs=epochs,
+                batch_size=batch_size,
+                validation_split=validation_split,
+                callbacks=[early_stop],
+                verbose=1
             )
-            self.trained = False
-            return
-
-        # 사용할 피처 컬럼 결정: 별도 지정되지 않으면 전체 컬럼 사용
-        feature_columns = feature_columns or historical_data.columns.tolist()
-        # max_train_samples가 지정되어 있고, 데이터 양이 많을 경우 최신 데이터만 선택
-        training_data = (historical_data.iloc[-max_train_samples:]
-                         if max_train_samples is not None and len(historical_data) > max_train_samples
-                         else historical_data)
-        # 데이터프레임의 인덱스에서 마지막(최신) 시간 추출
-        current_last_time = training_data.index.max()
-
-        # 이전에 학습한 시점이 있다면, 재학습 조건을 확인합니다.
-        if self.last_train_time is not None:
-            # 마지막 학습 이후 경과 시간 계산
-            elapsed = current_last_time - self.last_train_time
-            retrain_interval = timedelta(minutes=self.retrain_interval_minutes)
-            # 이전에 저장된 피처 평균값이 있다면 현재 피처 평균과의 차이를 계산하여 재학습 여부 결정
-            if self.last_feature_stats is not None:
-                current_means = training_data[feature_columns].mean()
-                diff = np.abs(current_means - self.last_feature_stats).mean()
-                # 경과 시간이 충분하지 않고 피처 변화량이 임계값 미만이면 학습을 생략
-                if elapsed < retrain_interval and diff < self.retrain_feature_threshold:
-                    self.logger.debug(
-                        f"HMM retraining skipped: only {elapsed.total_seconds()/60:.2f} minutes elapsed and feature mean change {diff:.6f} is below threshold {self.retrain_feature_threshold}."
-                    )
-                    return
-            else:
-                # 피처 통계값이 없는 경우에도 지정된 시간 간격이 지나지 않았다면 학습 생략
-                if elapsed < retrain_interval:
-                    self.logger.debug(f"HMM retraining skipped: only {elapsed.total_seconds()/60:.2f} minutes elapsed.")
-                    return
-
-        # 선택한 피처들을 numpy 배열로 변환하여 HMM 모델 학습 데이터(X) 준비
-        X = training_data[feature_columns].values
-        self.logger.debug(f"Starting HMM training: {X.shape[0]} samples, {X.shape[1]} features")
-        try:
-            # 경고를 캡처하여 모델 학습 중 발생하는 경고들을 로깅
-            with warnings.catch_warnings(record=True) as caught_warnings:
-                warnings.simplefilter("always")
-                self.model.fit(X)
-                # 발생한 경고 중 "Model is not converging" 메시지가 있으면 경고 로그 기록
-                for warn in caught_warnings:
-                    if "Model is not converging" in str(warn.message):
-                        self.logger.warning(f"HMM convergence warning: {warn.message}")
+            logger.debug("LSTM model training completed.")
         except Exception as e:
-            # 예외 발생 시 에러 로그를 남기고 학습 실패 플래그 설정
-            self.logger.error(f"HMM training error: {e}", exc_info=True)
-            self.trained = False
-            return
-
-        # 학습 성공 시, 상태 플래그와 마지막 학습 시간, 피처 평균값을 업데이트합니다.
-        self.trained = True
-        self.last_train_time = current_last_time
-        self.last_feature_stats = training_data[feature_columns].mean()
-        self.logger.debug("HMM training completed successfully.")
-
-    def predict(self, data: pd.DataFrame, feature_columns: list = None) -> np.ndarray:
-        """
-        입력 데이터에 대해 HMM 모델을 사용하여 각 샘플의 상태(레짐)를 예측합니다.
-        
-        Parameters:
-          - data (pd.DataFrame): 예측에 사용할 데이터. 데이터가 비어있으면 예외 발생.
-          - feature_columns (list): 예측에 사용할 피처 컬럼 리스트. None이면 전체 컬럼 사용.
-        
-        Returns:
-          - np.ndarray: 각 샘플에 대해 예측된 상태 번호(정수 배열).
-        
-        Raises:
-          - ValueError: 입력 데이터가 비어있을 경우.
-        """
-        if data.empty:
-            self.logger.error("Input data is empty. Prediction aborted.", exc_info=True)
-            raise ValueError("Input data is empty.")
-        
-        # 사용할 피처 컬럼 결정
-        feature_columns = feature_columns or data.columns.tolist()
-        # 모델이 아직 학습되지 않은 경우, 기본 상태 값(여기서는 2: 'sideways')를 반환
-        if not self.trained:
-            self.logger.warning("HMM model is not trained. Returning default regime 'sideways' for all samples.")
-            return np.full(data.shape[0], 2)
-        
-        # 예측 데이터 준비: 데이터프레임에서 지정된 피처 값을 numpy 배열로 추출
-        X = data[feature_columns].values
-        try:
-            # HMM 모델을 통해 상태 예측
-            predicted_states = self.model.predict(X)
-        except Exception as e:
-            self.logger.error(f"HMM prediction error: {e}", exc_info=True)
+            logger.error(f"Error during LSTM training: {e}", exc_info=True)
             raise
-        self.logger.debug(f"Prediction completed: {X.shape[0]} samples processed.")
-        return predicted_states
 
-    def predict_proba(self, data: pd.DataFrame, feature_columns: list = None) -> np.ndarray:
+    def predict(self, X: np.ndarray) -> np.ndarray:
         """
-        입력 데이터에 대해 HMM 모델을 사용하여 각 상태(레짐)의 확률 분포를 예측합니다.
+        주어진 입력 데이터에 대해 LSTM 모델의 예측을 수행합니다.
         
         Parameters:
-          - data (pd.DataFrame): 예측에 사용할 데이터.
-          - feature_columns (list): 예측에 사용할 피처 컬럼 리스트. None이면 전체 컬럼 사용.
-        
+            X (np.ndarray): 예측에 사용할 입력 데이터.
+            
         Returns:
-          - np.ndarray: 각 샘플에 대해 상태별 확률 배열.
-        
-        Raises:
-          - ValueError: 입력 데이터가 비어있을 경우.
+            np.ndarray: 예측 결과 배열.
         """
-        if data.empty:
-            self.logger.error("Input data is empty. predict_proba aborted.", exc_info=True)
-            raise ValueError("Input data is empty.")
-        
-        # 사용할 피처 컬럼 결정
-        feature_columns = feature_columns or data.columns.tolist()
-        # 모델이 아직 학습되지 않았다면, 기본 확률 배열 반환 (여기서는 'sideways' 상태에 해당하는 확률 1)
-        if not self.trained:
-            self.logger.warning("HMM model is not trained. Returning default probability (all 'sideways') for all samples.")
-            return np.tile([0, 0, 1], (data.shape[0], 1))
-        
-        # 예측 데이터 준비
-        X = data[feature_columns].values
         try:
-            # 각 상태의 확률 예측
-            probabilities = self.model.predict_proba(X)
+            predictions = self.model.predict(X)
+            logger.debug(f"LSTM model prediction completed for {X.shape[0]} samples.")
+            return predictions
         except Exception as e:
-            self.logger.error(f"predict_proba error: {e}", exc_info=True)
+            logger.error(f"Error during LSTM prediction: {e}", exc_info=True)
             raise
-        self.logger.debug(f"predict_proba completed: {X.shape[0]} samples processed.")
-        return probabilities
 
-    def update(self, new_data: pd.DataFrame, feature_columns: list = None, max_train_samples: int = None, min_samples: int = 50) -> None:
-        """
-        새로운 데이터를 받아 HMM 모델을 업데이트(재학습)합니다.
-        
-        내부적으로 train() 함수를 호출하여 모델을 최신 데이터에 맞게 재학습합니다.
-        
-        Parameters:
-          - new_data (pd.DataFrame): 업데이트에 사용할 새로운 데이터.
-          - feature_columns (list): 사용될 피처 컬럼 리스트. None이면 전체 컬럼 사용.
-          - max_train_samples (int): 사용할 최대 샘플 수.
-          - min_samples (int): 재학습에 필요한 최소 샘플 수.
-        
-        Returns:
-          - None
-        """
-        self.logger.debug("Starting HMM model update.")
-        self.train(new_data, feature_columns, max_train_samples, min_samples)
-        self.logger.debug("HMM model update completed.")
+---
 
-    def map_state_to_regime(self, state: int) -> str:
-        """
-        학습된 HMM의 상태 번호를 시장 레짐 레이블(예: bullish, bearish, sideways)로 매핑합니다.
+# market_analysis/onchain_analysis.py
+from logs.log_config import setup_logger
+import pandas as pd
+import numpy as np
+
+logger = setup_logger(__name__)
+
+def calculate_mvrv_ratio(market_cap: float, realized_cap: float) -> float:
+    """
+    온체인 분석을 위한 MVRV (Market Value to Realized Value) 비율을 계산합니다.
+    
+    Parameters:
+        market_cap (float): 현재 시가총액.
+        realized_cap (float): 실현 시가총액.
         
-        HMM 모델의 첫 번째 피처(예: 수익률)의 평균값을 기준으로,
-        상태들을 오름차순 정렬하여 가장 낮은 값은 bearish, 가장 높은 값은 bullish, 중간은 sideways로 매핑합니다.
+    Returns:
+        float: MVRV 비율.
+    """
+    try:
+        if realized_cap == 0:
+            logger.error("Realized capitalization is zero, cannot compute MVRV ratio.")
+            return float('inf')
+        ratio = market_cap / realized_cap
+        logger.debug(f"Calculated MVRV ratio: {ratio}")
+        return ratio
+    except Exception as e:
+        logger.error(f"Error calculating MVRV ratio: {e}", exc_info=True)
+        raise
+
+def analyze_exchange_flow(exchange_inflow: float, exchange_outflow: float) -> str:
+    """
+    거래소의 유입 및 유출 데이터를 기반으로 매수/매도 신호를 판단합니다.
+    
+    Parameters:
+        exchange_inflow (float): 거래소 유입량.
+        exchange_outflow (float): 거래소 유출량.
         
-        Parameters:
-          - state (int): HMM 모델이 예측한 상태 번호.
-        
-        Returns:
-          - str: 매핑된 시장 레짐 레이블. 만약 매핑 정보가 없으면 "state_{state}" 형식의 문자열을 반환.
-        """
-        # 모델이 학습되었으며, means_ 속성이 존재하고 상태의 개수가 맞는지 확인
-        if self.trained and self.model.means_ is not None and len(self.model.means_) == self.n_components:
-            # 첫 번째 피처(예: returns)의 평균값 리스트 생성
-            returns_means = [mean[0] for mean in self.model.means_]
-            # 평균값을 기준으로 오름차순 정렬한 인덱스를 얻음:
-            # 낮은 값부터 높은 값까지 정렬되며, 이를 통해 각 상태를 bearish, sideways, bullish으로 매핑 가능
-            sorted_indices = sorted(range(len(returns_means)), key=lambda i: returns_means[i])
-            mapping = {}
-            if self.n_components == 3:
-                mapping[sorted_indices[0]] = "bearish"
-                mapping[sorted_indices[1]] = "sideways"
-                mapping[sorted_indices[2]] = "bullish"
-                return mapping.get(state, f"state_{state}")
-            else:
-                # 상태 개수가 3가 아니면 기본 문자열 반환
-                return f"state_{state}"
+    Returns:
+        str: 'distribution' (매도 압력) 또는 'accumulation' (매수, 축적) 신호.
+    """
+    try:
+        if exchange_inflow > exchange_outflow:
+            signal = "distribution"
         else:
-            # 모델이 학습되지 않았거나 means_ 속성이 없으면 기본 문자열 반환
-            return f"state_{state}"
+            signal = "accumulation"
+        logger.debug(f"Exchange flow analysis: {signal} (inflow: {exchange_inflow}, outflow: {exchange_outflow})")
+        return signal
+    except Exception as e:
+        logger.error(f"Error analyzing exchange flow: {e}", exc_info=True)
+        raise
 
-    def predict_regime_labels(self, data: pd.DataFrame, feature_columns: list = None) -> list:
-        """
-        입력 데이터에 대해 HMM 모델을 사용하여 각 샘플의 시장 레짐 레이블(예: bullish, bearish, sideways)을 예측합니다.
+---
+
+# market_analysis/sentiment_analysis.py
+from logs.log_config import setup_logger
+import re
+
+logger = setup_logger(__name__)
+
+
+def clean_text(text: str) -> str:
+    """
+    감성 분석을 위한 입력 텍스트를 정제합니다.
+    
+    Parameters:
+        text (str): 원본 텍스트.
         
-        내부적으로 predict()를 통해 상태 번호를 예측한 뒤,
-        map_state_to_regime() 함수를 사용하여 상태 번호를 의미있는 레이블로 변환합니다.
+    Returns:
+        str: 정제된 텍스트.
+    """
+    try:
+        cleaned = re.sub(r'\s+', ' ', text)
+        logger.debug("Text cleaned for sentiment analysis.")
+        return cleaned.strip()
+    except Exception as e:
+        logger.error(f"Error cleaning text: {e}", exc_info=True)
+        raise
+
+
+def simple_sentiment_score(text: str) -> float:
+    """
+    키워드 매칭 방식을 사용하여 간단한 감성 점수를 계산합니다.
+    
+    Parameters:
+        text (str): 입력 텍스트.
         
-        Parameters:
-          - data (pd.DataFrame): 예측에 사용할 데이터.
-          - feature_columns (list): 사용할 피처 컬럼 리스트. None이면 전체 컬럼 사용.
+    Returns:
+        float: -1 (매우 부정)에서 1 (매우 긍정) 사이의 감성 점수.
+    """
+    try:
+        text = clean_text(text).lower()
+        positive_words = ['good', 'bullish', 'up', 'positive', 'gain']
+        negative_words = ['bad', 'bearish', 'down', 'negative', 'loss']
         
-        Returns:
-          - list: 각 샘플에 대해 예측된 시장 레짐 레이블의 리스트.
-        """
-        # 먼저 HMM 모델을 사용하여 상태 번호를 예측합니다.
-        states = self.predict(data, feature_columns)
-        # 각 상태 번호를 대응하는 레짐 레이블로 변환합니다.
-        regime_labels = [self.map_state_to_regime(s) for s in states]
-        self.logger.debug(f"Regime labels predicted: {regime_labels}")
-        return regime_labels
+        score = 0
+        for word in positive_words:
+            score += text.count(word)
+        for word in negative_words:
+            score -= text.count(word)
+        
+        # 간단한 정규화 (기본 구현)
+        normalized_score = max(min(score / 5.0, 1), -1)
+        logger.debug(f"Computed sentiment score: {normalized_score} for text: {text}")
+        return normalized_score
+    except Exception as e:
+        logger.error(f"Error computing sentiment score: {e}", exc_info=True)
+        raise
+
+def aggregate_sentiment(texts: list) -> float:
+    """
+    여러 텍스트의 감성 점수를 집계하여 평균 감성 점수를 계산합니다.
+    
+    Parameters:
+        texts (list): 텍스트 문자열 리스트.
+        
+    Returns:
+        float: 평균 감성 점수.
+    """
+    try:
+        if not texts:
+            logger.warning("No texts provided for sentiment aggregation.")
+            return 0.0
+        scores = [simple_sentiment_score(text) for text in texts]
+        avg_score = sum(scores) / len(scores)
+        logger.debug(f"Aggregated sentiment score: {avg_score}")
+        return avg_score
+    except Exception as e:
+        logger.error(f"Error aggregating sentiment: {e}", exc_info=True)
+        raise
+
+---
+
+# market_analysis/technical_analysis.py
+from logs.log_config import setup_logger
+import pandas as pd
+import numpy as np
+
+logger = setup_logger(__name__)
+
+def compute_sma(data: pd.Series, window: int = 20) -> pd.Series:
+    """
+    주어진 시계열 데이터에 대해 단순 이동평균(SMA)을 계산합니다.
+    
+    Parameters:
+        data (pd.Series): 가격 데이터.
+        window (int): 이동평균 기간 (기본: 20).
+        
+    Returns:
+        pd.Series: SMA 값 시리즈.
+    """
+    try:
+        sma = data.rolling(window=window).mean()
+        logger.debug(f"Computed SMA with window={window}.")
+        return sma
+    except Exception as e:
+        logger.error(f"Error computing SMA: {e}", exc_info=True)
+        raise
+
+def compute_bollinger_bands(data: pd.Series, window: int = 20, num_std: int = 2) -> pd.DataFrame:
+    """
+    주어진 시계열 데이터에 대해 Bollinger Bands를 계산합니다.
+    
+    Parameters:
+        data (pd.Series): 가격 데이터.
+        window (int): 이동평균 기간.
+        num_std (int): 표준편차 배수 (기본: 2).
+        
+    Returns:
+        pd.DataFrame: 'SMA', 'Upper Band', 'Lower Band' 컬럼 포함 데이터프레임.
+    """
+    try:
+        sma = compute_sma(data, window)
+        std = data.rolling(window=window).std()
+        upper_band = sma + (std * num_std)
+        lower_band = sma - (std * num_std)
+        logger.debug("Computed Bollinger Bands.")
+        return pd.DataFrame({
+            "SMA": sma,
+            "Upper Band": upper_band,
+            "Lower Band": lower_band
+        })
+    except Exception as e:
+        logger.error(f"Error computing Bollinger Bands: {e}", exc_info=True)
+        raise
+
+def compute_rsi(data: pd.Series, window: int = 14) -> pd.Series:
+    """
+    주어진 시계열 데이터에 대해 RSI(Relative Strength Index)를 계산합니다.
+    
+    Parameters:
+        data (pd.Series): 가격 데이터.
+        window (int): RSI 계산 기간 (기본: 14).
+        
+    Returns:
+        pd.Series: RSI 값 시리즈.
+    """
+    try:
+        delta = data.diff()
+        gain = delta.where(delta > 0, 0).rolling(window=window).mean()
+        loss = -delta.where(delta < 0, 0).rolling(window=window).mean()
+        rs = gain / loss
+        rsi = 100 - (100 / (1 + rs))
+        logger.debug("Computed RSI.")
+        return rsi
+    except Exception as e:
+        logger.error(f"Error computing RSI: {e}", exc_info=True)
+        raise

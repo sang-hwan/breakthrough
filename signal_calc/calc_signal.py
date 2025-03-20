@@ -45,7 +45,7 @@ from strategies.trading_strategies import (
     CounterTrendStrategy, HighFrequencyStrategy, WeeklyBreakoutStrategy, WeeklyMomentumStrategy
 )
 # 설정 관리: 동적 파라미터를 가져오기 위해 사용
-from parameters_sensitivity.config_manager import ConfigManager
+from parameters.config_manager import ConfigManager
 
 def compute_dynamic_weights(market_volatility: float, liquidity_info: str, volume: float = None):
     """

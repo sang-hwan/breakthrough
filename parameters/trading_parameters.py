@@ -1,4 +1,4 @@
-# parameters_sensitivity/trading.py
+# parameters/trading_parameters.py
 
 # 로그 설정을 위한 모듈 임포트: 로거 설정 함수(setup_logger)를 통해 디버그 및 오류 로그를 기록합니다.
 from logs.log_config import setup_logger
