@@ -1,11 +1,11 @@
-[모듈 5]
-# parameters_sensitivity/market_analysis.py
+[parameters 모듈]
+# parameters/market_parameters.py
 import numpy as np
 from itertools import product  # 여러 파라미터 값들의 모든 조합 생성을 위해 사용
 import random
 from logs.log_config import setup_logger  # 로깅 설정 함수
 from backtesting.backtester import Backtester  # 백테스트 수행 클래스
-from parameters_sensitivity.config_manager import ConfigManager  # 기본 파라미터 관리 클래스
+from parameters.config_manager import ConfigManager  # 기본 파라미터 관리 클래스
 
 # 전역 logger 객체: 모듈 내 로그 기록에 사용
 logger = setup_logger(__name__)
@@ -110,11 +110,11 @@ def run_sensitivity_analysis(param_settings,
 
 ---
 
-# parameters_sensitivity/signal_calc.py
+# parameters/signal_parameters.py
 
 ---
 
-# parameters_sensitivity/trading.py
+# parameters/trading_parameters.py
 
 # 로그 설정을 위한 모듈 임포트: 로거 설정 함수(setup_logger)를 통해 디버그 및 오류 로그를 기록합니다.
 from logs.log_config import setup_logger
