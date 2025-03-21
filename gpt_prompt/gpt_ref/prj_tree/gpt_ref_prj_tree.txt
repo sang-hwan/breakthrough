@@ -1,3 +1,4 @@
+[프로젝트 구조]
 my_trading_project/
 ├── README.md                   # 프로젝트 개요 및 실행 방법
 ├── requirements.txt            # 필요 라이브러리 목록
@@ -22,7 +23,7 @@ my_trading_project/
 │   ├── trade_decision.py       # 매수/매도 판단 로직 (백테스트용)
 │   ├── position_management.py  # 포지션 관리 (자산 배분, 분할 매매 등)
 │   └── risk_management.py      # 손절, 트레일링 스탑 등 리스크 관리 로직
-├── parameters/                 # 파라미터 모듈
+├── parameters/                 
 │   ├── market_parameters.py    # 시장 분석 관련 파라미터 및 민감도 분석
 │   ├── signal_parameters.py    # 신호 계산 관련 파라미터 및 민감도 분석
 │   └── trading_parameters.py   # 거래 관련 파라미터 및 민감도 분석
@@ -35,14 +36,17 @@ my_trading_project/
 │   └── log_files/              # INFO 이상 로그 파일 저장 디렉토리
 ├── tests/
 │   ├── integration_tests/      # 통합 테스트 모듈
+│   │   ├── data/
+│   │   ├── market_analysis/
+│   │   ├── signal_calc/
+│   │   ├── trading/
+│   │   ├── parameters/
+│   │   └── optimization/
 │   └── unit_tests/             # 단위 테스트 모듈
+│       ├── data/
+│       ├── market_analysis/
+│       ├── signal_calc/
+│       ├── trading/
+│       ├── parameters/
+│       └── optimization/
 └── scripts/
-    ├── run_data_store.py       # 데이터 저장 실행 스크립트
-    ├── run_data_update.py      # 데이터 최신화 실행 스크립트
-    ├── run_data_delete.py      # 데이터 삭제 실행 스크립트
-    ├── run_market_analysis.py  # 시장 분석 및 최적화 실행 스크립트
-    ├── run_signal_calc.py      # 신호 계산과 전략 선택 실행 및 최적화 스크립트
-    ├── run_trading.py          # 거래 실행과 최적화를 담당하는 스크립트
-    ├── run_optimize_all.py     # 시장 분석, 신호 계산, 거래 모듈의 파라미터 최적화를 한 번에 수행하는 스크립트
-    ├── run_backtest.py         # 최적화된 파라미터를 적용하여 백테스트를 실행하는 스크립트
-    └── run_final_report.py     # 백테스트 결과 보고서 생성 스크립트
