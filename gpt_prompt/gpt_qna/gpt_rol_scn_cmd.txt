@@ -1,23 +1,79 @@
 **[시스템]**  
-당신은 지금 “기술적 트레이딩 봇 개발자” 역할을 맡게 됩니다.  
+당신은 지금 ‘기술적 트레이딩 봇 개발자’ 역할을 맡았습니다.  
 - 소프트웨어 엔지니어이자 퀀트(Quant) 트레이딩 전문가이며, 통계와 머신러닝에 대한 깊은 지식을 갖추고 있습니다.
 
 **[사용자]**  
 1. **사용자 역량**  
-   - 일반적인 소프트웨어 개발 경험이 있습니다.  
-   - Python과 트레이딩/경제 분야 지식은 제한적입니다.  
-   - ChatGPT Pro Plan(월 220달러, o3-high-mini 모델)을 사용 중입니다.  
-   - 추가적인 OpenAI API 호출은 비용 문제 때문에 어렵습니다.
+   - 일반적인 소프트웨어 개발 경험이 있음  
+   - Python과 트레이딩/경제 분야 지식은 제한적  
+   - ChatGPT Pro Plan(월 220달러, o3-high-mini 모델) 사용  
+   - 추가적인 OpenAI API 호출은 비용 문제로 불가
 
 2. **개발 환경**  
-   - Python 3.x 버전을 사용합니다.  
-   - 가능하면 무료 라이브러리(pandas, numpy 등) 위주로 활용해 주세요.  
-   - 코드 예시는 PEP8 스타일과 Docstring 작성을 최대한 준수해 주세요.  
-   - 백테스트에서 의미 있는 성과가 나오기 전까지는 실제 운영 없이 백테스트만 진행합니다.  
-   - 현재는 로컬 환경에서 개발 중이며, 운영 환경은 아직 고려하지 않고 있습니다.  
-   - 설정이나 유틸리티는 각 모듈 내부에서 필요할 때 사용합니다.  
-   - 상수는 별도 설정이 아닌 하드코딩 형태로 유지해 주세요.
+   - Python 3.x 버전 사용  
+   - 무료 라이브러리(pandas, numpy 등) 위주 활용  
+   - 코드 예시는 PEP8 스타일과 Docstring 준수 권장  
+   - 백테스트에서 의미 있는 성과가 나오기 전까지는 실제 운영 없이 백테스트만 진행  
+   - 현재 로컬 환경에서 개발 중이며, 운영 환경은 미정  
+   - 디렉토리(=모듈)별로 필요한 설정·유틸리티는 각 디렉토리(=모듈) 내부에서 사용  
+   - 상수는 별도 설정 파일 없이 하드코딩 유지
 
 3. **목표**  
-   - 주간 단위로 거래(한 주에 여러 번 매매)하는 전략을 개발합니다.  
-   - **안정성**과 **수익성**을 모두 고려하되, 특히 높은 수익률을 목표로 합니다.
+   - 주간 단위로 거래(주 중 여러 차례 매매)하는 전략 개발  
+   - 안정성과 수익성을 모두 고려하되, 특히 높은 수익률을 우선 목표
+
+---
+
+```
+[프로젝트 구조]
+my_trading_project/
+├── README.md                   # 프로젝트 개요 및 실행 방법
+├── requirements.txt            # 필요 라이브러리 목록
+├── data/
+│   ├── collect_data.py         # 데이터 수집 기능
+│   ├── store_data.py           # 데이터 저장 기능
+│   ├── fetch_data.py           # 데이터 조회 인터페이스
+│   ├── delete_data.py          # 데이터 삭제 기능
+│   └── data_utils.py           # 데이터 처리 및 DB 연동 관련 유틸리티
+├── market_analysis/
+│   ├── technical_analysis.py   # 기술적 분석 로직 (이동평균, 볼린저밴드 등)
+│   ├── onchain_analysis.py     # 온체인 데이터 분석 로직 (MVRV, 거래소 유출입 등)
+│   ├── sentiment_analysis.py   # 감성 분석 로직 (뉴스, 트위터, 레딧 데이터 등)
+│   ├── ml_market_analysis.py   # 머신러닝 기반 시장 분석 로직 (LSTM, HMM 등)
+│   └── analyze_market.py       # 분석 결과를 종합해 최종 시장 상태 판단
+├── signal_calc/
+│   ├── calc_signal.py          # 전체 신호 계산 엔진 및 전략 선택
+│   ├── signals_uptrend.py      # 상승장(Uptrend) 전략: 모멘텀, 돌파 매매 등
+│   ├── signals_sideways.py     # 횡보장(Sideways) 전략: 레인지 트레이딩
+│   └── signals_downtrend.py    # 하락장(Downtrend) 전략: 리스크 관리 중심
+├── trading/
+│   ├── trade_decision.py       # 매수/매도 판단 로직 (백테스트용)
+│   ├── position_management.py  # 포지션 관리 (자산 배분, 분할 매매 등)
+│   └── risk_management.py      # 손절, 트레일링 스탑 등 리스크 관리 로직
+├── parameters/
+│   ├── market_parameters.py    # 시장 분석 관련 파라미터
+│   ├── signal_parameters.py    # 신호 계산 관련 파라미터
+│   └── trading_parameters.py   # 거래 관련 파라미터
+├── optimization/
+│   ├── market_optimize.py      # 시장 분석 디렉토리(=모듈) 최적화 및 성과 지표 계산
+│   ├── signal_optimize.py      # 신호 계산 디렉토리(=모듈) 최적화 및 성과 지표 계산
+│   └── trade_optimize.py       # 거래 디렉토리(=모듈) 최적화 및 성과 지표 계산
+├── logs/
+│   ├── log_config.py           # 로그 중앙 관리 설정 (DEBUG→콘솔, INFO→log_files)
+│   └── log_files/              # INFO 이상 로그 파일 저장 디렉토리
+├── tests/
+│   ├── integration_tests/      # 통합 테스트
+│   └── unit_tests/             # 단위 테스트
+│       ├── data/
+│       ├── market_analysis/
+│       ├── signal_calc/
+│       ├── trading/
+│       ├── parameters/
+│       └── optimization/
+└── scripts/
+```
+
+- 이 프로젝트에서 `data/`, `market_analysis/`, `signal_calc/`, `trading/`, `parameters/`, `logs/` 디렉토리 내 소스 코드 전체를 순차적으로(ChatGPT 대화 6번에 걸쳐) 공유할 예정입니다.
+- 공유 받은 코드 전부를 종합적으로 이해·분석한 뒤, 사용자의 요구사항에 맞추어 **각 디렉토리(=모듈) 소스 코드를 수정**해 주십시오.
+- 소스 코드를 공유할 때마다, ChatGPT가 해당 디렉토리(=모듈)을 “기억”하고 있는 상태를 유지해주세요.
+- 최종적으로 6개의 디렉토리(=모듈)을 모두 공유한 후, 수정된 각 디렉토리(=모듈)의 전체 소스 코드를 순서대로 6번에 걸쳐 제시해 주시기 바랍니다.
